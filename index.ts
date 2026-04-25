@@ -1249,19 +1249,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 	if (effort) extraArgs["thinking-display"] = "summarized";
 
+	// Use a static string system prompt instead of preset: "claude_code".
+	// The preset injects dynamic content (gitStatus, currentDate, CLAUDE.md)
+	// into both the system prompt and user messages on every CLI spawn,
+	// breaking prompt cache whenever project state changes. A static string
+	// avoids all dynamic injection. Pi already provides its own system prompt;
+	// the CC layer only needs to pass through tool execution.
+	const staticSystemPrompt = systemPromptAppend ?? "You are a helpful coding assistant.";
+
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		disallowedTools: DISALLOWED_BUILTIN_TOOLS,
 		allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
+		systemPrompt: staticSystemPrompt,
 		extraArgs,
 		...(effort ? { effort } : {}),
-		...(settingSources ? { settingSources } : {}),
+		settingSources: [],
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...makeCliDebugOptions("provider"),

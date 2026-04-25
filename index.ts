@@ -317,6 +317,7 @@ interface SessionState {
 }
 
 let sharedSession: SessionState | null = null;
+let piApiRef: import("@mariozechner/pi-coding-agent").ExtensionAPI | null = null;
 
 let configuredMaxHistoryMessages: number | undefined;
 
@@ -524,10 +525,12 @@ function syncSharedSession(
 			if (currentSize < sharedSession.pendingTruncateOffset) {
 				// File shrunk below our truncation target — something unexpected
 				// happened (external truncation/deletion). Fall back to rebuild.
-				// Always log (not gated on DEBUG) since this is an anomaly.
-				const msg = `[${new Date().toISOString()}] [claude-bridge] WARNING: session file shrunk unexpectedly (${currentSize} < ${sharedSession.pendingTruncateOffset}), falling back to rebuild\n`;
-				try { appendFileSync(DEBUG_LOG_PATH, msg); } catch { /* best effort */ }
+				const warnText = `⚠️ claude-bridge: session file shrunk unexpectedly (${currentSize} < ${sharedSession.pendingTruncateOffset}), falling back to session rebuild`;
+				try { appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${warnText}\n`); } catch { /* best effort */ }
 				debug(`syncSharedSession: file shrunk (${currentSize} < ${sharedSession.pendingTruncateOffset}), needsRebuild`);
+				if (piApiRef) {
+					piApiRef.sendMessage({ customType: "claude-bridge-warning", content: warnText, display: true }, { triggerTurn: false });
+				}
 				sharedSession = { ...sharedSession, pendingTruncateOffset: undefined, needsRebuild: true };
 			} else {
 				truncateSync(sessionFilePath, sharedSession.pendingTruncateOffset);
@@ -1646,6 +1649,8 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
+	piApiRef = pi;
+
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 

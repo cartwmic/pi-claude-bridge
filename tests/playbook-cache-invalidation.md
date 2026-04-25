@@ -44,7 +44,7 @@ file edits) between turns.
    ```
    "Say exactly: HELLO"
    "Say exactly: WORLD"
-   "Say exactly: READY"
+   "Remember the code word FALCON-7. Say exactly: READY"
    ```
 
 3. **Change git state** in pane 2 (while Pi session stays open):
@@ -60,7 +60,15 @@ file edits) between turns.
    "Say exactly: VERIFY"
    ```
 
-5. **Exit Pi and clean up**:
+5. **Conversation coherence check** — verify the model still has context
+   from before the git state change:
+   ```
+   "What was the code word I told you to remember?"
+   ```
+   The model should respond with FALCON-7. If it can't recall, the
+   conversation context was broken despite what cache metrics show.
+
+6. **Exit Pi and clean up**:
    ```bash
    cd ~/.local/share/chezmoi
    git reset HEAD cache-test-temp.txt
@@ -77,8 +85,10 @@ file edits) between turns.
 | 2–3 | Steady state: cacheRead growing, cacheWrite small |
 | **4** | **First turn after git change — does cacheRead drop? Does cacheWrite spike?** |
 | 5 | Recovery: does cache warm back up? |
+| **6** | **Coherence: does the model recall FALCON-7?** |
 
-A cache-stable implementation shows no drop at turn 4. A broken one shows
+A cache-stable implementation shows no drop at turn 4 and the model
+recalls the code word at turn 6. A broken one shows
 cacheRead dropping significantly and cacheWrite spiking.
 
 ### Bug context
@@ -116,7 +126,7 @@ a full CC session rebuild.
    ```
    "Say exactly: HELLO"
    "Say exactly: WORLD"
-   "Say exactly: READY"
+   "Remember the code word BLUE-42. Say exactly: READY"
    ```
 
 3. **Start a long turn and abort it**:
@@ -131,7 +141,18 @@ a full CC session rebuild.
    "Say exactly: VERIFY"
    ```
 
-5. **Exit Pi and analyze.**
+5. **Conversation coherence check** — verify the model still has context
+   from before the abort:
+   ```
+   "What was the code word I told you to remember?"
+   ```
+   The model should respond with BLUE-42. If it can't recall, the
+   conversation context was broken despite what cache metrics show.
+   (This is the check that caught the original race condition — cache
+   metrics showed REUSE but immediate truncation raced with CC CLI
+   cleanup, corrupting the session file.)
+
+6. **Exit Pi and analyze.**
 
 ### What to measure
 
@@ -142,8 +163,10 @@ a full CC session rebuild.
 | 4 | Aborted — partial output, may show partial cache metrics |
 | **5** | **First turn after abort — does cacheRead drop? Does cacheWrite spike?** |
 | 6 | Recovery: does cache warm back up? |
+| **7** | **Coherence: does the model recall BLUE-42?** |
 
-A cache-stable implementation shows no drop at turn 5. A broken one shows
+A cache-stable implementation shows no drop at turn 5 and the model
+recalls the code word at turn 7. A broken one shows
 cacheRead dropping to ~26k (tools-only prefix) and cacheWrite spiking to
 the full conversation size (session REBUILD).
 

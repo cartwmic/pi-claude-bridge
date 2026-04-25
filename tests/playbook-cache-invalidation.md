@@ -183,10 +183,12 @@ sends their next message. CC CLI is stateless between spawns — the JSONL
 file is the complete state.
 
 **Fix**: Record session file byte offset before each query. On abort (after
-`consumeQuery` resolves = process stdout closed), truncate the file back to
-its pre-query size. This removes everything the aborted turn wrote without
-parsing CC's cleanup format. Clear `needsRebuild` and allow REUSE. Keep
-REBUILD as a fallback if `--resume` fails.
+`consumeQuery` resolves = process stdout closed), defer truncation to the
+next turn's `syncSharedSession` (avoids racing with CC CLI's SIGTERM
+cleanup writes). Before truncating, verify the file hasn't shrunk below
+the truncation target — if it has, fall back to REBUILD. Clear
+`needsRebuild` and allow REUSE. Keep REBUILD as a fallback if `--resume`
+fails.
 
 ### Observed results
 

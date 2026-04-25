@@ -520,9 +520,17 @@ function syncSharedSession(
 	if (sharedSession?.pendingTruncateOffset != null && sharedSession.sessionId) {
 		try {
 			const sessionFilePath = getSessionPath(sharedSession.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
-			truncateSync(sessionFilePath, sharedSession.pendingTruncateOffset);
-			debug(`syncSharedSession: deferred truncation to ${sharedSession.pendingTruncateOffset} bytes`);
-			sharedSession = { ...sharedSession, pendingTruncateOffset: undefined };
+			const currentSize = statSync(sessionFilePath).size;
+			if (currentSize < sharedSession.pendingTruncateOffset) {
+				// File shrunk below our truncation target — something unexpected
+				// happened (external truncation/deletion). Fall back to rebuild.
+				debug(`syncSharedSession: file shrunk (${currentSize} < ${sharedSession.pendingTruncateOffset}), falling back to needsRebuild`);
+				sharedSession = { ...sharedSession, pendingTruncateOffset: undefined, needsRebuild: true };
+			} else {
+				truncateSync(sessionFilePath, sharedSession.pendingTruncateOffset);
+				debug(`syncSharedSession: deferred truncation to ${sharedSession.pendingTruncateOffset} bytes (file was ${currentSize})`);
+				sharedSession = { ...sharedSession, pendingTruncateOffset: undefined };
+			}
 		} catch (truncErr) {
 			debug(`syncSharedSession: deferred truncation failed (${truncErr}), falling back to needsRebuild`);
 			sharedSession = { ...sharedSession, pendingTruncateOffset: undefined, needsRebuild: true };

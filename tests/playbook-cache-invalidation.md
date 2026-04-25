@@ -169,8 +169,8 @@ REBUILD as a fallback if `--resume` fails.
 
 | Variant | Turn 5 cacheRead | Turn 5 cacheWrite | Effect |
 |---------|------------------|-------------------|--------|
-| `needsRebuild=true` (no fix) | 26,689 (tools-only) | 84,346 | Full rebuild |
-| Byte-offset truncation | *(not yet tested)* | | |
+| `needsRebuild=true` (no fix) | 26,689 (tools-only) | 84,346 | Full rebuild, UUID rotated |
+| Byte-offset truncation + cursor advance | stable (REUSE) | small | No rebuild, same session UUID |
 
 ---
 
@@ -274,3 +274,4 @@ grep 'syncResult:\|abort.*needsRebuild\|preQueryFileSize\|truncat' \
 
 - `tests/int-cache.sh` — automated cache efficiency test (steady-state, no git changes)
 - Commit `eae401b` — static system prompt + settingSources: []
+- Commit `68db18f` — abort truncation + cursor advance

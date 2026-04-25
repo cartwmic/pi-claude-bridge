@@ -311,6 +311,9 @@ interface SessionState {
 	// Byte offset of the CC session file before the current query started.
 	// Used to truncate stray records written by the CC CLI on abort.
 	preQueryFileSize?: number;
+	// Set after abort: truncate the CC session file to this byte offset on
+	// the NEXT sync (not immediately, to avoid racing with the dying CLI).
+	pendingTruncateOffset?: number;
 }
 
 let sharedSession: SessionState | null = null;
@@ -510,6 +513,21 @@ function syncSharedSession(
 	modelId?: string,
 ): SyncResult {
 	const priorMessages = messages.slice(0, -1); // everything before the new user prompt
+
+	// Deferred truncation: on the previous turn's abort, we recorded the file
+	// offset to truncate to but didn't truncate immediately (the dying CC CLI
+	// process races with us). By now the process has exited, so truncate safely.
+	if (sharedSession?.pendingTruncateOffset != null && sharedSession.sessionId) {
+		try {
+			const sessionFilePath = getSessionPath(sharedSession.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+			truncateSync(sessionFilePath, sharedSession.pendingTruncateOffset);
+			debug(`syncSharedSession: deferred truncation to ${sharedSession.pendingTruncateOffset} bytes`);
+			sharedSession = { ...sharedSession, pendingTruncateOffset: undefined };
+		} catch (truncErr) {
+			debug(`syncSharedSession: deferred truncation failed (${truncErr}), falling back to needsRebuild`);
+			sharedSession = { ...sharedSession, pendingTruncateOffset: undefined, needsRebuild: true };
+		}
+	}
 
 	// REUSE path
 	if (sharedSession && !sharedSession.needsRebuild) {
@@ -1330,38 +1348,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				// Try to truncate the CC session file back to its pre-query state.
-				// This removes any stray records the dying CC CLI wrote during cleanup
-				// (e.g. "[Request interrupted by user]" + last-prompt), restoring the
-				// file to the end of the last completed turn. This is CC-agnostic —
-				// we don't parse or pattern-match CC's output, just revert the file.
-				// On success, the next turn can REUSE the session (cache preserved).
-				// On failure, fall back to needsRebuild (existing behavior).
-				let truncated = false;
-				if (sharedSession?.preQueryFileSize != null && sharedSession.sessionId) {
-					try {
-						const sessionFilePath = getSessionPath(sharedSession.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
-						truncateSync(sessionFilePath, sharedSession.preQueryFileSize);
-						truncated = true;
-						debug(`provider: abort — truncated session file to ${sharedSession.preQueryFileSize} bytes, allowing REUSE`);
-					} catch (truncErr) {
-						debug(`provider: abort — truncate failed (${truncErr}), falling back to needsRebuild`);
-					}
-				}
-				if (truncated && sharedSession) {
-					// Advance the cursor to include this turn's messages. Pi will
-					// add the partial assistant response after we return, so the
-					// next syncSharedSession sees missed=[trailing assistant] → REUSE.
-					// The CC session file was truncated to before this turn, so the
-					// aborted turn's content won't be in the API request — which is
-					// correct, since the user aborted it.
-					sharedSession = { ...sharedSession, cursor: context.messages.length };
-					debug(`provider: abort — advanced cursor to ${context.messages.length}`);
-				} else if (!truncated && sharedSession) {
+				// Defer truncation to the next syncSharedSession call. We can't
+				// truncate now because the dying CC CLI process may still be
+				// writing its cleanup records (race condition). By the next sync,
+				// the process has exited and the file is stable.
+				if (sharedSession?.preQueryFileSize != null) {
+					sharedSession = {
+						...sharedSession,
+						cursor: context.messages.length,
+						pendingTruncateOffset: sharedSession.preQueryFileSize,
+					};
+					debug(`provider: abort — deferred truncation to ${sharedSession.preQueryFileSize} bytes, cursor=${context.messages.length}`);
+				} else if (sharedSession) {
 					sharedSession = { ...sharedSession, needsRebuild: true };
 				}
 				ctx().deferredUserMessages = [];
-				debug(`provider: abort detected, truncated=${truncated}, needsRebuild=${sharedSession?.needsRebuild ?? false}`);
+				debug(`provider: abort detected, pendingTruncate=${sharedSession?.pendingTruncateOffset ?? 'none'}, needsRebuild=${sharedSession?.needsRebuild ?? false}`);
 				if (ctx().turnOutput) {
 					ctx().turnOutput.stopReason = "aborted";
 					ctx().turnOutput.errorMessage = "Operation aborted";
@@ -1424,20 +1426,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		.catch((error) => {
 			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
 			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
-				// Same truncation logic as the normal abort path above.
-				let truncated = false;
-				if (sharedSession.preQueryFileSize != null && sharedSession.sessionId) {
-					try {
-						const sessionFilePath = getSessionPath(sharedSession.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
-						truncateSync(sessionFilePath, sharedSession.preQueryFileSize);
-						truncated = true;
-						debug(`provider: error+abort — truncated session file to ${sharedSession.preQueryFileSize} bytes`);
-					} catch (truncErr) {
-						debug(`provider: error+abort — truncate failed (${truncErr}), falling back to needsRebuild`);
-					}
-				}
-				if (truncated) {
-					sharedSession = { ...sharedSession, cursor: context.messages.length };
+				// Same deferred truncation as the normal abort path.
+				if (sharedSession.preQueryFileSize != null) {
+					sharedSession = {
+						...sharedSession,
+						cursor: context.messages.length,
+						pendingTruncateOffset: sharedSession.preQueryFileSize,
+					};
+					debug(`provider: error+abort — deferred truncation to ${sharedSession.preQueryFileSize} bytes`);
 				} else {
 					sharedSession = { ...sharedSession, needsRebuild: true };
 				}

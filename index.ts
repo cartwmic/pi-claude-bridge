@@ -524,7 +524,9 @@ function syncSharedSession(
 			if (currentSize < sharedSession.pendingTruncateOffset) {
 				// File shrunk below our truncation target — something unexpected
 				// happened (external truncation/deletion). Fall back to rebuild.
-				debug(`syncSharedSession: file shrunk (${currentSize} < ${sharedSession.pendingTruncateOffset}), falling back to needsRebuild`);
+				const msg = `[claude-bridge] WARNING: session file shrunk unexpectedly (${currentSize} < ${sharedSession.pendingTruncateOffset}), falling back to rebuild`;
+				console.warn(msg);
+				debug(`syncSharedSession: ${msg}`);
 				sharedSession = { ...sharedSession, pendingTruncateOffset: undefined, needsRebuild: true };
 			} else {
 				truncateSync(sessionFilePath, sharedSession.pendingTruncateOffset);

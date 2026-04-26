@@ -122,7 +122,7 @@ scn_wait_for() {
 scn_cache_profile() {
 	# Print the (creation, read) tuple per usage line in the bridge log.
 	# Last usage entry per turn is the "final" usage (post-stream completion).
-	grep -E "^\[.*\] usage:" "$BRIDGE_LOG" | awk '{
+	grep -E "\"msg\":\"usage:" "$BRIDGE_LOG" | awk '{
 		for (i = 1; i <= NF; i++) {
 			if ($i ~ /^cacheRead=/) { gsub(/^cacheRead=/, "", $i); read = $i }
 			if ($i ~ /^cacheWrite=/) { gsub(/^cacheWrite=/, "", $i); write = $i }

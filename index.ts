@@ -35,7 +35,9 @@ import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthro
 import { z } from "zod";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
+import pino from "pino";
+import { createStream } from "rotating-file-stream";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { pascalCase } from "change-case";
@@ -86,27 +88,54 @@ const newAssistantMessageEventStream: () => AssistantMessageEventStream =
 		: () => new _piAi.AssistantMessageEventStream();
 
 // ---------------------------------------------------------------------------
-// Debug logging
+// Logging (pino + pino-roll)
 // ---------------------------------------------------------------------------
-// CLAUDE_BRIDGE_DEBUG=1 enables debug log to ~/.pi/agent/claude-bridge.log
+// On by default. Disable with CLAUDE_BRIDGE_DEBUG=0.
+// Log path: ~/.pi/agent/claude-bridge.log (override CLAUDE_BRIDGE_DEBUG_PATH).
+// Size-based rotation via pino-roll: 10 MB per file, keep 2 generations
+// (override CLAUDE_BRIDGE_DEBUG_MAX_BYTES for size).
+// Output is JSON-per-line; each record carries `level`, `time` (ISO),
+// `msg`, plus any structured fields the call site attached.
 
-const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
+const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG !== "0";
 const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), ".pi", "agent", "claude-bridge.log");
+const DEBUG_MAX_BYTES = Number(process.env.CLAUDE_BRIDGE_DEBUG_MAX_BYTES) || 10 * 1024 * 1024;
 
 if (DEBUG) {
 	try { mkdirSync(dirname(DEBUG_LOG_PATH), { recursive: true }); } catch { /* ignore */ }
 }
 
-function debug(...args: unknown[]) {
-	if (!DEBUG) return;
-	const ts = new Date().toISOString();
-	const fmt = (a: unknown): string => {
-		if (typeof a === "string") return a;
-		if (a instanceof Error) return `${a.name}: ${a.message}${a.stack ? "\n" + a.stack : ""}`;
-		try { return JSON.stringify(a); } catch { return String(a); }
-	};
-	appendFileSync(DEBUG_LOG_PATH, `[${ts}] ${args.map(fmt).join(" ")}\n`);
-}
+// rotating-file-stream maintains the live file at DEBUG_LOG_PATH and moves
+// rotated content to numbered backups (DEBUG_LOG_PATH.1, .2). Total disk
+// bounded at ~3× DEBUG_MAX_BYTES (current + 2 backups).
+const logStream = DEBUG
+	? createStream(DEBUG_LOG_PATH, {
+			size: `${DEBUG_MAX_BYTES}B`,
+			maxFiles: 2,
+		})
+	: undefined;
+
+const logger = DEBUG && logStream
+	? pino(
+			{ level: "debug", timestamp: pino.stdTimeFunctions.isoTime, base: undefined },
+			logStream,
+		)
+	: pino({ level: "silent" });
+
+// Back-compat shim: existing call sites use `debug(msg)`. Keep it as the
+// debug-level entrypoint; new code can call log.info/warn/error directly.
+const log = {
+	debug: (objOrMsg: unknown, msg?: string) =>
+		typeof objOrMsg === "string" ? logger.debug(objOrMsg) : logger.debug(objOrMsg as object, msg),
+	info: (objOrMsg: unknown, msg?: string) =>
+		typeof objOrMsg === "string" ? logger.info(objOrMsg) : logger.info(objOrMsg as object, msg),
+	warn: (objOrMsg: unknown, msg?: string) =>
+		typeof objOrMsg === "string" ? logger.warn(objOrMsg) : logger.warn(objOrMsg as object, msg),
+	error: (objOrMsg: unknown, msg?: string) =>
+		typeof objOrMsg === "string" ? logger.error(objOrMsg) : logger.error(objOrMsg as object, msg),
+};
+
+function debug(msg: string) { log.debug(msg); }
 
 // ---------------------------------------------------------------------------
 // Models — preserve legacy buildModels with safe fallback for diamond deps.
@@ -122,6 +151,16 @@ const MODELS = buildModels(ANTHROPIC_MODELS as any[]);
 
 let piApiRef: ExtensionAPI | null = null;
 let piUI: ExtensionUIContext | null = null;
+// Latest pi extension context (captured on session_start). Used to read the
+// current pi sessionId for log binding.
+let piExtCtx: { sessionManager: { getSessionId(): string } } | null = null;
+
+function getPiSessionId(): string | null {
+	try {
+		const id = piExtCtx?.sessionManager.getSessionId();
+		return id ? id.slice(0, 8) : null;
+	} catch { return null; }
+}
 
 /**
  * In-memory session cache. The CC session_id is a hint for prompt cache
@@ -193,6 +232,9 @@ type QueryFrame = {
 	customToolNameToPi: Map<string, string>;
 	model: Model<any>;
 	cwd: string;
+	// Per-frame logger pre-bound with { piSessionId, model, cwd }. Re-bound to
+	// add { ccSessionId } once the SDK reports it via system:init.
+	log: pino.Logger;
 
 	// Tool-handler queue: the SDK invokes our MCP handlers in the same order it
 	// emitted tool_use blocks (toolUseId not exposed to handlers). We push ids
@@ -304,18 +346,18 @@ function buildMcpServers(tools: Tool[], frame: QueryFrame) {
 			// FIFO match: SDK calls handlers in the same order it emitted tool_use blocks.
 			const toolUseId = frame.toolUseIdQueue.shift();
 			if (!toolUseId) {
-				debug(`mcp handler: ${tool.name} — NO toolUseId in queue (BUG); returning empty`);
+				frame.log.error({ tool: tool.name }, `mcp handler: ${tool.name} — NO toolUseId in queue (BUG); returning empty`);
 				return { content: [{ type: "text", text: "internal error: no tool_use_id" }] };
 			}
 			// If pi already delivered the result (race: result arrived before handler ran), return immediately.
 			const already = frame.pendingResults.get(toolUseId);
 			if (already) {
 				frame.pendingResults.delete(toolUseId);
-				debug(`mcp handler: ${tool.name} [${toolUseId}] — early result, returning`);
+				frame.log.debug(`mcp handler: ${tool.name} [${toolUseId}] — early result, returning`);
 				return already;
 			}
 			// Otherwise block until pi delivers via streamSimple() tool-result delivery path.
-			debug(`mcp handler: ${tool.name} [${toolUseId}] — awaiting pi`);
+			frame.log.debug(`mcp handler: ${tool.name} [${toolUseId}] — awaiting pi`);
 			return new Promise((resolve) => {
 				frame.pendingResolvers.set(toolUseId, resolve);
 			});
@@ -355,14 +397,20 @@ function mapToolArgs(toolName: string, args: Record<string, unknown> | undefined
 // Usage — surface SDK token counts (incl. cache_read / cache_creation) to pi.
 // ---------------------------------------------------------------------------
 
-function updateUsage(output: AssistantMessage, usage: Record<string, number | undefined>, model: Model<any>) {
+function updateUsage(frame: QueryFrame, usage: Record<string, number | undefined>) {
+	const output = frame.turnOutput;
+	if (!output) return;
+	const model = frame.model;
 	if (usage.input_tokens != null) output.usage.input = usage.input_tokens;
 	if (usage.output_tokens != null) output.usage.output = usage.output_tokens;
 	if (usage.cache_read_input_tokens != null) output.usage.cacheRead = usage.cache_read_input_tokens;
 	if (usage.cache_creation_input_tokens != null) output.usage.cacheWrite = usage.cache_creation_input_tokens;
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	calculateCost(model, output.usage);
-	debug(`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} model=${model.id}`);
+	frame.log.debug(
+		{ in: output.usage.input, out: output.usage.output, cacheRead: output.usage.cacheRead, cacheWrite: output.usage.cacheWrite },
+		`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} model=${model.id}`,
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +484,7 @@ function processStreamEvent(frame: QueryFrame, message: SDKMessage) {
 	if (!event) return;
 
 	if (event.type === "message_start") {
-		if (event.message?.usage) updateUsage(frame.turnOutput, event.message.usage, frame.model);
+		if (event.message?.usage) updateUsage(frame, event.message.usage);
 		return;
 	}
 
@@ -507,7 +555,7 @@ function processStreamEvent(frame: QueryFrame, message: SDKMessage) {
 
 	if (event.type === "message_delta") {
 		if (event.delta?.stop_reason) frame.turnOutput.stopReason = mapStopReason(event.delta.stop_reason);
-		if (event.usage) updateUsage(frame.turnOutput, event.usage, frame.model);
+		if (event.usage) updateUsage(frame, event.usage);
 		return;
 	}
 
@@ -543,22 +591,34 @@ async function consumeQuery(frame: QueryFrame): Promise<{ sessionId?: string }> 
 						// interrupted point.
 						cachedSessionId = sessionId;
 						cachedSessionCwd = frame.cwd;
-						debug(`consumeQuery: captured session=${sessionId.slice(0, 8)} mid-flight`);
+						// Re-bind frame logger to include the CC session_id so
+						// subsequent logs in this frame are filterable by it.
+						frame.log = frame.log.child({ ccSessionId: sessionId.slice(0, 8) });
+						frame.log.debug(`consumeQuery: captured session=${sessionId.slice(0, 8)} mid-flight`);
 					}
 					break;
 				case "result":
 					// Final summary; rely on `assistant` + stream_event to populate content.
 					break;
-				case "assistant":
+				case "assistant": {
+					// stream_event covers content; the SDK's reconstructed assistant
+					// message carries the consolidated final usage (incl. cache_read /
+					// cache_creation), which the partial message_delta sometimes omits.
+					// Without this, pi's persisted AssistantMessage.usage shows
+					// cacheRead/cacheWrite=0 even when caching was active.
+					const u = (message as any).message?.usage;
+					if (u && frame.turnOutput) updateUsage(frame, u);
+					break;
+				}
 				case "user":
-					// stream_event already covers content; ignore the SDK's reconstructed forms.
+					// stream_event already covers content; ignore.
 					break;
 				default:
 					break;
 			}
 		}
 	} catch (err) {
-		debug("consumeQuery: error", err);
+		frame.log.error({ err: err instanceof Error ? err.message : String(err) }, "consumeQuery: error");
 		if (frame.turnOutput) {
 			frame.turnOutput.stopReason = frame.wasAborted ? "aborted" : "error";
 			frame.turnOutput.errorMessage = err instanceof Error ? err.message : String(err);
@@ -715,7 +775,7 @@ function streamClaudeAgentSdk(
 	const active = top();
 	if (active && lastMsg?.role === "toolResult") {
 		const trailing = extractTrailingToolResults(context.messages);
-		debug(`streamSimple: tool-result delivery, ${trailing.length} results, ${active.pendingResolvers.size} resolvers waiting`);
+		active.log.debug({ results: trailing.length, resolvers: active.pendingResolvers.size }, `streamSimple: tool-result delivery, ${trailing.length} results, ${active.pendingResolvers.size} resolvers waiting`);
 		active.currentPiStream = stream;
 		resetTurnState(active);
 		for (const r of trailing) {
@@ -734,7 +794,7 @@ function streamClaudeAgentSdk(
 
 	// ---- Case 2: orphaned tool result (active query gone, e.g. post-abort) ----
 	if (lastMsg?.role === "toolResult") {
-		debug(`streamSimple: orphaned tool result, no active query — emitting end_turn`);
+		logger.child({ piSessionId: getPiSessionId() }).warn(`streamSimple: orphaned tool result, no active query — emitting end_turn`);
 		queueMicrotask(() => {
 			const empty = newTurnOutput(model);
 			stream.push({ type: "start", partial: empty });
@@ -749,7 +809,7 @@ function streamClaudeAgentSdk(
 	// interrupt and start fresh. This handles steering, rapid retype, and aborts that
 	// arrived without a clean shutdown.
 	if (active) {
-		debug(`streamSimple: superseding active frame (top of stack), interrupting`);
+		active.log.info(`streamSimple: superseding active frame (top of stack), interrupting`);
 		active.wasAborted = true;
 		void active.sdkQuery.interrupt().catch(() => {});
 		try { active.sdkQuery.close?.(); } catch { /* ignore */ }
@@ -773,7 +833,7 @@ function startFreshQuery(
 	const promptText = extractUserPrompt(context.messages) ?? "";
 
 	if (!promptText && !promptBlocks) {
-		debug(`streamSimple: empty prompt; last role=${context.messages[context.messages.length - 1]?.role}`);
+		logger.child({ piSessionId: getPiSessionId(), model: model.id }).warn(`streamSimple: empty prompt; last role=${context.messages[context.messages.length - 1]?.role}`);
 		queueMicrotask(() => {
 			const empty = newTurnOutput(model);
 			stream.push({ type: "start", partial: empty });
@@ -803,7 +863,10 @@ function startFreshQuery(
 	const newHashes = computeMessageHashes(context.messages);
 	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
 	if (diverged) {
-		debug(`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionId?.slice(0, 8) ?? "none"}). prior_len=${lastSentMessageHashes?.length ?? 0} new_len=${newHashes.length}`);
+		logger.child({ piSessionId: getPiSessionId(), model: model.id }).info(
+			{ priorLen: lastSentMessageHashes?.length ?? 0, newLen: newHashes.length, droppedSession: cachedSessionId?.slice(0, 8) ?? null },
+			`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionId?.slice(0, 8) ?? "none"}). prior_len=${lastSentMessageHashes?.length ?? 0} new_len=${newHashes.length}`,
+		);
 		cachedSessionId = null;
 		cachedSessionCwd = null;
 	}
@@ -850,6 +913,7 @@ function startFreshQuery(
 		customToolNameToPi,
 		model,
 		cwd,
+		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd }),
 		toolUseIdQueue: [],
 		pendingResolvers: new Map(),
 		pendingResults: new Map(),
@@ -872,8 +936,11 @@ function startFreshQuery(
 		...(useResume && cachedSessionId ? { resume: cachedSessionId } : {}),
 	};
 
-	debug(`streamSimple: fresh query model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} ` +
-	      `resume=${useResume ? cachedSessionId?.slice(0, 8) : "no"} effort=${effort ?? "default"} prompt="${promptText.slice(0, 60)}"`);
+	frame.log.debug(
+		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionId?.slice(0, 8) : null, effort: effort ?? "default" },
+		`streamSimple: fresh query model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} ` +
+		`resume=${useResume ? cachedSessionId?.slice(0, 8) : "no"} effort=${effort ?? "default"} prompt="${promptText.slice(0, 60)}"`,
+	);
 
 	const sdkQuery = query({ prompt, options: queryOptions });
 	frame.sdkQuery = sdkQuery;
@@ -881,7 +948,7 @@ function startFreshQuery(
 
 	// Wire abort
 	const onAbort = () => {
-		debug(`onAbort: model=${model.id}, pendingResolvers=${frame.pendingResolvers.size}`);
+		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort: model=${model.id}, pendingResolvers=${frame.pendingResolvers.size}`);
 		frame.wasAborted = true;
 		// Resolve any waiting MCP handlers so the SDK generator can drain.
 		for (const resolver of frame.pendingResolvers.values()) {
@@ -910,7 +977,7 @@ function startFreshQuery(
 		if (sessionId) {
 			cachedSessionId = sessionId;
 			cachedSessionCwd = cwd;
-			debug(`streamSimple: caching session=${sessionId.slice(0, 8)} cwd=${cwd}${frame.wasAborted ? " (aborted)" : ""}`);
+			frame.log.debug({ aborted: frame.wasAborted }, `streamSimple: caching session=${sessionId.slice(0, 8)} cwd=${cwd}${frame.wasAborted ? " (aborted)" : ""}`);
 		}
 		// Finalize the most recent stream
 		if (frame.currentPiStream && frame.turnOutput) {
@@ -932,7 +999,7 @@ function startFreshQuery(
 		// Pop frame off stack (only if it's still the top — supersession may have popped it already)
 		if (top() === frame) stack.pop();
 	}).catch((err) => {
-		debug("streamSimple: consumeQuery promise error", err);
+		frame.log.error({ err: err instanceof Error ? err.message : String(err) }, "streamSimple: consumeQuery promise error");
 		if (top() === frame) stack.pop();
 	});
 }
@@ -1033,7 +1100,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Reset session cache on pi lifecycle events that diverge history.
 	const clearSession = (event: string) => {
-		debug(`${event}: dropping cached session ${cachedSessionId?.slice(0, 8) ?? "none"}`);
+		log.info({ event, droppedSession: cachedSessionId?.slice(0, 8) ?? null }, `${event}: dropping cached session ${cachedSessionId?.slice(0, 8) ?? "none"}`);
 		cachedSessionId = null;
 		cachedSessionCwd = null;
 		lastSentMessageHashes = null;
@@ -1046,6 +1113,7 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
+		piExtCtx = ctx as any;
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
@@ -1067,9 +1135,9 @@ export default function (pi: ExtensionAPI) {
 			models: MODELS as any,
 			streamSimple: streamClaudeAgentSdk as any,
 		});
-		debug(`provider: registered (models=${MODELS.length})`);
+		log.info({ models: MODELS.length }, `provider: registered (models=${MODELS.length})`);
 	} else {
-		debug(`provider: skipping re-registration (already active)`);
+		log.info(`provider: skipping re-registration (already active)`);
 	}
 
 	// AskClaude tool — keep behavior, much smaller surface than legacy.

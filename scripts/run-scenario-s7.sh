@@ -33,7 +33,7 @@ while (( SECONDS < deadline )); do
 		break
 	fi
 	# Wait for the SDK to have started streaming (first usage line means content is flowing).
-	if grep -qE "^\[.*\] usage: " "$BRIDGE_LOG" 2>/dev/null; then
+	if grep -qE "\"msg\":\"usage:" "$BRIDGE_LOG" 2>/dev/null; then
 		sleep 2  # let some content actually appear
 		tmux send-keys -t "$SESSION:0" Escape
 		sent_escape=1

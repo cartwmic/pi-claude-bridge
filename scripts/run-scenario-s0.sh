@@ -44,6 +44,19 @@ else
 	scn_fail "session: expected 1, got $unique_sids"
 fi
 
+# Usage-propagation guard: the bridge must call updateUsage with non-zero
+# cacheRead at least once (T2 should hit the cache). This is the value pi
+# stores on the AssistantMessage. If the bridge stops forwarding the SDK's
+# consolidated `assistant.message.usage`, this drops to zero everywhere.
+max_cache_read=$(grep -oE "cacheRead=[0-9]+" "$BRIDGE_LOG" | awk -F= '{print $2}' | sort -n | tail -1)
+max_cache_read=${max_cache_read:-0}
+echo "  max cacheRead seen by bridge: $max_cache_read tokens"
+if (( max_cache_read > 0 )); then
+	scn_pass "usage propagation: bridge surfaced non-zero cacheRead to pi"
+else
+	scn_fail "usage propagation: bridge never saw cacheRead>0 (SDK assistant.usage not captured)"
+fi
+
 # JSONL invariant: bridge must not have touched ~/.claude/sessions/
 # (We can't verify "didn't touch" definitively here, but we can verify
 # that our debug log doesn't mention writing.)

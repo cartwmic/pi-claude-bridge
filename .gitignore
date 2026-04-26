@@ -1,6 +1,7 @@
 node_modules/
 .claude/
 .test-output/
+.agent/
 eli/.DS_Store
 .DS_Store
 eli/

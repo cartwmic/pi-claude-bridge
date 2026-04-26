@@ -21,10 +21,12 @@ scn_wait_for "[0-9]+\.[0-9]+\.[0-9]+" 60 || scn_fail "Turn 2 — version not in 
 
 echo "==== S1 results ===="
 
-# Tool-flow assertion: bridge log should show MCP handler awaiting + tool-result delivery
-if grep -qE "mcp handler:.*awaiting pi" "$BRIDGE_LOG" && \
-   grep -qE "tool-result delivery, [0-9]+ results, [0-9]+ resolvers waiting" "$BRIDGE_LOG"; then
-	scn_pass "tool-handler/result handshake observed in bridge log"
+# Tool-flow assertion: either the "awaiting pi" path OR the "early result" path
+# must have fired. Both are valid (the SDK can call the handler before or after
+# pi delivers, both are handled architecturally).
+if grep -qE "tool-result delivery" "$BRIDGE_LOG" && \
+   grep -qE "mcp handler: read .*(awaiting pi|early result)" "$BRIDGE_LOG"; then
+	scn_pass "tool-handler/result handshake observed (awaiting or early-result path)"
 else
 	scn_fail "tool-handler handshake missing in bridge log"
 fi

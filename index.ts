@@ -740,6 +740,7 @@ function startFreshQuery(
 
 	// Wire abort
 	const onAbort = () => {
+		debug(`onAbort: model=${model.id}, pendingResolvers=${frame.pendingResolvers.size}`);
 		frame.wasAborted = true;
 		// Resolve any waiting MCP handlers so the SDK generator can drain.
 		for (const resolver of frame.pendingResolvers.values()) {

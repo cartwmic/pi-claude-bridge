@@ -133,7 +133,15 @@ scn_cache_profile() {
 
 scn_session_count() {
 	# How many distinct CC session_ids did the bridge cache during this run?
-	grep -oE "caching session=[a-f0-9]+" "$BRIDGE_LOG" | sort -u | wc -l | tr -d ' '
+	grep -oE "caching session=[a-f0-9]+" "$BRIDGE_LOG" 2>/dev/null | sort -u | wc -l | tr -d ' \n' || echo 0
+}
+
+# Helper: count regex matches, sanitizing output to a single integer.
+scn_grep_count() {
+	# scn_grep_count "<regex>" "<file>"
+	local n
+	n=$(grep -cE "$1" "$2" 2>/dev/null | head -1 | tr -d ' \n' || echo 0)
+	echo "${n:-0}"
 }
 
 scn_pass() { echo "  PASS: $1"; }

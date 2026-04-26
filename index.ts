@@ -810,13 +810,22 @@ function streamClaudeAgentSdk(
 	}
 
 	// ---- Case 2: orphaned tool result (active query gone, e.g. post-abort) ----
+	// Pi's tool finished AFTER the user aborted, so the result arrives with
+	// no active frame to deliver it to. We MUST NOT report this as a normal
+	// completion (done/stop) — that would make pi's TUI show a phantom
+	// successful turn. Instead, emit error/aborted so pi treats it as the
+	// abort it actually is.
 	if (lastMsg?.role === "toolResult") {
-		logger.child({ piSessionId: getPiSessionId() }).warn(`streamSimple: orphaned tool result, no active query — emitting end_turn`);
+		const orphanLog = logger.child({ piSessionId: getPiSessionId() });
+		orphanLog.warn(`streamSimple: orphaned tool result, no active query — emitting end_turn`);
 		queueMicrotask(() => {
-			const empty = newTurnOutput(model);
-			stream.push({ type: "start", partial: empty });
-			stream.push({ type: "done", reason: "stop", message: empty });
+			const out = newTurnOutput(model);
+			out.stopReason = "aborted";
+			out.errorMessage = "Operation aborted (tool result arrived after abort)";
+			stream.push({ type: "start", partial: out });
+			stream.push({ type: "error", reason: "aborted", error: out });
 			stream.end();
+			orphanLog.info("pushAbortedError: orphan tool result post-abort");
 		});
 		return stream;
 	}
@@ -968,10 +977,19 @@ function startFreshQuery(
 		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort: model=${model.id}, pendingResolvers=${frame.pendingResolvers.size}`);
 		frame.wasAborted = true;
 		// Resolve any waiting MCP handlers so the SDK generator can drain.
+		// The text is canonical and clearly attributes the stop to the user;
+		// it lands in the SDK's session JSONL as the tool_result content, so
+		// on resume the model reads "interrupted by user" rather than an
+		// ambiguous "Operation aborted" that could read like a tool failure.
+		const abortedText = "[Tool execution interrupted by user before completion]";
+		const drained = frame.pendingResolvers.size;
 		for (const resolver of frame.pendingResolvers.values()) {
-			resolver({ content: [{ type: "text", text: "Operation aborted" }], isError: true });
+			resolver({ content: [{ type: "text", text: abortedText }], isError: true });
 		}
 		frame.pendingResolvers.clear();
+		if (drained > 0) {
+			frame.log.info({ drained, text: abortedText }, `onAbort: resolved ${drained} pending tool handler(s) with 'interrupted by user' text`);
+		}
 		void sdkQuery.interrupt().catch(() => {});
 		try { (sdkQuery as any).close?.(); } catch { /* ignore */ }
 		// IMPORTANT: do NOT drop cachedSessionId here. The SDK's session JSONL
@@ -980,6 +998,26 @@ function startFreshQuery(
 		// session preserves the conversation context — which is required so the
 		// model knows it was interrupted (S7 coherence, S13 enumeration, etc.).
 		// Dropping the id here would force a cold-start with no context.
+
+		// Surface the abort to pi's UI even when we're between SDK turns.
+		// If frame.currentPiStream is null, we just nulled it on message_stop
+		// (turn ended in toolUse) and pi is now blocking on the tool result.
+		// The consumeQuery finalizer can't push to a null stream, so without
+		// this branch pi sees nothing — silent abort. We push the aborted
+		// error directly onto the original `stream` handed to streamSimple
+		// for this turn.
+		if (!frame.currentPiStream) {
+			try {
+				const out = newTurnOutput(model);
+				out.stopReason = "aborted";
+				out.errorMessage = "Operation aborted by user";
+				stream.push({ type: "error", reason: "aborted", error: out });
+				stream.end();
+				frame.log.info({ where: "tool-execution-window" }, "pushAbortedError: pi was awaiting tool result, surfacing aborted to pi stream");
+			} catch (err) {
+				frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "pushAbortedError: stream may already be ended");
+			}
+		}
 	};
 	if (options?.signal) {
 		if (options.signal.aborted) onAbort();

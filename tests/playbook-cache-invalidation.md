@@ -137,11 +137,19 @@ a full CC session rebuild.
    "Remember the code word BLUE-42. Say exactly: READY"
    ```
 
-3. **Start a long turn and abort it**:
+3. **Start a turn that triggers tool use, then abort it**:
    ```
-   "Write a detailed 500-word essay about the history of Unix"
+   "Read the first 5 lines of the file CLAUDE.md and summarize them"
    ```
-   Wait 2–3 seconds for streaming to start, then **press Escape** to abort.
+   Wait for the tool call to execute and for streaming to resume,
+   then **press Escape** to abort while the model is responding.
+
+   > **Why tool use**: A simple text-only abort is easy — the bug that
+   > caused REBUILDs only manifested when the model made tool calls
+   > before the abort. Tool-result delivery advances
+   > `sharedSession.cursor` beyond the original `context.messages.length`
+   > closure. The abort handler must use `Math.max(cursor, context.length)`
+   > to avoid regressing the cursor past those tool results.
 
 4. **Drive 2 post-abort turns**:
    ```
@@ -192,10 +200,19 @@ deterministic, tail-only, and the process has exited by the time the user
 sends their next message. CC CLI is stateless between spawns — the JSONL
 file is the complete state.
 
-**Fix**: Record session file byte offset before each query. On abort (after
-`consumeQuery` resolves = process stdout closed), defer truncation to the
-next turn's `syncSharedSession` (avoids racing with CC CLI's SIGTERM
-cleanup writes). Before truncating, verify the file hasn't shrunk below
+**Fix** (three commits):
+1. Record session file byte offset before each query. On abort, defer
+   truncation to the next `syncSharedSession` (avoids racing with CC
+   CLI's SIGTERM cleanup writes). Before truncating, verify the file
+   hasn't shrunk below the target — if so, fall back to REBUILD.
+2. Move abort state (`pendingTruncateOffset`, cursor) to the synchronous
+   `onAbort()` handler, not the async `.then()` callback. Prevents a
+   fast follow-up turn from racing the callback.
+3. Use `Math.max(sharedSession.cursor, context.messages.length)` for
+   cursor — prevents regressing past tool-delivery updates when the
+   abort closure captures the original (pre-tool) context length.
+
+Before truncating, verify the file hasn't shrunk below
 the truncation target — if it has, fall back to REBUILD. Clear
 `needsRebuild` and allow REUSE. Keep REBUILD as a fallback if `--resume`
 fails.

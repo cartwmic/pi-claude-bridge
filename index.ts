@@ -1353,13 +1353,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// syncSharedSession sees it even if consumeQuery's .then() hasn't
 		// run yet. Without this, a fast follow-up turn races the async
 		// callback and falls through to REBUILD.
+		//
+		// cursor: use Math.max to avoid REGRESSING the cursor. `context`
+		// is captured from the ORIGINAL streamSimple call's closure, but
+		// tool-result deliveries (subsequent streamSimple calls) advance
+		// sharedSession.cursor further. Using context.messages.length
+		// alone would rewind the cursor past those tool results, causing
+		// the next sync's REUSE check to see them as "missed" messages
+		// and fall through to REBUILD.
 		if (sharedSession?.preQueryFileSize != null) {
+			const safeCursor = Math.max(sharedSession.cursor, context.messages.length);
 			sharedSession = {
 				...sharedSession,
-				cursor: context.messages.length,
+				cursor: safeCursor,
 				pendingTruncateOffset: sharedSession.preQueryFileSize,
 			};
-			debug(`onAbort: deferred truncation to ${sharedSession.pendingTruncateOffset} bytes, cursor=${context.messages.length}`);
+			debug(`onAbort: deferred truncation to ${sharedSession.pendingTruncateOffset} bytes, cursor=${safeCursor} (context=${context.messages.length}, prior=${sharedSession.cursor})`);
 		} else if (sharedSession) {
 			sharedSession = { ...sharedSession, needsRebuild: true };
 			debug(`onAbort: no preQueryFileSize, falling back to needsRebuild`);

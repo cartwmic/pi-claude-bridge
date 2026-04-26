@@ -63,6 +63,13 @@ const DISALLOWED_BUILTIN_TOOLS = [
 	"WebFetch", "WebSearch", "TodoRead", "TodoWrite",
 	"EnterPlanMode", "ExitPlanMode", "RemoteTrigger", "SendMessage",
 	"ListMcpResourcesTool", "ReadMcpResourceTool",
+	// Defense-in-depth: also block CC's deferred-tool / skill / UI built-ins
+	// so Claude doesn't even emit tool_use blocks for them. Without these,
+	// the model would still occasionally instinctively reach for ToolSearch
+	// (its training pattern) — which the SDK handles internally and which
+	// would otherwise pollute our FIFO queue. The queue is also defended at
+	// push time (see processStreamEvent), but blocking emission is cleaner.
+	"ToolSearch", "Skill", "AskUserQuestion", "PushNotification",
 ];
 
 // Pi-CC tool arg key renames (pi names vs CC SDK names for built-ins).
@@ -499,7 +506,17 @@ function processStreamEvent(frame: QueryFrame, message: SDKMessage) {
 			frame.currentPiStream.push({ type: "thinking_start", contentIndex: frame.turnBlocks.length - 1, partial: frame.turnOutput });
 		} else if (cb?.type === "tool_use") {
 			frame.turnSawToolCall = true;
-			frame.toolUseIdQueue.push(cb.id);
+			// Only enqueue ids for tools whose handlers we own (mcp__custom-tools__*).
+			// Built-in SDK tools (ToolSearch, Skill, etc.) emit content_block_start
+			// but bypass our MCP handlers entirely. If we enqueued them, the next
+			// call to one of OUR handlers would shift a stale built-in id, causing
+			// every subsequent tool result to lag by one slot. (See bug RCA on
+			// session 019dcb97.)
+			if (typeof cb.name === "string" && cb.name.startsWith(MCP_TOOL_PREFIX)) {
+				frame.toolUseIdQueue.push(cb.id);
+			} else {
+				frame.log.warn({ tool: cb.name, id: cb.id }, `processStreamEvent: built-in tool_use observed (${cb.name}) — skipping queue push to prevent off-by-N`);
+			}
 			frame.turnBlocks.push({
 				type: "toolCall", id: cb.id,
 				name: mapToolName(cb.name, frame.customToolNameToPi),

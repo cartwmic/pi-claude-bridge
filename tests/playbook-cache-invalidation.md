@@ -4,6 +4,12 @@ Manual test scenarios for verifying prompt cache behavior across turns.
 Each scenario describes a procedure and what to measure. Run the same
 scenario before and after a fix to compare (red/green).
 
+> **Every scenario MUST include a conversation coherence check** after
+> scenario-specific validation. Cache metrics alone are insufficient —
+> the model must demonstrate it retains context from earlier turns
+> (typically by recalling a planted code word). A scenario passes only
+> when both cache metrics AND coherence are verified.
+
 ## Setup
 
 ### Prerequisites
@@ -65,7 +71,8 @@ file edits) between turns.
    ```
    "What was the code word I told you to remember?"
    ```
-   The model should respond with FALCON-7. If it can't recall, the
+   **PASS**: Model responds with FALCON-7.
+   **FAIL**: Model can't recall, hedges, or says it has no record — the
    conversation context was broken despite what cache metrics show.
 
 6. **Exit Pi and clean up**:
@@ -75,7 +82,7 @@ file edits) between turns.
    rm -f cache-test-temp.txt
    ```
 
-6. **Analyze** — run the analysis script below.
+7. **Analyze** — run the analysis script below.
 
 ### What to measure
 
@@ -87,9 +94,10 @@ file edits) between turns.
 | 5 | Recovery: does cache warm back up? |
 | **6** | **Coherence: does the model recall FALCON-7?** |
 
-A cache-stable implementation shows no drop at turn 4 and the model
-recalls the code word at turn 6. A broken one shows
-cacheRead dropping significantly and cacheWrite spiking.
+**Scenario passes when**: no cache drop at turn 4 AND the model recalls
+FALCON-7 at turn 6. A broken implementation shows cacheRead dropping
+significantly, cacheWrite spiking, or the model failing the coherence
+check (or both).
 
 ### Bug context
 
@@ -146,7 +154,8 @@ a full CC session rebuild.
    ```
    "What was the code word I told you to remember?"
    ```
-   The model should respond with BLUE-42. If it can't recall, the
+   **PASS**: Model responds with BLUE-42.
+   **FAIL**: Model can't recall, hedges, or says it has no record — the
    conversation context was broken despite what cache metrics show.
    (This is the check that caught the original race condition — cache
    metrics showed REUSE but immediate truncation raced with CC CLI
@@ -165,10 +174,11 @@ a full CC session rebuild.
 | 6 | Recovery: does cache warm back up? |
 | **7** | **Coherence: does the model recall BLUE-42?** |
 
-A cache-stable implementation shows no drop at turn 5 and the model
-recalls the code word at turn 7. A broken one shows
-cacheRead dropping to ~26k (tools-only prefix) and cacheWrite spiking to
-the full conversation size (session REBUILD).
+**Scenario passes when**: no cache drop at turn 5 AND the model recalls
+BLUE-42 at turn 7. A broken implementation shows cacheRead dropping to
+~26k (tools-only prefix), cacheWrite spiking to the full conversation
+size (session REBUILD), or the model failing the coherence check (or
+any combination).
 
 ### Bug context
 

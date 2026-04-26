@@ -2,8 +2,11 @@
 // Extracted so they can be tested without pulling in the full extension runtime.
 
 import type { Message as PiMessage } from "@mariozechner/pi-ai";
-import type { Message as SessionMessage } from "cc-session-io";
+import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { pascalCase } from "change-case";
+
+// Use Anthropic SDK's MessageParam directly — same shape as cc-session-io's Message.
+type SessionMessage = MessageParam;
 
 export const PROVIDER_ID = "claude-bridge";
 

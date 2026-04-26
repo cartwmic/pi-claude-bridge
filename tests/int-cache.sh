@@ -105,63 +105,54 @@ if [ "$TURN" -lt $MIN_EXPECTED_TURNS ]; then
 fi
 
 # --- Assert session resume (no spurious rebuilds) ---
-# With the off-by-one cursor bug, every follow-up turn triggered a rebuild
-# instead of a resume, because pi appends the final assistant message after
-# streamSimple returns, making the cursor lag by 1.
-#
-# Parses the "syncResult: path=<reuse|rebuild|clean-start> sessionId=<uuid>"
-# marker emitted by syncSharedSession at the end of each call. Gives us both
-# the distribution and sessionId stability in one pass.
+# Post-refactor architecture: bridge holds in-memory cachedSessionId only;
+# never reads or writes ~/.claude/sessions/. The bridge logs:
+#   - "streamSimple: fresh query ... resume=<id|no>" per turn
+#   - "streamSimple: caching session=<sid>" when a session_id is captured
+# Same-provider flow should: cold-start once (turn 1, resume=no), then resume
+# the same id for all subsequent turns. Cache hit-rate (above) is the ground
+# truth; this section just sanity-checks the in-memory id stays stable.
 
 echo ""
-echo "Session sync:"
+echo "Session resume:"
 
-CLEAN_START_COUNT=0
-REUSE_COUNT=0
-REBUILD_COUNT=0
+COLD_COUNT=0
+RESUME_COUNT=0
 declare -a SESSION_IDS=()
 
 while IFS= read -r line; do
-  path=$(echo "$line" | sed -nE 's/.*syncResult: path=([a-z-]+).*/\1/p')
-  sid=$(echo "$line" | sed -nE 's/.*sessionId=([a-f0-9-]+).*/\1/p')
-  case "$path" in
-    clean-start) CLEAN_START_COUNT=$((CLEAN_START_COUNT + 1));;
-    reuse)       REUSE_COUNT=$((REUSE_COUNT + 1));;
-    rebuild)     REBUILD_COUNT=$((REBUILD_COUNT + 1));;
-  esac
+  if echo "$line" | grep -qE 'streamSimple: fresh query.*resume=no'; then
+    COLD_COUNT=$((COLD_COUNT + 1))
+  elif echo "$line" | grep -qE 'streamSimple: fresh query.*resume=[a-f0-9]'; then
+    RESUME_COUNT=$((RESUME_COUNT + 1))
+  fi
+  sid=$(echo "$line" | sed -nE 's/.*caching session=([a-f0-9-]+).*/\1/p')
   if [ -n "$sid" ]; then
     SESSION_IDS+=("$sid")
   fi
-done < <(grep "syncResult:" "$CLAUDE_BRIDGE_DEBUG_PATH" 2>/dev/null || true)
+done < <(grep -E "streamSimple:" "$CLAUDE_BRIDGE_DEBUG_PATH" 2>/dev/null || true)
 
-UNIQUE_SIDS=$(printf "%s\n" "${SESSION_IDS[@]}" | sort -u | grep -c . || true)
+UNIQUE_SIDS=$(printf "%s\n" "${SESSION_IDS[@]}" 2>/dev/null | sort -u | grep -c . || echo 0)
 UNIQUE_SIDS=${UNIQUE_SIDS:-0}
 
-echo "  clean-start: $CLEAN_START_COUNT"
-echo "  reuse:       $REUSE_COUNT"
-echo "  rebuild:     $REBUILD_COUNT"
-echo "  unique session ids: $UNIQUE_SIDS"
+echo "  cold-start (resume=no): $COLD_COUNT"
+echo "  warm-resume (resume=<id>): $RESUME_COUNT"
+echo "  unique session ids captured: $UNIQUE_SIDS"
 
-if [ "$CLEAN_START_COUNT" -ne $EXPECTED_CASE1 ]; then
-  echo "  FAIL: Expected exactly $EXPECTED_CASE1 clean-start, got $CLEAN_START_COUNT"
+# Expect exactly 1 cold-start (the first turn).
+if [ "$COLD_COUNT" -ne $EXPECTED_CASE1 ]; then
+  echo "  FAIL: Expected exactly $EXPECTED_CASE1 cold-start, got $COLD_COUNT"
   FAIL=$((FAIL + 1))
 fi
 
-if [ "$REBUILD_COUNT" -gt 0 ]; then
-  echo "  FAIL: $REBUILD_COUNT spurious rebuilds (expected 0 for consecutive same-provider turns)"
-  echo "    Likely cause: off-by-one cursor — trailing assistant message misidentified as missed"
+# Expect at least N warm-resumes for follow-up turns.
+if [ "$RESUME_COUNT" -lt $MIN_CASE3_RESUMES ]; then
+  echo "  FAIL: Expected at least $MIN_CASE3_RESUMES warm-resumes, got $RESUME_COUNT"
   FAIL=$((FAIL + 1))
 fi
 
-if [ "$REUSE_COUNT" -lt $MIN_CASE3_RESUMES ]; then
-  echo "  FAIL: Expected at least $MIN_CASE3_RESUMES reuses for turns 2+, got $REUSE_COUNT"
-  FAIL=$((FAIL + 1))
-fi
-
-# Same-provider flow should never produce more than 1 distinct sessionId:
-# one created on first turn (or none for clean-start), reused thereafter.
-# A regression that churns UUIDs per turn would surface here even if the
-# distribution checks above still passed.
+# Same-provider flow: at most 1 distinct in-memory session id (first turn cold-
+# starts and writes one id; turns 2+ resume into that id without churn).
 if [ "$UNIQUE_SIDS" -gt 1 ]; then
   echo "  FAIL: expected at most 1 distinct sessionId in same-provider flow, got $UNIQUE_SIDS"
   FAIL=$((FAIL + 1))

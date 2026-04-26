@@ -65,45 +65,17 @@ describe("tool-message integration", () => {
 		assert.match(text.toLowerCase(), /slowtool completed/);
 	});
 
-	it("steer during tool execution still delivers tool result", { timeout: 15_000 }, async () => {
-		// Issue #3: steer injects a user message into the context during an active
-		// tool call. extractAllToolResults stops at the user message and returns 0
-		// results, leaving the pending handler stuck.
-		const collector = collectText();
-		await send({
-			type: "prompt",
-			message: "Call SlowTool with seconds=2. Then repeat exactly what it returned.",
-		});
-		await waitForEvent("tool_execution_start");
-		await send({
-			type: "prompt",
-			message: "This is a steer message during tool execution.",
-			streamingBehavior: "steer",
-		});
-		await waitForEvent("agent_end");
-		const text = collector.stop();
-		assert.match(text.toLowerCase(), /slowtool completed/);
-	});
-
-	it("parallel tool calls with steer delivers all results", { timeout: 30_000 }, async () => {
-		const collector = collectText();
-		await send({
-			type: "prompt",
-			message: "Call SlowTool three times in parallel: seconds=3, seconds=4, seconds=5. Then list all three results.",
-		});
-		// Wait for at least one tool to start, then inject steer
-		await waitForEvent("tool_execution_start");
-		await send({
-			type: "prompt",
-			message: "This is a steer during parallel tool execution.",
-			streamingBehavior: "steer",
-		});
-		await waitForEvent("agent_end");
-		const text = collector.stop();
-		// All three tools should have their results in the response
-		const matches = (text.match(/slowtool completed/gi) || []).length;
-		assert.ok(matches >= 3, `Expected 3 SlowTool results, found ${matches}: ${text.slice(0, 300)}`);
-	});
+	// NOTE: The "steer during tool execution still delivers tool result" tests
+	// (single + parallel) were intentionally removed in the SDK-native
+	// refactor. Old behavior (deferred-message replay: let the tool finish,
+	// then send the steer as a continuation query) was explicitly deleted per
+	// the refactor charter ("no deferred-message replay" in SCENARIOS.md).
+	// New behavior: a steer during tool execution supersedes — the active
+	// query is interrupted, the in-flight tool result is orphaned, and the
+	// steer becomes the next turn's fresh prompt. Matches S5 (mid-stream
+	// steering) and S13 (rapid abort+retype). See `streamSimple` Case 3 in
+	// index.ts. Validation of the new semantics is via the tmux scenario
+	// harness, not these unit-style tests.
 
 	it("steer during text response (no tool call) completes both turns", { timeout: 30_000 }, async () => {
 		// Steer during text-only streaming: the assistant is generating text (no tool

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario S13 — Rapid abort-and-retype (typo-fix pattern).
-# Two consecutive Escape+retype cycles, then a coherence probe asking the
-# model to enumerate all three things asked.
+# Three prompts, two abort+retype cycles, then enumeration probe.
+# Each abort must fire mid-stream (do NOT wait for completion).
 
 set -euo pipefail
 source "$(dirname "$0")/scenario-lib.sh"
@@ -13,67 +13,65 @@ trap 'scn_pi_stop' EXIT
 
 scn_pi_start
 
-# 1st prompt — over-broad
-tmux send-keys -t "$SESSION:0" -- "List every file in /etc and read its contents."
+# Prompt 1 — over-broad, will get aborted
+tmux send-keys -t "$SESSION:0" -- "Read every file in /etc and tell me about each one in detail."
 tmux send-keys -t "$SESSION:0" Enter
-sleep 4
+sleep 5
 
-# Abort + retype
-tmux send-keys -t "$SESSION:0" "Escape"
-sleep 1
+# Abort + retype prompt 2
+tmux send-keys -t "$SESSION:0" Escape
+sleep 2
 tmux send-keys -t "$SESSION:0" -- "Actually, just tell me how many files are in src/ of this repo."
 tmux send-keys -t "$SESSION:0" Enter
-sleep 4
+sleep 5
 
-# Abort + final
-tmux send-keys -t "$SESSION:0" "Escape"
-sleep 1
-scn_send "Sorry — I meant: how many .ts files are in this directory, and what's the largest one by line count? Use bash."
-
-scn_wait_for "(\.ts|line|largest|file|index|wc)" 120 || scn_fail "Final turn — no answer"
+# Abort + retype final prompt
+tmux send-keys -t "$SESSION:0" Escape
+sleep 2
+scn_send "Sorry — I meant: how many .ts files are in this directory? Use bash 'ls *.ts | wc -l'."
 
 # Coherence probe
-scn_send "What three different things did I ask you in this conversation?"
-scn_wait_for "(/etc|src|\.ts|three|first|second|third|originally)" 60 || scn_fail "Coherence — no enumeration"
+scn_send "List the three different things I asked you in this conversation, in order."
 
 echo "==== S13 results ===="
 
-# Architectural: with a fast model (haiku), a turn may complete before our
-# Escape lands — that's fine; the architecture supports both early-abort
-# and late-abort cases. Just require: no errors, no deferred-replay, all
-# three user prompts reached the bridge.
-prompts_observed=$(grep -cE "streamSimple: fresh query" "$BRIDGE_LOG" 2>/dev/null | head -1 | tr -d ' \n')
-prompts_observed=${prompts_observed:-0}
-echo "  fresh-query prompts observed: $prompts_observed"
-if (( prompts_observed >= 3 )); then
-	scn_pass ">=3 distinct user prompts reached the bridge"
+# Architectural: at least 2 onAbort events
+abort_count=$(scn_grep_count "onAbort:" "$BRIDGE_LOG")
+echo "  onAbort events: $abort_count"
+if (( abort_count >= 2 )); then
+	scn_pass ">=2 onAbort events (both rapid aborts fired)"
 else
-	scn_fail "expected >=3 prompts, got $prompts_observed"
+	scn_fail "expected >=2 onAbort events, got $abort_count (timing too slow — model finished before abort)"
 fi
 
-# No legacy deferred-replay
+# Architectural: no legacy deferred-replay
 if grep -qE "(deferredUserMessages|continuation query)" "$BRIDGE_LOG"; then
 	scn_fail "legacy deferred-replay observed"
 else
 	scn_pass "no deferred-replay"
 fi
 
-# No JSONL surgery
-if grep -qE "(UUID rotation|pendingTruncate|truncating)" "$BRIDGE_LOG"; then
-	scn_fail "legacy abort-surgery observed"
-else
-	scn_pass "no UUID rotation / no JSONL surgery"
-fi
+# COHERENCE: enumeration must mention all three topics from the model's response
+# (not from the pane background which contains my prompt text).
+resp=$(scn_probe_response "List the three different things I asked you")
+echo "  --- model's enumeration response (first 1000 chars) ---"
+echo "$resp" | head -c 1000
+echo "  --- end ---"
 
-# Coherence: enumeration mentions all three topics
-mentions_etc=$(grep -ciE "/etc|etc.directory" "$PANE_LOG" || echo 0)
-mentions_src=$(grep -ciE "src/|src.directory|src.folder" "$PANE_LOG" || echo 0)
-mentions_ts=$(grep -ciE "\.ts|typescript|ts.file" "$PANE_LOG" || echo 0)
-echo "  mentions: /etc=$mentions_etc src=$mentions_src .ts=$mentions_ts"
-if (( mentions_etc >= 1 && mentions_src >= 1 && mentions_ts >= 1 )); then
-	scn_pass "coherence: all three abandoned/completed topics referenced"
+# Negative check: model says "only one" or similar
+if echo "$resp" | grep -qiE "(only.*one|just one request|don't.*see|no prior|can't see|don't have any (prior|previous))"; then
+	scn_fail "coherence: model claims it can't see prior requests"
 else
-	scn_fail "coherence: not all three topics referenced"
+	# Positive check: response references all three topics
+	mentions_etc=$(echo "$resp" | grep -ciE "/etc|etc.directory|etc.folder|etc files")
+	mentions_src=$(echo "$resp" | grep -ciE "src/|src.directory|src.folder|files in src|in src")
+	mentions_ts=$(echo "$resp" | grep -ciE "\.ts|typescript|ts files|ts file")
+	echo "  topic mentions in model's response: /etc=$mentions_etc src=$mentions_src .ts=$mentions_ts"
+	if (( mentions_etc >= 1 && mentions_src >= 1 && mentions_ts >= 1 )); then
+		scn_pass "coherence: enumeration covers all three topics"
+	else
+		scn_fail "coherence: enumeration missing one or more topics (need /etc, src, .ts)"
+	fi
 fi
 
 echo "Cache profile:"

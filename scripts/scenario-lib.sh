@@ -147,5 +147,55 @@ scn_grep_count() {
 scn_pass() { echo "  PASS: $1"; }
 scn_fail() { echo "  FAIL: $1"; SCN_FAILED=1; }
 
+# Extract the model's response text to a specific user prompt by looking at
+# the pane log for the prompt line, then capturing lines that follow until
+# the next visual separator (blank line followed by separator) or another
+# prompt. This lets coherence assertions check ONLY what the model said in
+# response to the probe, not the entire pane.
+#
+# Usage: scn_probe_response "<prompt-substring>" -> writes response text to stdout
+scn_probe_response() {
+	local prompt_marker="$1"
+	tmux capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG"
+	# Find the LAST occurrence of the prompt and emit lines after it that
+	# look like model output (skip pi UI separators).
+	awk -v pat="$prompt_marker" '
+		BEGIN { capture = 0 }
+		# When we hit the prompt line, start a new capture window.
+		index($0, pat) > 0 { buf = ""; capture = 1; next }
+		# Stop capturing if we hit a clear visual separator (long line of ─) or new prompt
+		capture && /^─{20,}/ { capture = 0 }
+		capture { buf = buf "\n" $0 }
+		END { print buf }
+	' "$PANE_LOG"
+}
+
+# Assert: the model response to <prompt-substring> contains a positive
+# pattern AND does NOT contain a negative pattern. This avoids false-passes
+# where the negative reply ("I don't know", "I wasn't interrupted") happens
+# to contain the same words as the topic.
+scn_assert_response() {
+	# scn_assert_response "<prompt-substring>" "<positive-regex>" "<negative-regex>" "<descr>"
+	local prompt="$1"; shift
+	local positive="$1"; shift
+	local negative="$1"; shift
+	local descr="$1"
+	local resp
+	resp=$(scn_probe_response "$prompt")
+	if [[ -z "$resp" ]]; then
+		scn_fail "$descr — no response captured for prompt"
+		return
+	fi
+	if echo "$resp" | grep -qiE "$negative"; then
+		scn_fail "$descr — model gave a NEGATIVE response: '$(echo "$resp" | grep -iE "$negative" | head -1 | tr -d '\n' | cut -c1-120)'"
+		return
+	fi
+	if echo "$resp" | grep -qiE "$positive"; then
+		scn_pass "$descr — model affirmed: '$(echo "$resp" | grep -iE "$positive" | head -1 | tr -d '\n' | cut -c1-120)'"
+		return
+	fi
+	scn_fail "$descr — neither positive nor negative pattern matched"
+}
+
 # Each scenario script begins with `SCN_FAILED=0` and ends with
 # `exit $SCN_FAILED`. scn_pass/scn_fail collect into that.

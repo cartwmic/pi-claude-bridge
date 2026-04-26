@@ -133,6 +133,48 @@ let cachedSessionId: string | null = null;
 let cachedSessionCwd: string | null = null;
 
 /**
+ * Per-message fingerprints from the last context we sent. Used to detect
+ * divergence: on a new turn, we expect each prior position's hash to be
+ * unchanged; new messages append at the end. If any prior position's hash
+ * differs, pi has /tree-navigated, /fork-ed, or /compact-ed — the SDK's
+ * resumed transcript no longer matches and we must cold-start.
+ *
+ * Forward progress (T1: [u1] → T2: [u1, a1, u2]) is NOT divergence — the
+ * new array is a prefix-extension of the old.
+ */
+let lastSentMessageHashes: string[] | null = null;
+
+function hashMessage(m: Context["messages"][number]): string {
+	const c = typeof m.content === "string" ? m.content : messageContentToText(m.content);
+	const head = c.slice(0, 96);
+	const tail = c.slice(-32);
+	return `${m.role}:${c.length}:${head}|${tail}`;
+}
+
+function computeMessageHashes(messages: Context["messages"]): string[] {
+	return messages.map(hashMessage);
+}
+
+/**
+ * Detect divergence: returns true if any common-prefix position differs
+ * between the previously-sent message hashes and the current ones. False
+ * (no divergence) when there's no prior or when current is a strict
+ * prefix-extension of prior.
+ */
+function detectHistoryDivergence(
+	prior: string[] | null,
+	current: string[],
+): boolean {
+	if (!prior || prior.length === 0) return false;
+	const commonLen = Math.min(prior.length, current.length);
+	for (let i = 0; i < commonLen; i++) {
+		if (prior[i] !== current[i]) return true;
+	}
+	// If current is shorter than prior, history was truncated → divergence.
+	return current.length < prior.length;
+}
+
+/**
  * Active in-flight query state. There is at most one *top-level* active query
  * per pi conversation, BUT subagents can nest a child query inside a parent's
  * blocked tool-handler slot. We use a stack to model this correctly.
@@ -150,6 +192,7 @@ type QueryFrame = {
 	turnBlocks: any[];
 	customToolNameToPi: Map<string, string>;
 	model: Model<any>;
+	cwd: string;
 
 	// Tool-handler queue: the SDK invokes our MCP handlers in the same order it
 	// emitted tool_use blocks (toolUseId not exposed to handlers). We push ids
@@ -493,6 +536,14 @@ async function consumeQuery(frame: QueryFrame): Promise<{ sessionId?: string }> 
 				case "system":
 					if ((message as any).subtype === "init" && (message as any).session_id) {
 						sessionId = (message as any).session_id;
+						// Immediately update the module-level cache so a
+						// subsequent supersession (mid-flight steer / abort+
+						// retype) can resume into this same session, which
+						// preserves prior conversation context up to the
+						// interrupted point.
+						cachedSessionId = sessionId;
+						cachedSessionCwd = frame.cwd;
+						debug(`consumeQuery: captured session=${sessionId.slice(0, 8)} mid-flight`);
 					}
 					break;
 				case "result":
@@ -548,6 +599,67 @@ function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockPar
 
 async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDKUserMessage> {
 	yield { type: "user", message: { role: "user", content: blocks } as MessageParam, parent_tool_use_id: null };
+}
+
+/**
+ * Build a cold-start prompt that embeds pi's full prior conversation as text
+ * context, followed by the new user message. Used when no `cachedSessionId`
+ * is available (first turn after bridge restart, after fork/compact, etc.).
+ *
+ * The SDK's query() interface only accepts a single prompt at start time;
+ * there's no way to seed a multi-turn transcript at query creation. So we
+ * pack the prior conversation into a single user message that the model
+ * reads as background context. Format is intentionally explicit so the
+ * model knows it's history, not the current request.
+ */
+function buildColdStartPrompt(messages: Context["messages"]): string {
+	if (messages.length === 0) return "";
+	if (messages.length === 1 && messages[0].role === "user") {
+		// First-ever turn — no prior history to embed.
+		return typeof messages[0].content === "string"
+			? messages[0].content
+			: messageContentToText(messages[0].content) || "";
+	}
+
+	const last = messages[messages.length - 1];
+	const lastIsUser = last.role === "user";
+	const priorMessages = lastIsUser ? messages.slice(0, -1) : messages;
+
+	const priorLines: string[] = [];
+	for (const m of priorMessages) {
+		if (m.role === "user") {
+			const text = typeof m.content === "string" ? m.content : messageContentToText(m.content);
+			if (text) priorLines.push(`[user] ${text}`);
+		} else if (m.role === "assistant") {
+			const blocks = Array.isArray(m.content) ? m.content : [];
+			const parts: string[] = [];
+			for (const b of blocks) {
+				if (b.type === "text" && b.text) parts.push(b.text);
+				else if (b.type === "toolCall") parts.push(`[tool: ${b.name}(${JSON.stringify(b.arguments).slice(0, 200)})]`);
+			}
+			if (parts.length) priorLines.push(`[assistant] ${parts.join(" ")}`);
+		} else if (m.role === "toolResult") {
+			const text = typeof m.content === "string" ? m.content : messageContentToText(m.content);
+			const tag = m.isError ? "tool-error" : "tool-result";
+			priorLines.push(`[${tag} ${m.toolName}] ${text.slice(0, 500)}`);
+		}
+	}
+
+	const lastUserText = lastIsUser
+		? (typeof last.content === "string" ? last.content : messageContentToText(last.content))
+		: "[continue]";
+
+	if (priorLines.length === 0) return lastUserText || "[continue]";
+
+	return [
+		"<conversation_history>",
+		"The following is our prior conversation in this session. Treat it as context.",
+		...priorLines,
+		"</conversation_history>",
+		"",
+		"User's current message:",
+		lastUserText || "[continue]",
+	].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -683,10 +795,38 @@ function startFreshQuery(
 	//   - Bridge restarted
 	//   - Previous turn aborted (we drop the id)
 	//   - pi /fork or /compact triggered a clearSession event
+	// Divergence detection: if any prior-position content changed (or pi's
+	// history is shorter than what we last sent), pi has /tree-navigated,
+	// /fork-ed, or /compact-ed — the SDK's resumed transcript no longer
+	// matches and we must cold-start. Forward progress (history grew with
+	// new messages) is NOT divergence.
+	const newHashes = computeMessageHashes(context.messages);
+	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
+	if (diverged) {
+		debug(`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionId?.slice(0, 8) ?? "none"}). prior_len=${lastSentMessageHashes?.length ?? 0} new_len=${newHashes.length}`);
+		cachedSessionId = null;
+		cachedSessionCwd = null;
+	}
+	lastSentMessageHashes = newHashes;
+
 	const useResume = cachedSessionId !== null && cachedSessionCwd === cwd;
-	const prompt: string | AsyncIterable<SDKUserMessage> = promptBlocks
-		? wrapPromptStream(promptBlocks)
-		: promptText;
+
+	// On cold-start (no cached session_id), pi's full conversation history must
+	// be replayed into the prompt — otherwise the SDK's fresh session has no
+	// context. On warm-resume, the SDK loads its own JSONL transcript and we
+	// only need to send the new user message.
+	let prompt: string | AsyncIterable<SDKUserMessage>;
+	if (useResume) {
+		prompt = promptBlocks ? wrapPromptStream(promptBlocks) : promptText;
+	} else {
+		// Cold-start: embed pi history. (Image content is not preserved in the
+		// embedded text history — it would arrive on subsequent warm turns if
+		// the session continues. For first-turn-with-image, the image is in
+		// promptBlocks and the message will be the only history anyway.)
+		prompt = promptBlocks
+			? wrapPromptStream(promptBlocks)
+			: buildColdStartPrompt(context.messages);
+	}
 
 	const skillsAppend = extractSkillsBlock(context.systemPrompt);
 	const agentsAppend = extractAgentsAppend();
@@ -709,6 +849,7 @@ function startFreshQuery(
 		turnBlocks: [],
 		customToolNameToPi,
 		model,
+		cwd,
 		toolUseIdQueue: [],
 		pendingResolvers: new Map(),
 		pendingResults: new Map(),
@@ -749,9 +890,12 @@ function startFreshQuery(
 		frame.pendingResolvers.clear();
 		void sdkQuery.interrupt().catch(() => {});
 		try { (sdkQuery as any).close?.(); } catch { /* ignore */ }
-		// Drop cached session id — interrupted history is unsafe to resume.
-		cachedSessionId = null;
-		cachedSessionCwd = null;
+		// IMPORTANT: do NOT drop cachedSessionId here. The SDK's session JSONL
+		// retains all messages up to the abort point (including the interrupted
+		// partial assistant message). On the next user turn, resuming that
+		// session preserves the conversation context — which is required so the
+		// model knows it was interrupted (S7 coherence, S13 enumeration, etc.).
+		// Dropping the id here would force a cold-start with no context.
 	};
 	if (options?.signal) {
 		if (options.signal.aborted) onAbort();
@@ -760,14 +904,13 @@ function startFreshQuery(
 
 	// Background consumer
 	frame.donePromise = consumeQuery(frame).then(({ sessionId }) => {
-		// Capture session id for next turn's cache resume.
-		if (sessionId && !frame.wasAborted) {
+		// Capture session id for next turn's cache resume — even on abort, so
+		// the next turn can resume the session and see the interrupted partial
+		// (which is needed for the model to know it was interrupted).
+		if (sessionId) {
 			cachedSessionId = sessionId;
 			cachedSessionCwd = cwd;
-			debug(`streamSimple: caching session=${sessionId.slice(0, 8)} cwd=${cwd}`);
-		} else if (frame.wasAborted) {
-			cachedSessionId = null;
-			cachedSessionCwd = null;
+			debug(`streamSimple: caching session=${sessionId.slice(0, 8)} cwd=${cwd}${frame.wasAborted ? " (aborted)" : ""}`);
 		}
 		// Finalize the most recent stream
 		if (frame.currentPiStream && frame.turnOutput) {
@@ -893,6 +1036,7 @@ export default function (pi: ExtensionAPI) {
 		debug(`${event}: dropping cached session ${cachedSessionId?.slice(0, 8) ?? "none"}`);
 		cachedSessionId = null;
 		cachedSessionCwd = null;
+		lastSentMessageHashes = null;
 		// Drain any leftover frames (subagents that didn't clean up).
 		while (stack.length > 0) {
 			const frame = stack.pop()!;

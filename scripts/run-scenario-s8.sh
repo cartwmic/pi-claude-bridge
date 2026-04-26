@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Scenario S8 — User abort during tool execution.
-# Validates abort during in-flight tool, no orphan subprocesses.
+# Tool runs (sleep 120 + echo); user aborts before tool finishes; verify
+# model doesn't fabricate the result.
 
 set -euo pipefail
 source "$(dirname "$0")/scenario-lib.sh"
@@ -12,58 +13,55 @@ trap 'scn_pi_stop' EXIT
 
 scn_pi_start
 
-# Snapshot processes before — pgrep exits 1 with no matches; absorb that.
 ps_before=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || echo 0)
 ps_before=${ps_before:-0}
 
-# Send a long-running tool prompt (do NOT wait for completion)
+# Send long-running tool prompt — do NOT wait for completion
 tmux send-keys -t "$SESSION:0" -- "Run this exact bash command: 'sleep 120 && echo HELLO-S8'"
 tmux send-keys -t "$SESSION:0" Enter
+sleep 8
 
-# Wait until the bash tool is actually running
-sleep 6
-
-# Abort
-tmux send-keys -t "$SESSION:0" "Escape"
+# Abort while bash is mid-flight
+tmux send-keys -t "$SESSION:0" Escape
 sleep 3
 
 # Coherence probe
-scn_send "Did the sleep command finish? What did it print?"
+scn_send "Did the sleep command actually finish and print anything? Be specific about what you observed."
 
 echo "==== S8 results ===="
 
-# Bridge observed abort
-if grep -qE "(superseding|onAbort|Operation aborted|interrupt)" "$BRIDGE_LOG"; then
-	scn_pass "abort observed in bridge"
+if grep -qE "onAbort:" "$BRIDGE_LOG"; then
+	scn_pass "bridge onAbort fired"
 else
-	scn_fail "no abort observed"
+	scn_fail "no onAbort"
 fi
 
-# Coherence: model must NOT claim HELLO-S8 was printed
-if grep -qE "HELLO-S8" "$PANE_LOG" && ! grep -qiE "(no|did not|interrupt|abort|stop)" "$PANE_LOG"; then
-	scn_fail "coherence: model fabricated HELLO-S8 result"
-else
-	scn_pass "coherence: model did not fabricate tool result"
-fi
-
-# No orphan sleep processes
+# No fabricated tool subprocess left over
+sleep 2
 ps_after=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || echo 0)
 ps_after=${ps_after:-0}
-echo "  sleep 120 processes: before=$ps_before  after=$ps_after"
+echo "  sleep 120 procs: before=$ps_before after=$ps_after"
 if (( ps_after <= ps_before )); then
 	scn_pass "no orphan sleep subprocesses"
 else
-	scn_fail "$((ps_after - ps_before)) orphan sleep subprocess(es) leaked"
-	# Best-effort cleanup
-	pkill -f "sleep 120" 2>/dev/null || true
+	scn_fail "$((ps_after - ps_before)) orphan sleep subprocess(es)"
+	pkill -9 -f "sleep 120" 2>/dev/null || true
 fi
 
-# No legacy abort-surgery
+# No legacy abort surgery
 if grep -qE "(UUID rotation|pendingTruncate|truncating)" "$BRIDGE_LOG"; then
-	scn_fail "legacy abort-surgery triggered"
+	scn_fail "legacy abort surgery"
 else
 	scn_pass "no UUID rotation / no JSONL surgery"
 fi
+
+# COHERENCE: model must NOT claim the sleep finished or HELLO-S8 was printed.
+# Negative regex is precise — must claim positive completion of HELLO-S8 to match.
+scn_assert_response \
+	"Did the sleep command actually finish" \
+	"(no|did not|didn't|never (executed|printed|finished|completed|reached)|interrupted|aborted|stopped|cancel|wasn't able to (finish|complete|run))" \
+	"(yes.*finished|yes.*completed successfully|HELLO-S8 was printed|the command printed HELLO-S8|output was HELLO-S8|i saw HELLO-S8|the marker.*HELLO-S8)" \
+	"coherence: model knows sleep was aborted, didn't fabricate HELLO-S8"
 
 echo "Cache profile:"
 scn_cache_profile

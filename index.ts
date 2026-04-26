@@ -1348,6 +1348,23 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		for (const pending of abortCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Operation aborted" }] }); }
 		abortCtx.pendingToolCalls.clear();
 		abortCtx.pendingResults.clear();
+
+		// CRITICAL: set abort state SYNCHRONOUSLY so the next turn's
+		// syncSharedSession sees it even if consumeQuery's .then() hasn't
+		// run yet. Without this, a fast follow-up turn races the async
+		// callback and falls through to REBUILD.
+		if (sharedSession?.preQueryFileSize != null) {
+			sharedSession = {
+				...sharedSession,
+				cursor: context.messages.length,
+				pendingTruncateOffset: sharedSession.preQueryFileSize,
+			};
+			debug(`onAbort: deferred truncation to ${sharedSession.pendingTruncateOffset} bytes, cursor=${context.messages.length}`);
+		} else if (sharedSession) {
+			sharedSession = { ...sharedSession, needsRebuild: true };
+			debug(`onAbort: no preQueryFileSize, falling back to needsRebuild`);
+		}
+
 		requestAbort();
 	};
 	if (options?.signal) {
@@ -1362,22 +1379,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				// Defer truncation to the next syncSharedSession call. We can't
-				// truncate now because the dying CC CLI process may still be
-				// writing its cleanup records (race condition). By the next sync,
-				// the process has exited and the file is stable.
-				if (sharedSession?.preQueryFileSize != null) {
-					sharedSession = {
-						...sharedSession,
-						cursor: context.messages.length,
-						pendingTruncateOffset: sharedSession.preQueryFileSize,
-					};
-					debug(`provider: abort — deferred truncation to ${sharedSession.preQueryFileSize} bytes, cursor=${context.messages.length}`);
-				} else if (sharedSession) {
-					sharedSession = { ...sharedSession, needsRebuild: true };
-				}
+				// Abort state (pendingTruncateOffset, cursor, needsRebuild) was
+				// already set synchronously in onAbort() to prevent a race with
+				// the next turn's syncSharedSession. Just handle stream cleanup.
 				ctx().deferredUserMessages = [];
-				debug(`provider: abort detected, pendingTruncate=${sharedSession?.pendingTruncateOffset ?? 'none'}, needsRebuild=${sharedSession?.needsRebuild ?? false}`);
+				debug(`provider: abort .then() — pendingTruncate=${sharedSession?.pendingTruncateOffset ?? 'none'}, needsRebuild=${sharedSession?.needsRebuild ?? false}`);
 				if (ctx().turnOutput) {
 					ctx().turnOutput.stopReason = "aborted";
 					ctx().turnOutput.errorMessage = "Operation aborted";

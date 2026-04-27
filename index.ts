@@ -1269,16 +1269,19 @@ export default function (pi: ExtensionAPI) {
 			clearSession(`session_start:${event.reason}`);
 		}
 	});
-	pi.on("session_shutdown", (event?: any) => {
+	pi.on("session_shutdown", (_event?: any) => {
 		clearSession("session_shutdown");
-		// On /reload, pi calls resetApiProviders() between shutdown and the
-		// re-run of extensions. Drop the Symbol guard so the next module init
-		// re-registers the provider. Without this, the guard persists on
-		// globalThis, registration is skipped, and subsequent user input
-		// silently never reaches inference (pi has no provider for the model).
-		if (event?.reason === "reload") {
-			delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
-		}
+		// Pi rebuilds a fresh ModelRegistry on EVERY session change — /new,
+		// /resume, /fork, and /reload all flow through createAgentSessionServices
+		// which builds a new registry then re-runs extensions to populate it.
+		// /reload additionally calls resetApiProviders() in pi-ai. In all cases
+		// the Symbol guard (which lives on globalThis) survives, and would skip
+		// pi.registerProvider on the second module init — leaving the new
+		// registry without claude-bridge models. Symptoms:
+		//   - /reload: subsequent input "submitted" but never reaches inference
+		//   - /new:    falls back to codex/gpt-5.4 instead of configured default
+		// Drop the guard on every shutdown so the next module init re-registers.
+		delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
 	});
 
 	// Provider registration. Subagent-loaded module instances don't re-register

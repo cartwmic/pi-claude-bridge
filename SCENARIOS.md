@@ -644,9 +644,37 @@ caused `pi.registerProvider` to be skipped on re-load.
 - **Coherence:** the post-reload turn produces the requested marker token
   (proves inference actually fired, not just that the provider was wired).
 
-**Implementation note:** the fix lives in the bridge's `session_shutdown`
-handler — drop `Symbol.for("claude-bridge:active")` when
-`event.reason === "reload"` so the next module init can re-register.
+### S24 — `/new` preserves working provider registration
+
+**Goal:** prove that `/new` doesn't drop the bridge from the rebuilt
+ModelRegistry. Pi's `createAgentSessionServices` builds a **fresh**
+`ModelRegistry` on every session change (new, resume, fork, reload), then
+re-runs extensions to populate it via `pendingProviderRegistrations`.
+
+**Regression class:** silent fallback. After `/new`, pi falls back to the
+next-available provider (e.g. `openai-codex/gpt-5.4`) instead of the
+configured `claude-bridge` default — same root cause as S23 but a
+different code path. The `globalThis` Symbol guard skips
+`pi.registerProvider`, the new registry never receives claude-bridge
+models, and `findInitialModel` falls through to `defaultModelPerProvider`.
+
+**Steps:**
+1. Send a normal turn; assert it produces a marker.
+2. Send `/new`. Wait for a second `provider: registered` line.
+3. Verify pi's bottom status line still shows `(claude-bridge) <model>`.
+4. Send another turn; verify the bridge handles it (not a different provider).
+
+**Pass:**
+- Mechanical:
+  - `provider: registered` appears at least 2× in the bridge log.
+  - Post-`/new` pane shows `(claude-bridge)` as the active provider.
+  - A new `streamSimple: fresh query` line appears post-`/new`.
+- **Coherence:** post-`/new` turn produces the requested marker token.
+
+**Implementation note (S23 + S24):** the fix lives in the bridge's
+`session_shutdown` handler — unconditionally drop
+`Symbol.for("claude-bridge:active")` so the next module init re-registers
+the provider into pi's freshly-built `ModelRegistry`.
 
 ## Per-scenario cache profile (expected cache shape)
 

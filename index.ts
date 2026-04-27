@@ -793,28 +793,75 @@ function streamClaudeAgentSdk(
 	if (active && lastMsg?.role === "toolResult") {
 		const trailing = extractTrailingToolResults(context.messages);
 		active.log.debug({ results: trailing.length, resolvers: active.pendingResolvers.size }, `streamSimple: tool-result delivery, ${trailing.length} results, ${active.pendingResolvers.size} resolvers waiting`);
-		active.currentPiStream = stream;
-		resetTurnState(active);
+
+		// Option H: pre-scan to find which (if any) frame the trailing
+		// tool_result(s) belong to, so we can decide whether to wire the
+		// stream into the active frame (normal flow) or close it with
+		// aborted-error (the matched frame is post-abort, SDK won't generate
+		// further content).
+		let matchedFrame: QueryFrame | null = null;
+		for (const r of trailing) {
+			for (let i = stack.length - 1; i >= 0; i--) {
+				if (stack[i].pendingResolvers.has(r.id)) { matchedFrame = stack[i]; break; }
+			}
+			if (matchedFrame) break;
+		}
+		const willHangIfWired = matchedFrame ? matchedFrame.wasAborted : active.wasAborted;
+
+		// Wire the stream BEFORE resolving — only if the matched frame is
+		// still live. A live frame's SDK will continue generating into this
+		// stream after the resolver fires.
+		if (!willHangIfWired) {
+			active.currentPiStream = stream;
+			resetTurnState(active);
+		}
+
+		// Deliver each result to the matching resolver across the stack.
 		for (const r of trailing) {
 			const result = { content: [{ type: "text" as const, text: r.content || "" }], isError: r.isError };
-			const resolver = active.pendingResolvers.get(r.id);
-			if (resolver) {
-				active.pendingResolvers.delete(r.id);
-				resolver(result);
-			} else {
-				// Result arrived before the MCP handler ran — buffer it.
+			let resolved = false;
+			for (let i = stack.length - 1; i >= 0; i--) {
+				const f = stack[i];
+				const resolver = f.pendingResolvers.get(r.id);
+				if (resolver) {
+					f.pendingResolvers.delete(r.id);
+					resolver(result);
+					if (i !== stack.length - 1 || f.wasAborted) {
+						f.log.info({ id: r.id, aborted: f.wasAborted }, `tool-result delivery: matched ${f.wasAborted ? "aborted-frame" : "buried-frame"} resolver (post-abort late delivery)`);
+					}
+					resolved = true;
+					break;
+				}
+			}
+			if (!resolved) {
 				active.pendingResults.set(r.id, result);
 			}
+		}
+
+		// If the matched frame is aborted, close the stream now — its SDK
+		// won't write anything more. The resolver did still get the real
+		// content; it lives in the SDK's session JSONL for next-turn resume.
+		if (willHangIfWired) {
+			queueMicrotask(() => {
+				const out = newTurnOutput(model);
+				out.stopReason = "aborted";
+				out.errorMessage = "Operation aborted by user (real tool result captured for next-turn resume)";
+				try {
+					stream.push({ type: "start", partial: out });
+					stream.push({ type: "error", reason: "aborted", error: out });
+					stream.end();
+				} catch { /* stream may have ended */ }
+				(matchedFrame ?? active).log.info({ deliveredFor: "aborted-frame" }, "tool-result delivery to aborted frame: closed pi stream with aborted-error");
+			});
 		}
 		return stream;
 	}
 
-	// ---- Case 2: orphaned tool result (active query gone, e.g. post-abort) ----
-	// Pi's tool finished AFTER the user aborted, so the result arrives with
-	// no active frame to deliver it to. We MUST NOT report this as a normal
-	// completion (done/stop) — that would make pi's TUI show a phantom
-	// successful turn. Instead, emit error/aborted so pi treats it as the
-	// abort it actually is.
+	// ---- Case 2: orphaned tool result (no frame on the stack at all) ----
+	// We've already scanned all frames for resolvers in Case 1 above. If we
+	// reach here, the stack is genuinely empty — pi delivered a tool_result
+	// for a frame we already cleaned up. Emit aborted so pi's TUI treats it
+	// as the (already-fired) abort it represents, not a phantom completion.
 	if (lastMsg?.role === "toolResult") {
 		const orphanLog = logger.child({ piSessionId: getPiSessionId() });
 		orphanLog.warn(`streamSimple: orphaned tool result, no active query — emitting end_turn`);
@@ -834,16 +881,51 @@ function streamClaudeAgentSdk(
 	// If there's an active query that didn't resolve, the new user turn supersedes it:
 	// interrupt and start fresh. This handles steering, rapid retype, and aborts that
 	// arrived without a clean shutdown.
+	//
+	// Option H drain-on-supersede: if the superseded frame still has pending
+	// MCP resolvers (an aborted tool_use whose real result never arrived from
+	// pi), drain them here with the canonical synthetic text. By definition,
+	// pi has now decided to move on (it's sending a new user turn instead of
+	// delivering the tool_result), so it's safe to fabricate. Drain BEFORE
+	// the pop so we don't lose the resolvers. Also drain any deeper buried
+	// frames whose pending tool calls were also superseded by this turn.
 	if (active) {
 		active.log.info(`streamSimple: superseding active frame (top of stack), interrupting`);
+		drainPendingResolversAsAborted(active, "superseded by new user turn");
 		active.wasAborted = true;
 		void active.sdkQuery.interrupt().catch(() => {});
 		try { active.sdkQuery.close?.(); } catch { /* ignore */ }
 		stack.pop();
+		// Drain any deeper buried frames too — they're equally orphaned by
+		// the steer. Without this, a parent_frame buried beneath a popped
+		// child would keep its pending resolvers forever.
+		while (stack.length > 0) {
+			const buried = stack[stack.length - 1];
+			if (buried.pendingResolvers.size === 0 && !buried.wasAborted) break;
+			drainPendingResolversAsAborted(buried, "buried beneath superseded frame");
+			buried.wasAborted = true;
+			void buried.sdkQuery?.interrupt?.().catch(() => {});
+			stack.pop();
+		}
 	}
 
 	startFreshQuery(model, context, options, stream);
 	return stream;
+}
+
+/** Drain a frame's pendingResolvers with the canonical interrupted-by-user
+ * text. Used by Case 3 supersede and clearSession. The text is what lands in
+ * the SDK's session JSONL as the tool_result content, so it must be
+ * unambiguous about user attribution to keep resume coherence. */
+const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before completion]";
+function drainPendingResolversAsAborted(frame: QueryFrame, reason: string) {
+	const drained = frame.pendingResolvers.size;
+	if (drained === 0) return;
+	for (const resolver of frame.pendingResolvers.values()) {
+		resolver({ content: [{ type: "text", text: ABORTED_TOOL_RESULT_TEXT }], isError: true });
+	}
+	frame.pendingResolvers.clear();
+	frame.log.info({ drained, reason, text: ABORTED_TOOL_RESULT_TEXT }, `drainPendingResolversAsAborted: resolved ${drained} pending tool handler(s) with 'interrupted by user' text (${reason})`);
 }
 
 function startFreshQuery(
@@ -972,24 +1054,21 @@ function startFreshQuery(
 	frame.sdkQuery = sdkQuery;
 	stack.push(frame);
 
-	// Wire abort
+	// Wire abort. Option H: do NOT pre-drain pendingResolvers. Pi may still
+	// deliver a real tool_result (Case 1 below) within milliseconds of the
+	// abort firing — if we drain now with synthetic text, that real result
+	// gets orphan-pathed and discarded. Instead, leave pendingResolvers
+	// alive and let pi's next event decide:
+	//   - Real tool_result lands  → Case 1 resolves with real content.
+	//   - User sends a new turn   → Case 3 (supersede) drains with synthetic
+	//                               text and pops the frame.
+	//   - Session shutdown / new  → clearSession drains.
 	const onAbort = () => {
-		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort: model=${model.id}, pendingResolvers=${frame.pendingResolvers.size}`);
+		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort: model=${model.id}, pendingResolvers=${frame.pendingResolvers.size} (deferred drain — waiting for pi's next event)`);
 		frame.wasAborted = true;
-		// Resolve any waiting MCP handlers so the SDK generator can drain.
-		// The text is canonical and clearly attributes the stop to the user;
-		// it lands in the SDK's session JSONL as the tool_result content, so
-		// on resume the model reads "interrupted by user" rather than an
-		// ambiguous "Operation aborted" that could read like a tool failure.
-		const abortedText = "[Tool execution interrupted by user before completion]";
-		const drained = frame.pendingResolvers.size;
-		for (const resolver of frame.pendingResolvers.values()) {
-			resolver({ content: [{ type: "text", text: abortedText }], isError: true });
-		}
-		frame.pendingResolvers.clear();
-		if (drained > 0) {
-			frame.log.info({ drained, text: abortedText }, `onAbort: resolved ${drained} pending tool handler(s) with 'interrupted by user' text`);
-		}
+		// Stop further inference. The SDK won't make new requests on this
+		// query. Pending MCP handler promises remain unresolved until pi's
+		// next event (real result or new turn) decides their fate.
 		void sdkQuery.interrupt().catch(() => {});
 		try { (sdkQuery as any).close?.(); } catch { /* ignore */ }
 		// IMPORTANT: do NOT drop cachedSessionId here. The SDK's session JSONL
@@ -1051,11 +1130,22 @@ function startFreshQuery(
 			frame.currentPiStream.end();
 			frame.currentPiStream = null;
 		}
-		// Pop frame off stack (only if it's still the top — supersession may have popped it already)
-		if (top() === frame) stack.pop();
+		// Pop frame off stack only if (a) it's still the top, AND (b) it has
+		// no pending resolvers waiting for late tool_results. Option H keeps
+		// aborted frames on the stack with their pendingResolvers alive, so
+		// pi can still deliver real tool_results and we can match them via
+		// the all-frames lookup in Case 1. The frame gets cleaned up by Case
+		// 3's drain-on-supersede or by clearSession.
+		if (top() === frame) {
+			if (frame.pendingResolvers.size === 0) {
+				stack.pop();
+			} else {
+				frame.log.info({ pending: frame.pendingResolvers.size }, "consumeQuery finalize: frame retained on stack (pending resolvers may receive late tool_results)");
+			}
+		}
 	}).catch((err) => {
 		frame.log.error({ err: err instanceof Error ? err.message : String(err) }, "streamSimple: consumeQuery promise error");
-		if (top() === frame) stack.pop();
+		if (top() === frame && frame.pendingResolvers.size === 0) stack.pop();
 	});
 }
 
@@ -1159,9 +1249,15 @@ export default function (pi: ExtensionAPI) {
 		cachedSessionId = null;
 		cachedSessionCwd = null;
 		lastSentMessageHashes = null;
-		// Drain any leftover frames (subagents that didn't clean up).
+		// Drain any leftover frames (subagents that didn't clean up). Also
+		// drain pendingResolvers with synthetic text — Option H keeps frames
+		// on the stack post-abort waiting for pi to deliver real
+		// tool_results, but if the session is being cleared/replaced, those
+		// resolvers will never see real content. Drain them so the SDK isn't
+		// left with hung handler promises.
 		while (stack.length > 0) {
 			const frame = stack.pop()!;
+			drainPendingResolversAsAborted(frame, `clearSession:${event}`);
 			frame.wasAborted = true;
 			void frame.sdkQuery?.interrupt?.().catch(() => {});
 		}

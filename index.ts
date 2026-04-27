@@ -297,6 +297,35 @@ function extractAgentsAppend(): string | undefined {
 	} catch { return undefined; }
 }
 
+// Pi's APPEND_SYSTEM.md (project override at <cwd>/.pi/APPEND_SYSTEM.md, else
+// global at ~/.pi/agent/APPEND_SYSTEM.md). Forwarded verbatim plus a runtime
+// note about the MCP tool-name prefix, since pi tools are exposed to Claude
+// as `mcp__<MCP_SERVER_NAME>__<name>` rather than their bare pi names.
+const PROJECT_APPEND_SYSTEM_PATH = join(".pi", "APPEND_SYSTEM.md");
+const GLOBAL_APPEND_SYSTEM_PATH = join(homedir(), ".pi", "agent", "APPEND_SYSTEM.md");
+
+function resolveAppendSystemPath(): string | undefined {
+	const projectPath = join(process.cwd(), PROJECT_APPEND_SYSTEM_PATH);
+	if (existsSync(projectPath)) return projectPath;
+	if (existsSync(GLOBAL_APPEND_SYSTEM_PATH)) return GLOBAL_APPEND_SYSTEM_PATH;
+	return undefined;
+}
+
+function extractAppendSystem(): string | undefined {
+	const p = resolveAppendSystemPath();
+	if (!p) return undefined;
+	try {
+		const content = readFileSync(p, "utf-8").trim();
+		if (!content) return undefined;
+		// Forward as-is and append a runtime note teaching Claude how to
+		// invoke any tool the rules above might reference. Claude only sees
+		// pi tools through the bridge's MCP server, so bare names like
+		// `bash` / `subagent` won't resolve unless prefixed.
+		const toolNotice = `\n\nNote: if the rules above reference tools by bare names (e.g. \`bash\`, \`read\`, \`write\`, \`edit\`, \`subagent\`), call them via the MCP-prefixed names \`mcp__${MCP_SERVER_NAME}__<name>\` (e.g. \`mcp__${MCP_SERVER_NAME}__bash\`). The bare names are not exposed.`;
+		return `# Operator instructions\n\n${content}${toolNotice}`;
+	} catch { return undefined; }
+}
+
 // Pi's system prompt has a skills block we want to forward to CC verbatim
 // (with the read-tool reference rewritten to use our MCP-prefixed name).
 function extractSkillsBlock(systemPrompt?: string): string | undefined {
@@ -1001,7 +1030,8 @@ function startFreshQuery(
 
 	const skillsAppend = extractSkillsBlock(context.systemPrompt);
 	const agentsAppend = extractAgentsAppend();
-	const appendParts = [agentsAppend, skillsAppend].filter((p): p is string => Boolean(p));
+	const appendSystem = extractAppendSystem();
+	const appendParts = [agentsAppend, appendSystem, skillsAppend].filter((p): p is string => Boolean(p));
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 	// Static system prompt — pi already provides its own, we don't want CC's preset.
 	const staticSystemPrompt = systemPromptAppend ?? "You are a helpful coding assistant.";

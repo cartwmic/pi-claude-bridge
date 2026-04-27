@@ -15,14 +15,14 @@ trap 'scn_pi_stop' EXIT
 scn_pi_start
 
 # Turn 1: long output. Do NOT wait for completion.
-tmux send-keys -t "$SESSION:0" -- "Write a long, detailed essay about the history of the printing press. Include specific dates, people, and several paragraphs. Take your time."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Write a long, detailed essay about the history of the printing press. Include specific dates, people, and several paragraphs. Take your time."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # Wait for the model to actually start producing content.
 sleep 6
 
 # Steer: Escape to interrupt + new prompt.
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 2
 scn_send "Actually stop — make it brief and about the typewriter instead."
 

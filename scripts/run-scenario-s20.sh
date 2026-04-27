@@ -39,8 +39,8 @@ scn_pi_start
 
 # ---- Phase 1: dispatch a long-running tool, abort mid-execution -------------
 # Use a sentinel that MUST NOT appear in the bridge or coherence response.
-tmux send-keys -t "$SESSION:0" -- "Run this exact bash command: 'sleep 60 && echo S20-MUST-NOT-PRINT'"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Run this exact bash command: 'sleep 60 && echo S20-MUST-NOT-PRINT'"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # Poll bridge log until pi is mid-tool-execution: we wait for a
 # `mcp handler: bash [...] — awaiting pi` line, which fires only when
@@ -60,7 +60,7 @@ done
 
 # A breath of sleep so abort lands FIRMLY in the silent window.
 sleep 2
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 4
 
 # ---- Phase 2: coherence probe ----------------------------------------------

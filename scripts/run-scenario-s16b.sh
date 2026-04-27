@@ -22,23 +22,23 @@ scn_send "Fact A: my pet is named Fizzgig. Acknowledge briefly."
 scn_send "Fact B: my pet is a fremen mouse. Acknowledge briefly."
 
 # Open /tree picker
-tmux send-keys -t "$SESSION:0" -- "/tree"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "/tree"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 3
 
 # In the picker, navigate up 2 entries to land on assistant-after-Fact-A.
 # (Default selection is the leaf, which is assistant-after-Fact-B.)
-tmux send-keys -t "$SESSION:0" Up
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Up
 sleep 0.5
-tmux send-keys -t "$SESSION:0" Up
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Up
 sleep 1
 
 # Confirm leaf selection
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 2
 
 # Pi may show "Summarize branch?" dialog — choose "No summary" (default)
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 3
 
 # Coherence probe: model should NOT know about Fact B (it's no longer on the active branch)

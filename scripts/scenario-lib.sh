@@ -25,6 +25,15 @@ mkdir -p "$OUT_DIR"
 # Pi's interrupt key is Escape, not Ctrl-C. (See SCENARIOS.md.)
 PI_INTERRUPT_KEY="Escape"
 
+# ─── Private tmux server (parallel-safe) ─────────────────────────────────────
+# Every scenario runs against its own tmux server (selected via `tmux -L`).
+# This makes scenarios independent: kill-server in one cannot affect another,
+# stray pi processes from one cannot poison another, and parallel runs
+# trivially don't collide. The socket is namespaced by PID so concurrent
+# scripts each get a unique one.
+: "${SCN_TMUX_SOCKET:=pi-scn-$$}"
+TMUX_CMD=(tmux -L "$SCN_TMUX_SOCKET")
+
 scn_setup() {
 	local name="$1"
 	export SESSION="pi-bridge-${name}-$$"
@@ -51,13 +60,13 @@ scn_pi_start() {
 	# Without -ne, pi would also load the installed copy at
 	# ~/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/, and the symbol
 	# guard means the installed (legacy) one would win.
-	tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+	"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 		"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 		 pi --no-session -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL' $extra_args"
 
 	local deadline=$((SECONDS + 30))
 	while (( SECONDS < deadline )); do
-		if tmux capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "\(claude-bridge\)"; then
+		if "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "\(claude-bridge\)"; then
 			break
 		fi
 		sleep 0.5
@@ -67,19 +76,21 @@ scn_pi_start() {
 }
 
 scn_pi_stop() {
-	tmux kill-session -t "$SESSION" 2>/dev/null || true
+	# Tear down the entire private tmux server, not just the session.
+	# Since the server is dedicated to this scenario (per SCN_TMUX_SOCKET),
+	# kill-server cleanly disposes of everything: the session, the pi
+	# process inside it, and the server itself. No stray state survives,
+	# no broad `pkill` needed, no risk to parallel siblings.
+	"${TMUX_CMD[@]}" kill-server 2>/dev/null || true
 }
 
-# Cross-scenario isolation. Run BEFORE scn_setup in batch contexts.
-# Without this, leftover pi processes and tmux state from prior scenarios
-# leak into the next: tmux new-session succeeds but pi can't fully claim
-# the session, and scn_send keystrokes get lost (silent hang). Idempotent.
+# Cross-scenario isolation. Now a no-op when each scenario has its own
+# private tmux server (the default). Kept for explicit use in scripts
+# that want to ensure their server is fresh — idempotent. NEVER use a
+# broad `pkill -f "pi --no-session"` here: it would kill parallel
+# scenarios' pi processes that happen to share the user.
 scn_clean_state() {
-	tmux kill-server 2>/dev/null || true
-	# Only test-harness pi (--no-session is the convention) — never the
-	# user's interactive pi sessions.
-	pkill -9 -f "pi --no-session" 2>/dev/null || true
-	sleep 5
+	"${TMUX_CMD[@]}" kill-server 2>/dev/null || true
 }
 
 scn_send() {
@@ -98,8 +109,8 @@ scn_send() {
 		pre_count=${pre_count:-0}
 	fi
 
-	tmux send-keys -t "$SESSION:0" -- "$1"
-	tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "$1"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 	if (( wait_for_completion )); then
 		local timeout=120
@@ -122,12 +133,12 @@ scn_send() {
 
 scn_send_keys() {
 	# scn_send_keys Escape   (pass tmux key names, no Enter appended)
-	tmux send-keys -t "$SESSION:0" "$@"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" "$@"
 }
 
 scn_capture() {
 	# Save the entire scrollback to PANE_LOG, then stream to stdout.
-	tmux capture-pane -t "$SESSION:0" -p -S -2000 > "$PANE_LOG"
+	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -2000 > "$PANE_LOG"
 	cat "$PANE_LOG"
 }
 
@@ -138,7 +149,7 @@ scn_wait_for() {
 	local timeout="${2:-30}"
 	local start=$SECONDS
 	while ((SECONDS - start < timeout)); do
-		tmux capture-pane -t "$SESSION:0" -p -S -2000 > "$PANE_LOG" 2>/dev/null || true
+		"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -2000 > "$PANE_LOG" 2>/dev/null || true
 		if grep -qE "$pat" "$PANE_LOG"; then return 0; fi
 		sleep 0.5
 	done
@@ -192,7 +203,7 @@ scn_fail() { echo "  FAIL: $1"; SCN_FAILED=1; }
 # Usage: scn_probe_response "<prompt-substring>" -> writes response text to stdout
 scn_probe_response() {
 	local prompt_marker="$1"
-	tmux capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG"
+	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG"
 	# Find the LAST occurrence of the prompt and emit lines after it that
 	# look like model output (skip pi UI separators).
 	awk -v pat="$prompt_marker" '

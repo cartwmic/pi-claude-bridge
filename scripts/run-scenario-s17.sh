@@ -23,8 +23,8 @@ for i in 1 2 3 4 5 6 7 8; do
 done
 
 # Trigger /compact
-tmux send-keys -t "$SESSION:0" -- "/compact"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "/compact"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 8
 
 # Probe for token after compaction

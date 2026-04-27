@@ -13,14 +13,14 @@ scn_setup "s10"
 SESSION_DIR="$(mktemp -d /tmp/s10-pi-sessions.XXXXXX)"
 RESTART_SESSION="pi-bridge-s10-restart-$$"
 cleanup_s10() {
-	tmux kill-session -t "$SESSION" 2>/dev/null || true
-	tmux kill-session -t "$RESTART_SESSION" 2>/dev/null || true
+	"${TMUX_CMD[@]}" kill-session -t "$SESSION" 2>/dev/null || true
+	"${TMUX_CMD[@]}" kill-session -t "$RESTART_SESSION" 2>/dev/null || true
 	rm -rf "$SESSION_DIR"
 }
 trap cleanup_s10 EXIT
 
 # Use the harness's session_dir override path
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 	 pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
 sleep 3
@@ -29,10 +29,10 @@ scn_send "My favorite number is 137. What is the package name? Use the read tool
 scn_wait_for "pi-claude-bridge" 60 || { scn_fail "Turn 1 failed"; echo "===================="; exit $SCN_FAILED; }
 
 # Quit pi via /exit slash command (more deterministic than Ctrl-D)
-tmux send-keys -t "$SESSION:0" -- "/exit"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "/exit"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 4
-tmux kill-session -t "$SESSION" 2>/dev/null || true
+"${TMUX_CMD[@]}" kill-session -t "$SESSION" 2>/dev/null || true
 
 # Find the saved pi session UUID
 saved_session=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
@@ -51,7 +51,7 @@ echo "  saved pi session: $saved_session  uuid=$session_uuid"
 
 # Restart pi with --session
 SESSION="$RESTART_SESSION"
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 	 pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --session '$session_uuid' --provider claude-bridge --model '$SCENARIO_MODEL'"
 sleep 4

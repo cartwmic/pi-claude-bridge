@@ -13,12 +13,12 @@ trap 'scn_pi_stop' EXIT
 scn_pi_start
 
 # Over-broad request that will trigger tool calls
-tmux send-keys -t "$SESSION:0" -- "Read every .ts file in this repo and write a long detailed summary of each one with code citations."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Read every .ts file in this repo and write a long detailed summary of each one with code citations."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 7
 
 # Abort
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 2
 
 # Immediate steer

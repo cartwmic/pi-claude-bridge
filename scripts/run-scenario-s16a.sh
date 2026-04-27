@@ -19,14 +19,14 @@ SCENARIO_MODEL="${S16A_MODEL:-claude-bridge/claude-opus-4-7}"
 SESSION_DIR="$(mktemp -d /tmp/s16a-pi.XXXXXX)"
 RESTART_SESSION="pi-bridge-s16a-fork-$$"
 cleanup() {
-	tmux kill-session -t "$SESSION" 2>/dev/null || true
-	tmux kill-session -t "$RESTART_SESSION" 2>/dev/null || true
+	"${TMUX_CMD[@]}" kill-session -t "$SESSION" 2>/dev/null || true
+	"${TMUX_CMD[@]}" kill-session -t "$RESTART_SESSION" 2>/dev/null || true
 	rm -rf "$SESSION_DIR"
 }
 trap cleanup EXIT
 
 # Phase 1: establish a 2-turn conversation
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 	 pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
 sleep 4
@@ -34,10 +34,10 @@ scn_send "My favorite number is 137. Acknowledge briefly."
 scn_send "And my favorite color is octarine. Acknowledge briefly."
 
 # Quit pi gracefully
-tmux send-keys -t "$SESSION:0" -- "/exit"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "/exit"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 4
-tmux kill-session -t "$SESSION" 2>/dev/null || true
+"${TMUX_CMD[@]}" kill-session -t "$SESSION" 2>/dev/null || true
 
 # Find the saved session UUID
 saved=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
@@ -51,7 +51,7 @@ echo "  parent session uuid: $uuid"
 
 # Phase 2: fork via --fork (creates new session in same dir, claude-bridge active)
 SESSION="$RESTART_SESSION"
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 	 pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --fork '$uuid' --provider claude-bridge --model '$SCENARIO_MODEL'"
 sleep 5

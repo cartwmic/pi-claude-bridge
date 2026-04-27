@@ -14,19 +14,19 @@ trap 'scn_pi_stop' EXIT
 scn_pi_start
 
 # Prompt 1 — over-broad, will get aborted
-tmux send-keys -t "$SESSION:0" -- "Read every file in /etc and tell me about each one in detail."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Read every file in /etc and tell me about each one in detail."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 5
 
 # Abort + retype prompt 2
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 2
-tmux send-keys -t "$SESSION:0" -- "Actually, just tell me how many files are in src/ of this repo."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Actually, just tell me how many files are in src/ of this repo."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 5
 
 # Abort + retype final prompt
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 2
 scn_send "Sorry — I meant: how many .ts files are in this directory? Use bash 'ls *.ts | wc -l'."
 

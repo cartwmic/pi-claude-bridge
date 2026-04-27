@@ -42,7 +42,7 @@ rm -rf "$PI_SESSION_DIR" 2>/dev/null || true
 # Custom pi start: drop --no-session so a JSONL is persisted under
 # $PI_SESSION_DIR. Mirrors scn_pi_start otherwise.
 scn_pi_start_with_session() {
-	tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+	"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 		"cd '$SANDBOX' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 		 pi -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
 	sleep 3

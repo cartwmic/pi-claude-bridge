@@ -29,8 +29,8 @@ START_TS=$(date +%s)
 ts_rel() { local now=$(date +%s); echo "+$((now - START_TS))s"; }
 
 echo "[$(ts_rel)] T1: dispatching long bash (sleep 12 + echo MARKER)"
-tmux send-keys -t "$SESSION:0" -- "Run this exact bash command and tell me its output: 'sleep 12 && echo S21-DONE-MARKER-XK7'"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Run this exact bash command and tell me its output: 'sleep 12 && echo S21-DONE-MARKER-XK7'"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # Wait until pi has dispatched the tool and we're in the mid-execution window.
 deadline=$((SECONDS + 30))
@@ -43,8 +43,8 @@ echo "[$(ts_rel)] T1: bash handler awaiting pi (in mid-execution window)"
 # Capture stack/state before steer
 sleep 2
 echo "[$(ts_rel)] T2: typing STEER (no Escape — just a new user message)"
-tmux send-keys -t "$SESSION:0" -- "Briefly: when you reply, also use python next time."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Briefly: when you reply, also use python next time."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 STEER_TS=$(date +%s)
 echo "[$(ts_rel)] T2: steer sent (will not press Escape)"
 

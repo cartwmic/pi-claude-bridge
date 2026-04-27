@@ -26,7 +26,7 @@ fi
 
 trap 'scn_pi_stop' EXIT
 
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 	 pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$SCENARIO_MODEL'"
 sleep 3

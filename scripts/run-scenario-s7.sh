@@ -19,8 +19,8 @@ scn_pi_start
 # Use a verbose prompt that forces the model to write substantial prose between
 # numbers, so we have a wide window to abort. Plain "1 to 100" finishes in ~4s
 # on haiku and the abort hits idle.
-tmux send-keys -t "$SESSION:0" -- "Count from 1 to 100. For EACH number write 2-3 sentences of meditative reflection in markdown. Do not skip any numbers. Take your time."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Count from 1 to 100. For EACH number write 2-3 sentences of meditative reflection in markdown. Do not skip any numbers. Take your time."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # Poll the bridge log for streaming activity, then send Escape MID-stream.
 # We want to abort BEFORE 'caching session=' appears (that's the turn-complete marker).
@@ -35,7 +35,7 @@ while (( SECONDS < deadline )); do
 	# Wait for the SDK to have started streaming (first usage line means content is flowing).
 	if grep -qE "\"msg\":\"usage:" "$BRIDGE_LOG" 2>/dev/null; then
 		sleep 2  # let some content actually appear
-		tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 		sent_escape=1
 		break
 	fi

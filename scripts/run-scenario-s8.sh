@@ -17,12 +17,12 @@ ps_before=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || echo 0)
 ps_before=${ps_before:-0}
 
 # Send long-running tool prompt — do NOT wait for completion
-tmux send-keys -t "$SESSION:0" -- "Run this exact bash command: 'sleep 120 && echo HELLO-S8'"
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Run this exact bash command: 'sleep 120 && echo HELLO-S8'"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 8
 
 # Abort while bash is mid-flight
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 3
 
 # Coherence probe

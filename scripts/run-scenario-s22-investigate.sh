@@ -41,7 +41,7 @@ trap 'scn_pi_stop' EXIT
 # Use opus to mirror the user's session profile (haiku tends to ramble
 # without calling the subagent tool, breaking the repro).
 S22_MODEL="${S22_MODEL:-claude-bridge/claude-opus-4-7}"
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 	 pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$S22_MODEL'"
 
@@ -49,7 +49,7 @@ tmux new-session -d -s "$SESSION" -x 200 -y 50 \
 # only after the bottom prompt line appears.
 deadline=$((SECONDS + 30))
 while (( SECONDS < deadline )); do
-	if tmux capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "claude-bridge.*claude-opus|claude-bridge.*claude-haiku"; then
+	if "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "claude-bridge.*claude-opus|claude-bridge.*claude-haiku"; then
 		break
 	fi
 	sleep 0.5
@@ -65,21 +65,21 @@ ts_rel() { local now=$(date +%s); echo "+$((now - START_TS))s"; }
 # the file it writes.
 echo "[$(ts_rel)] T1: dispatching long-running subagent (gpt-5.4-mini)"
 # Verify pi prompt is interactive: type a single space, capture, then erase.
-tmux send-keys -t "$SESSION:0" " "
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" " "
 sleep 0.5
-ready_check=$(tmux capture-pane -t "$SESSION:0" -p -S -5 | tr -d ' \n')
+ready_check=$("${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -5 | tr -d ' \n')
 if [[ -z "$ready_check" ]]; then
 	echo "[$(ts_rel)] WARN: pi prompt not echoing — input area may not be focused"
 fi
-tmux send-keys -t "$SESSION:0" BSpace
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" BSpace
 
 PROMPT='Call the subagent tool with agent=worker model=openai-codex/gpt-5.4-mini task: write a 2000-word essay on file system history in 10 numbered sections of 200+ words each, save to /tmp/s22-essay.txt, then return only S22-DONE-MARKER-XYZ. Call once, no list action.'
-tmux send-keys -t "$SESSION:0" -l "$PROMPT"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -l "$PROMPT"
 sleep 1
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 4
 echo "[$(ts_rel)] T1 pane snapshot after send:"
-tmux capture-pane -t "$SESSION:0" -p -S -30 | tail -15
+"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -30 | tail -15
 
 # Wait specifically for an "awaiting pi" subagent handler — meaning the
 # subagent dispatch is REALLY in flight (pi has not delivered the result
@@ -104,7 +104,7 @@ while (( SECONDS < deadline )); do
 	# Periodic pane snapshot for live visibility.
 	if (( SECONDS % 15 == 0 )); then
 		echo "[$(ts_rel)] still waiting; pane tail:"
-		tmux capture-pane -t "$SESSION:0" -p -S -10 2>/dev/null | tail -8 | sed 's/^/    /'
+	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -10 2>/dev/null | tail -8 | sed 's/^/    /'
 	fi
 	sleep 2
 done
@@ -124,10 +124,10 @@ echo "[$(ts_rel)] T2: pressing Escape to enter steer-mode, then typing the steer
 # Pi default queues new messages during active turn; Escape transitions to
 # steer-mode and lets the subsequent Enter act as a real steer (matches S5
 # pattern and the user's reported flow once we account for pi's defaults).
-tmux send-keys -t "$SESSION:0" Escape
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 1
-tmux send-keys -t "$SESSION:0" -- "While you're at it: when the subagent finishes, also count the words in the file."
-tmux send-keys -t "$SESSION:0" Enter
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "While you're at it: when the subagent finishes, also count the words in the file."
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 STEER_TS=$(date +%s)
 echo "[$(ts_rel)] T2: steer sent (with Escape preceding)"
 

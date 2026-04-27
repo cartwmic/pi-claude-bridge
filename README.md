@@ -29,6 +29,8 @@ Behind the scenes, pi's tools are bridged to Claude Code but it should all work 
 
 ## AskClaude Tool
 
+**Disabled by default.** To enable, set `CLAUDE_BRIDGE_ASKCLAUDE_ENABLED=1` (or `true`) in your environment before launching pi. When unset or set to anything else, the tool is not registered and will not appear in `pi.getAllTools()` or be callable by the LLM.
+
 Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:
 
 - "Ask Claude to plan a fix"

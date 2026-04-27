@@ -1335,6 +1335,17 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// AskClaude tool — keep behavior, much smaller surface than legacy.
+	//
+	// Opt-in via env: defaults to OFF. Set CLAUDE_BRIDGE_ASKCLAUDE_ENABLED=1
+	// (or "true") to register the tool. When unset/false the tool is not
+	// registered at all (won't appear in pi.getAllTools()).
+	const askClaudeEnabledRaw = (process.env.CLAUDE_BRIDGE_ASKCLAUDE_ENABLED ?? "").trim().toLowerCase();
+	const askClaudeEnabled = askClaudeEnabledRaw === "1" || askClaudeEnabledRaw === "true";
+	if (!askClaudeEnabled) {
+		log.info("AskClaude tool: disabled (set CLAUDE_BRIDGE_ASKCLAUDE_ENABLED=1 to enable)");
+		return;
+	}
+	log.info("AskClaude tool: enabled via CLAUDE_BRIDGE_ASKCLAUDE_ENABLED");
 	pi.registerTool({
 		name: askClaudeToolName,
 		label: "Ask Claude Code",

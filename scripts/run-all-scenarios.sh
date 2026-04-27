@@ -17,11 +17,26 @@ FAIL=0
 
 PER_SCRIPT_TIMEOUT="${SCENARIO_TIMEOUT:-300}"  # 5 min per scenario default
 
+# Reset state once at start. Each scenario also resets before starting via
+# the loop below, so this is belt-and-suspenders for the very first run.
+tmux kill-server 2>/dev/null || true
+pkill -9 -f "pi --no-session" 2>/dev/null || true
+sleep 3
+
 for s in "$SCRIPT_DIR"/run-scenario-s*.sh; do
 	[[ -x "$s" ]] || continue
 	name="$(basename "$s" .sh | sed 's/^run-scenario-//')"
 	logfile="$RESULTS_DIR/${name}.run.log"
 	printf "%-30s " "$name"
+
+	# Hard reset between scenarios. Without this, ~10–30% of scenarios in
+	# a batch will silently hang because the previous scenario's tmux state
+	# or stray pi process prevents the next pi from fully claiming its
+	# session. Symptom: bridge log shows only "provider: registered" with
+	# no fresh query line. (See SKILL.md → Cross-scenario isolation.)
+	tmux kill-server 2>/dev/null || true
+	pkill -9 -f "pi --no-session" 2>/dev/null || true
+	sleep 5
 	# Use gtimeout if available (macOS coreutils), else timeout, else fallback.
 	if command -v gtimeout >/dev/null 2>&1; then
 		TIMEOUT_BIN=gtimeout

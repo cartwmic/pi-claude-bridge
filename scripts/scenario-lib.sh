@@ -36,7 +36,15 @@ scn_setup() {
 }
 
 scn_pi_start() {
-	# Start pi in a fresh tmux session. Background; returns immediately.
+	# Start pi in a fresh tmux session. Background; returns when pi is ready.
+	#
+	# Readiness: poll the pane until pi has rendered its bottom status line
+	# `(claude-bridge) <model>` rather than a fixed `sleep 3`. A fixed sleep
+	# loses keystrokes when pi's startup is slow (tmux contention, opus
+	# boot) — the tmux session exists but pi's input isn't focused yet, so
+	# `tmux send-keys` fires into the void and the test silently hangs.
+	# Symptom: bridge log only shows "provider: registered" with no fresh
+	# query line.
 	local extra_args=""
 	if (( $# > 0 )); then extra_args="$*"; fi
 	# -ne disables auto-discovered extensions; -e loads ONLY our local copy.
@@ -46,12 +54,32 @@ scn_pi_start() {
 	tmux new-session -d -s "$SESSION" -x 200 -y 50 \
 		"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
 		 pi --no-session -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL' $extra_args"
-	# Give pi time to render its prompt
-	sleep 3
+
+	local deadline=$((SECONDS + 30))
+	while (( SECONDS < deadline )); do
+		if tmux capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "\(claude-bridge\)"; then
+			break
+		fi
+		sleep 0.5
+	done
+	# Settle the draw loop after the ready marker appears.
+	sleep 1
 }
 
 scn_pi_stop() {
 	tmux kill-session -t "$SESSION" 2>/dev/null || true
+}
+
+# Cross-scenario isolation. Run BEFORE scn_setup in batch contexts.
+# Without this, leftover pi processes and tmux state from prior scenarios
+# leak into the next: tmux new-session succeeds but pi can't fully claim
+# the session, and scn_send keystrokes get lost (silent hang). Idempotent.
+scn_clean_state() {
+	tmux kill-server 2>/dev/null || true
+	# Only test-harness pi (--no-session is the convention) — never the
+	# user's interactive pi sessions.
+	pkill -9 -f "pi --no-session" 2>/dev/null || true
+	sleep 5
 }
 
 scn_send() {

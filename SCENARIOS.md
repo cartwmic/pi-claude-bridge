@@ -618,6 +618,36 @@ bridge replays it; everything works.
   it but don't fail the bridge scenario unless the bridge interfered with
   pi's compaction LLM call.
 
+### S23 — `/reload` preserves working provider registration
+
+**Goal:** prove that `/reload` doesn't leave pi with no provider for the
+bridge's models. Pi's `agent-session.reload()` calls `resetApiProviders()`
+between `session_shutdown` and the re-run of extensions; the bridge must
+re-register on the second module init.
+
+**Regression class:** silent hang after `/reload`. User input is "submitted"
+in the TUI, but pi has no provider for the model and never starts inference.
+Originally caused by a `globalThis` Symbol guard that survived reload and
+caused `pi.registerProvider` to be skipped on re-load.
+
+**Steps:**
+1. Send a normal turn; assert it produces a marker pre-reload.
+2. Send `/reload`. Wait for the bridge log to show a second
+   `provider: registered` line.
+3. Send another turn after reload.
+
+**Pass:**
+- Mechanical:
+  - `provider: registered` appears at least 2× in the bridge log.
+  - `provider: skipping re-registration` is **not** present after reload.
+  - A new `streamSimple: fresh query` line appears after reload.
+- **Coherence:** the post-reload turn produces the requested marker token
+  (proves inference actually fired, not just that the provider was wired).
+
+**Implementation note:** the fix lives in the bridge's `session_shutdown`
+handler — drop `Symbol.for("claude-bridge:active")` when
+`event.reason === "reload"` so the next module init can re-register.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per

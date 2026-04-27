@@ -1269,7 +1269,17 @@ export default function (pi: ExtensionAPI) {
 			clearSession(`session_start:${event.reason}`);
 		}
 	});
-	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+	pi.on("session_shutdown", (event?: any) => {
+		clearSession("session_shutdown");
+		// On /reload, pi calls resetApiProviders() between shutdown and the
+		// re-run of extensions. Drop the Symbol guard so the next module init
+		// re-registers the provider. Without this, the guard persists on
+		// globalThis, registration is skipped, and subsequent user input
+		// silently never reaches inference (pi has no provider for the model).
+		if (event?.reason === "reload") {
+			delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
+		}
+	});
 
 	// Provider registration. Subagent-loaded module instances don't re-register
 	// because pi-ai's ModelRegistry is shared — first writer wins for the

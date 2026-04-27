@@ -24,6 +24,9 @@ source "$(dirname "$0")/scenario-lib.sh"
 SCN_FAILED=0
 scn_setup "s19"
 
+# Opus for deterministic tool-calling on the directive prompts.
+SCENARIO_MODEL="${S19_MODEL:-claude-bridge/claude-opus-4-7}"
+
 trap 'scn_pi_stop_with_session' EXIT
 
 # Sandbox cwd so pi's session file is isolated and easy to find.
@@ -138,7 +141,8 @@ fi
 # Built-in tool_use observations (defense check): if Claude tried to emit
 # ToolSearch/Skill, the warning would fire. After DISALLOWED_BUILTIN_TOOLS
 # update + queue-skip, neither path should pollute the queue regardless.
-builtins_seen=$(grep -c "built-in tool_use observed" "$BRIDGE_LOG" 2>/dev/null | head -1 | tr -d ' \n' || echo 0)
+builtins_seen=$(grep -c "built-in tool_use observed" "$BRIDGE_LOG" 2>/dev/null || true)
+builtins_seen=${builtins_seen:-0}
 echo "  built-in tool_use observations skipped from queue: $builtins_seen"
 if (( builtins_seen == 0 )); then
 	scn_pass "no built-in tool_use leaked through to processStreamEvent"

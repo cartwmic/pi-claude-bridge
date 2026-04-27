@@ -8,15 +8,20 @@ source "$(dirname "$0")/scenario-lib.sh"
 SCN_FAILED=0
 scn_setup "s10b"
 
+# Use opus for deterministic recall behavior. Haiku occasionally goes into
+# tool-use mode for "remember this" prompts and the regex-matched ack never
+# appears, even though the cache/resume architecture is fine.
+SCENARIO_MODEL="${S10B_MODEL:-claude-bridge/claude-opus-4-7}"
+
 trap 'scn_pi_stop' EXIT
 
 scn_pi_start
 
-scn_send "My favorite color is octarine. Remember it."
-scn_wait_for "(octarine|got|noted|remember)" 60 || scn_fail "Turn 1 — no acknowledgement"
+scn_send "Please respond with just 'noted' to acknowledge: my favorite color is octarine. Remember it."
+scn_wait_for "(octarine|noted|remember|acknowledge)" 90 || scn_fail "Turn 1 — no acknowledgement"
 
-scn_send "What was my favorite color?"
-scn_wait_for "octarine" 60 || scn_fail "Turn 2 — color not recalled"
+scn_send "What was my favorite color? One word."
+scn_wait_for "octarine" 90 || scn_fail "Turn 2 — color not recalled"
 
 echo "==== S10b results ===="
 

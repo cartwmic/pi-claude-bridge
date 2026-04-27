@@ -57,7 +57,7 @@ fi
 
 # Architectural: cachedSessionId preserved across abort (so resume works on T2)
 # Look for resume=<id> on a subsequent fresh query.
-post_abort_resumes=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" 2>/dev/null | head -1 | tr -d ' \n' || echo 0)
+post_abort_resumes=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" 2>/dev/null || true)
 post_abort_resumes=${post_abort_resumes:-0}
 echo "  post-abort resumes: $post_abort_resumes"
 if (( post_abort_resumes >= 1 )); then

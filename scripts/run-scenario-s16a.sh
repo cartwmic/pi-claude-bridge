@@ -13,6 +13,9 @@ source "$(dirname "$0")/scenario-lib.sh"
 SCN_FAILED=0
 scn_setup "s16a"
 
+# Opus for deterministic recall in the forked branch.
+SCENARIO_MODEL="${S16A_MODEL:-claude-bridge/claude-opus-4-7}"
+
 SESSION_DIR="$(mktemp -d /tmp/s16a-pi.XXXXXX)"
 RESTART_SESSION="pi-bridge-s16a-fork-$$"
 cleanup() {

@@ -10,6 +10,9 @@ source "$(dirname "$0")/scenario-lib.sh"
 SCN_FAILED=0
 scn_setup "s16b"
 
+# Opus for deterministic /tree navigation + post-divergence recall.
+SCENARIO_MODEL="${S16B_MODEL:-claude-bridge/claude-opus-4-7}"
+
 trap 'scn_pi_stop' EXIT
 
 scn_pi_start

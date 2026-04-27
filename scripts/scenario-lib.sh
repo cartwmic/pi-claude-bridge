@@ -133,14 +133,22 @@ scn_cache_profile() {
 
 scn_session_count() {
 	# How many distinct CC session_ids did the bridge cache during this run?
-	grep -oE "caching session=[a-f0-9]+" "$BRIDGE_LOG" 2>/dev/null | sort -u | wc -l | tr -d ' \n' || echo 0
+	# Use a single substitution to avoid the `0\n0` artifact from
+	# `pipe-with-grep | ... || echo 0` under pipefail.
+	local n
+	n=$(grep -oE "caching session=[a-f0-9]+" "$BRIDGE_LOG" 2>/dev/null | sort -u | wc -l | tr -d ' \n' || true)
+	echo "${n:-0}"
 }
 
 # Helper: count regex matches, sanitizing output to a single integer.
 scn_grep_count() {
 	# scn_grep_count "<regex>" "<file>"
+	# grep -c returns 1 when no matches — under set -euo pipefail this
+	# would abort the whole pipeline if combined with `| head | tr || echo 0`
+	# (the `|| echo 0` runs after a partial "0" was already on stdout,
+	# producing "0\n0"). Single-call form avoids the issue.
 	local n
-	n=$(grep -cE "$1" "$2" 2>/dev/null | head -1 | tr -d ' \n' || echo 0)
+	n=$(grep -cE "$1" "$2" 2>/dev/null || true)
 	echo "${n:-0}"
 }
 

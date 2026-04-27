@@ -90,7 +90,7 @@ fi
 #       path was hit, so this assertion is N/A and we skip it.
 #   (b) pi delivered a delayed tool result → bridge must emit
 #       `pushAbortedError: orphan tool result post-abort` instead of done/stop.
-orphan_warn=$(grep -c "orphaned tool result, no active query" "$BRIDGE_LOG" 2>/dev/null | head -1 | tr -d ' \n' || echo 0)
+orphan_warn=$(grep -c "orphaned tool result, no active query" "$BRIDGE_LOG" 2>/dev/null || true)
 orphan_warn=${orphan_warn:-0}
 if (( orphan_warn > 0 )); then
 	if grep -q "pushAbortedError: orphan tool result post-abort" "$BRIDGE_LOG"; then

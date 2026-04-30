@@ -70,6 +70,12 @@ const DISALLOWED_BUILTIN_TOOLS = [
 	// would otherwise pollute our FIFO queue. The queue is also defended at
 	// push time (see processStreamEvent), but blocking emission is cleaner.
 	"ToolSearch", "Skill", "AskUserQuestion", "PushNotification",
+	// CC background-task / scheduling family. These were observed leaking
+	// through (see claude-bridge.log warnings: "built-in tool_use observed
+	// (ScheduleWakeup|TaskOutput) — skipping queue push"). They are CC SDK
+	// built-ins, NOT pi-native — pi exposes its own equivalents through the
+	// `mcp__custom-tools__*` namespace, so blocking the bare names is safe.
+	"ScheduleWakeup", "TaskOutput", "TaskStop", "BashOutput", "Monitor", "Mcp",
 ];
 
 // Pi-CC tool arg key renames (pi names vs CC SDK names for built-ins).

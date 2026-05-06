@@ -7,6 +7,12 @@
 #                         Set >1 to run scenarios in parallel.
 #   SCENARIO_TIMEOUT=N    per-script timeout in seconds (default 300).
 #
+# Per-scenario overrides (timeout, model):
+#   `scripts/scenario-overrides.conf` declares per-name overrides for
+#   timeout and SCENARIO_MODEL. See that file for format and rationale.
+#   Suite-level env vars (SCENARIO_TIMEOUT, SCENARIO_MODEL) are still
+#   the floor; per-scenario entries supersede them for that scenario only.
+#
 # Each scenario gets its own private tmux server (via SCN_TMUX_SOCKET in
 # scenario-lib.sh), so parallel runs don't interfere. Bridge logs and pane
 # logs are namespaced by scenario name. Each scenario's pi process is
@@ -28,6 +34,24 @@ echo "" >> "$SUMMARY"
 
 PER_SCRIPT_TIMEOUT="${SCENARIO_TIMEOUT:-300}"
 MAX_CONCURRENCY="${SCENARIO_PARALLEL:-1}"
+OVERRIDES_FILE="$SCRIPT_DIR/scenario-overrides.conf"
+
+# Look up per-scenario overrides. Echoes "<timeout>|<model>" with `-` for
+# any field that should fall back to the suite default. Returns "-|-" if
+# the scenario has no override entry or the file doesn't exist.
+lookup_override() {
+	local want="$1"
+	[[ -f "$OVERRIDES_FILE" ]] || { echo "-|-"; return; }
+	while IFS='|' read -r name to_field model_field; do
+		# Skip blanks and comments.
+		[[ -z "$name" || "$name" =~ ^[[:space:]]*# ]] && continue
+		if [[ "$name" == "$want" ]]; then
+			echo "${to_field:--}|${model_field:--}"
+			return
+		fi
+	done < "$OVERRIDES_FILE"
+	echo "-|-"
+}
 
 # Use gtimeout if available (macOS coreutils), else timeout, else nothing.
 if command -v gtimeout >/dev/null 2>&1; then
@@ -47,12 +71,34 @@ run_one() {
 	local logfile="$RESULTS_DIR/${name}.run.log"
 	local socket="pi-scn-${name}-$$"
 
+	# Apply per-scenario overrides (if any).
+	local override=$(lookup_override "$name")
+	local scn_timeout="${override%%|*}"
+	local scn_model="${override##*|}"
+	local effective_timeout="$PER_SCRIPT_TIMEOUT"
+	[[ "$scn_timeout" != "-" ]] && effective_timeout="$scn_timeout"
+	# Build the env-prefix as a string. Bash 3.2 + `set -u` makes empty
+	# arrays awkward to splat; a simple variable avoids the unbound-variable
+	# trap when there's no model override.
+	local model_env=""
+	if [[ "$scn_model" != "-" ]]; then
+		model_env="SCENARIO_MODEL=$scn_model"
+	fi
+
 	local rc=0
 	if [[ -n "$TIMEOUT_BIN" ]]; then
-		SCN_TMUX_SOCKET="$socket" "$TIMEOUT_BIN" --kill-after=10 "$PER_SCRIPT_TIMEOUT" "$script" > "$logfile" 2>&1
+		if [[ -n "$model_env" ]]; then
+			SCN_TMUX_SOCKET="$socket" env "$model_env" "$TIMEOUT_BIN" --kill-after=10 "$effective_timeout" "$script" > "$logfile" 2>&1
+		else
+			SCN_TMUX_SOCKET="$socket" "$TIMEOUT_BIN" --kill-after=10 "$effective_timeout" "$script" > "$logfile" 2>&1
+		fi
 		rc=$?
 	else
-		SCN_TMUX_SOCKET="$socket" "$script" > "$logfile" 2>&1 || rc=$?
+		if [[ -n "$model_env" ]]; then
+			SCN_TMUX_SOCKET="$socket" env "$model_env" "$script" > "$logfile" 2>&1 || rc=$?
+		else
+			SCN_TMUX_SOCKET="$socket" "$script" > "$logfile" 2>&1 || rc=$?
+		fi
 	fi
 
 	# Best-effort cleanup of this scenario's private tmux server.

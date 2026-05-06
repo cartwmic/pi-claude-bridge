@@ -49,6 +49,56 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 - **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
 
+## Structured output / output-capture tools
+
+Pass `ctx.tools = [captureTool]` with a tool whose name doesn't collide with any currently active pi tool, and the bridge routes the call through an isolated capture path. The model is required to return structured output matching the tool's JSON schema; the bridge surfaces it as a normal `AssistantMessage` with a `toolCall` content block — the same shape direct pi-ai providers return.
+
+The capture path runs in full isolation from the user-session state machine — no shared stack, no session cache writes, no interference with a concurrent interactive turn.
+
+### Usage
+
+```ts
+import * as piAi from "@mariozechner/pi-ai";
+
+const captureTool: piAi.Tool = {
+  name: "extract_summary",
+  // description is NOT forwarded — put instructions in systemPrompt or the user message
+  description: "Extract a structured summary.",
+  parameters: {
+    type: "object",
+    properties: {
+      title:    { type: "string", maxLength: 80 },
+      keywords: { type: "array", items: { type: "string" }, maxItems: 5 },
+    },
+    required: ["title", "keywords"],
+  },
+};
+
+const msg = await piAi.complete(
+  { provider: "claude-bridge", id: "claude-haiku-4-5" },
+  {
+    systemPrompt: "Extract a title and up to 5 keywords from the text.",
+    messages: [{ role: "user", content: "The quick brown fox jumps over the lazy dog." }],
+    tools: [captureTool],
+  }
+);
+// msg.stopReason === "toolUse"
+// msg.content[0] → { type: "toolCall", id: "toolu_...", name: "extract_summary", arguments: { title: "...", keywords: [...] } }
+// msg.usage.cost.total >= 0
+```
+
+`usage` and `cost` are propagated from the SDK result including cache-token accounting. On rejection or SDK validation failure (`error_max_structured_output_retries`) the message has `stopReason: "error"` and an `errorMessage` naming the cause — no query is started (and no tokens billed) for call-shape errors.
+
+Two path-specific behaviors worth noting: `ctx.systemPrompt` is forwarded verbatim on the capture path (unlike the agent-loop path, which replaces it with a hardcoded value). `cwd` defaults to `os.tmpdir()` — the capture path has no working-tree dependency.
+
+### v1 limitations
+
+- **One capture tool per call, mutually exclusive with executable tools.** Mixing capture and executable tools, or passing more than one capture tool, is rejected immediately with `stopReason: "error"`.
+- **Object-root schema only.** The capture tool's `parameters` must have `type: "object"` at the root (TypeBox `Type.Object(...)` or equivalent JSON Schema). Non-object roots are rejected.
+- **`tool.description` is dropped.** `outputFormat` is schema-only; the description never reaches the model. Put capture instructions in `ctx.systemPrompt` or the user message.
+- **Name collision with active pi tools.** A capture tool whose name matches an active pi tool is routed through MCP execution instead of the capture path — pick names that don't collide with registered pi tools.
+- **Multi-message context is text-only and lossy.** History in `ctx.messages` is serialized as plain text: image blocks are dropped, tool-call arguments are truncated to 200 chars, tool-result content to 500 chars. For image-bearing prompts or full-fidelity tool history, pass only the immediate prompt in `ctx.messages` and embed any needed prior context inline as text.
+
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project).

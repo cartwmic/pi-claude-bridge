@@ -53,6 +53,33 @@ Plus a **third bug** discovered while testing `/tree`:
 
 4. **`session_id` capture happens in `consumeQuery`'s `system: init` handler**, not at end of stream. This is needed so a mid-flight supersession (S5 steer) can resume into the just-started session. Without this, fast sequential aborts lose context.
 
+## S25 — Capture call during in-flight user turn — 2026-05-05
+- Bridge commit: main
+- Pi version: v0.73.0
+- Model: claude-bridge/claude-haiku-4-5
+- Mechanical: PASS — all 7 assertions passed
+- Coherence: PASS — model reported SlowTool result accurately; turn 2 produced `WARM-RESUME-S25`
+- Cache:
+  - T1 (SlowTool turn, cold start): (creation=5562, read=0)
+  - Capture call (independent fresh query): (creation=174, read=5562)
+  - T2 (warm resume): (creation=94, read=5736)
+- Notes:
+  - `[Capture done] stopReason=toolUse` notification was visible in the pane (not just bridge log)
+  - Capture ran concurrently with SlowTool's 10 s block; both completed normally
+  - No `superseding active frame` logged — user turn unaffected
+  - `caching session=3e196239` appeared only once (from T1); capture path emitted zero `caching session=` lines
+  - T2 warm-resumed on `session=3e196239` confirming `cachedSessionId` was not mutated by the capture call
+
+```
+A1: PASS — SlowTool mid-execution observed (mcp handler: SlowTool.*awaiting pi)
+A2: PASS — capture call completed (runCaptureQuery: done in bridge log)
+A3: PASS — no 'superseding active frame'
+A4: PASS — exactly 1 new caching session= line
+A5: PASS — original user turn completed normally
+A6: PASS — turn 2 warm-resumed on session=3e196239
+A7: PASS — turn 2 produced WARM-RESUME-S25
+```
+
 ## How to reproduce
 
 ```bash

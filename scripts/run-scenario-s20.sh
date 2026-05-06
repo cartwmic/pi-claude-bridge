@@ -38,8 +38,13 @@ trap 'scn_pi_stop' EXIT
 scn_pi_start
 
 # ---- Phase 1: dispatch a long-running tool, abort mid-execution -------------
-# Use a sentinel that MUST NOT appear in the bridge or coherence response.
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Run this exact bash command: 'sleep 60 && echo S20-MUST-NOT-PRINT'"
+# Use a NEUTRAL hex sentinel that MUST NOT appear in the bridge or coherence
+# response. Earlier versions used `S20-MUST-NOT-PRINT` which the model read
+# as an instruction ("MUST NOT PRINT") and refused to invoke the tool, so the
+# test's mid-tool-execution window never opened. Naming the sentinel with a
+# neutral hex string keeps the model from second-guessing the request.
+S20_SENTINEL="S20-SENTINEL-A4F2K"
+	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Use the bash tool right now to run: sleep 60 && echo $S20_SENTINEL. Actually invoke the tool; do not just describe it."
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # Poll bridge log until pi is mid-tool-execution: we wait for a
@@ -124,8 +129,11 @@ else
 	scn_fail "FM3: neither synthetic drain nor real-result-to-aborted-frame fired"
 fi
 
-# No fabricated tool output — sentinel must NOT appear anywhere.
-if grep -q "S20-MUST-NOT-PRINT" "$BRIDGE_LOG" 2>/dev/null; then
+# No fabricated tool output — sentinel must NOT appear in the bridge log.
+# (The bash command was aborted before completion, so the echo never ran;
+# if the sentinel appears, either the abort failed or the SDK fabricated
+# tool output post-abort.)
+if grep -q "$S20_SENTINEL" "$BRIDGE_LOG" 2>/dev/null; then
 	scn_fail "tool sentinel leaked into bridge log (tool actually completed)"
 else
 	scn_pass "no fabricated tool output (sentinel absent)"

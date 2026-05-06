@@ -46,10 +46,23 @@ else
 fi
 
 # COHERENCE: model must affirm prior printing-press request was made.
+# Coherence regex design (validated against 12 response shapes including
+# bare "Yes.", explicit "Yes, you asked...", "No, you didn't...", denial
+# phrases, and false-positive guards like "Yesterday" / "No problem"):
+#   POS — clear affirmatives only:
+#     1. Standalone "Yes" with non-alpha boundaries (catches Yes. Yes, Yes!).
+#     2. Recall phrasings ("earlier you asked", "originally you did", etc).
+#   NEG — clear denials only:
+#     1. "No" followed by a relevant pronoun/topic word.
+#     2. A line that's literally just "No" / "No." / "No!".
+#     3. Denial phrases (don't recall, haven't asked, no prior, etc).
+#   Both regexes use POSIX [^[:alpha:]] boundaries (portable across BSD/GNU
+#   grep) instead of \b. "Yesterday" / "Now" / "No problem" all correctly
+#   fail to match in either direction.
 scn_assert_response \
 	"Earlier in this conversation, did I ever ask you about the printing press" \
-	"^[^\n]*(yes|did|asked|originally|first|earlier).*(print|press|essay)|^[^\n]*(yes,)" \
-	"(no, you|don't recall|don't have|no prior|no.*previous|no.*earlier|haven't asked|first request|only one|i don't have any (previous|prior) context|cannot find any|no record)" \
+	"(^|[^[:alpha:]])[Yy]es([^[:alpha:]]|\$)|(earlier|originally|first|previously)[[:space:]]+you[[:space:]]+(asked|did|wanted|brought)|you[[:space:]]+(originally|earlier|first|previously)[[:space:]]+(asked|did)|yes,[[:space:]]+you" \
+	"(^|[^[:alpha:]])[Nn]o[,.!?]?[[:space:]]+(you|i|prior|previous|that|earlier|haven|never|record|recall)|^[[:space:]]*[Nn]o[.,!?]?[[:space:]]*\$|don't[[:space:]]+(recall|remember|have|see)|haven't[[:space:]]+(asked|received|seen|mentioned)|never[[:space:]]+asked|no[[:space:]]+(prior|previous|earlier|record|mention)|cannot[[:space:]]+find|i[[:space:]]+have[[:space:]]+no[[:space:]]+(record|memory|recollection)|first[[:space:]]+request[[:space:]]+from[[:space:]]+you|only[[:space:]]+(one|the)[[:space:]]+(thing|message|request)" \
 	"coherence: model affirms prior printing-press request was made"
 
 echo "Cache profile:"

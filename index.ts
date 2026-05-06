@@ -26,7 +26,7 @@ import * as piAi from "@mariozechner/pi-ai";
 import { keyHint, buildSessionContext, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
 import {
 	createSdkMcpServer,
-	query,
+	query as _realQuery,
 	type EffortLevel,
 	type SDKMessage,
 	type SDKUserMessage,
@@ -38,7 +38,8 @@ import { Text } from "@mariozechner/pi-tui";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import pino from "pino";
 import { createStream } from "rotating-file-stream";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
+import { randomBytes } from "crypto";
 import { dirname, join, resolve } from "path";
 import { pascalCase } from "change-case";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
@@ -77,6 +78,40 @@ const DISALLOWED_BUILTIN_TOOLS = [
 	// `mcp__custom-tools__*` namespace, so blocking the bare names is safe.
 	"ScheduleWakeup", "TaskOutput", "TaskStop", "BashOutput", "Monitor", "Mcp",
 ];
+
+// ---------------------------------------------------------------------------
+// SDK query factory — test seam (Decision 11).
+// Production code always uses _queryFactory(...); tests can inject a mock via
+// __setQueryFactoryForTests(). DO NOT call _realQuery directly anywhere else.
+// ---------------------------------------------------------------------------
+
+let _queryFactory: typeof _realQuery = _realQuery;
+
+/** Test-only: swap the query factory and return a restorer. Not part of the public API. */
+export function __setQueryFactoryForTests(f: typeof _realQuery): () => void {
+	const prev = _queryFactory;
+	_queryFactory = f;
+	return () => { _queryFactory = prev; };
+}
+
+/** Test-only: swap piApiRef and return a restorer. Not part of the public API. */
+export function __setPiApiRefForTests(ref: { getActiveTools(): string[] } | null): () => void {
+	const prev = piApiRef;
+	piApiRef = ref as any;
+	return () => { piApiRef = prev as any; };
+}
+
+/** Test-only: return the current debug log path. Not part of the public API. */
+export function __getDebugLogPathForTests(): string {
+	return DEBUG_LOG_PATH;
+}
+
+/** Test-only: reset cross-call session cache. Not part of the public API. */
+export function __resetCachedSessionForTests(): void {
+	cachedSessionId = null;
+	cachedSessionCwd = null;
+	lastSentMessageHashes = null;
+}
 
 // Pi-CC tool arg key renames (pi names vs CC SDK names for built-ins).
 const SDK_KEY_RENAMES: Record<string, Record<string, string>> = {
@@ -236,7 +271,7 @@ function detectHistoryDivergence(
  * MCP handler).
  */
 type QueryFrame = {
-	sdkQuery: ReturnType<typeof query>;
+	sdkQuery: ReturnType<typeof _realQuery>;
 	currentPiStream: AssistantMessageEventStream | null;
 	turnOutput: AssistantMessage | null;
 	turnStarted: boolean;
@@ -812,10 +847,107 @@ function resolveMcpTools(context: Context, excludeToolName: string): {
 }
 
 // ---------------------------------------------------------------------------
+// Output-capture classification helpers (Decision 2, 3, 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot pi's active tool names once per call. Returns empty set when
+ * piApiRef is null (bridge loaded outside pi extension lifecycle, e.g. tests)
+ * or when getActiveTools() throws. With an empty set, every ctx.tools entry
+ * is treated as a capture tool — the correct fallback for callers not bound
+ * to the pi extension runtime (per spec "`piApiRef === null` fallback").
+ * Uses getActiveTools() NOT getAllTools() so registered-but-inactive names
+ * are correctly classified as capture-side (Decision 2).
+ */
+export function getActiveToolNameSet(): Set<string> {
+	try {
+		// getActiveTools() returns string[] (tool names) per ExtensionAPI type.
+		const names = piApiRef?.getActiveTools() ?? [];
+		return new Set(names);
+	} catch {
+		return new Set();
+	}
+}
+
+/**
+ * Partition context.tools into executable (pi-registered) and capture
+ * (unregistered) tools. Skips excludeName (e.g. AskClaude built-in).
+ */
+export function classifyToolsForCapture(
+	context: Context,
+	activeNames: Set<string>,
+	excludeName: string,
+): { executable: Tool[]; capture: Tool[] } {
+	const executable: Tool[] = [];
+	const capture: Tool[] = [];
+	if (!context.tools) return { executable, capture };
+	for (const tool of context.tools) {
+		if (tool.name === excludeName) continue;
+		if (activeNames.has(tool.name)) {
+			executable.push(tool);
+		} else {
+			capture.push(tool);
+		}
+	}
+	return { executable, capture };
+}
+
+/**
+ * Deep JSON-only clone of a schema: preserves every JSON-serializable keyword
+ * at every depth (minLength, maxLength, minItems, maxItems, pattern, enum,
+ * required, nested properties, items, etc.) and naturally drops TypeBox
+ * symbol-keyed metadata (Symbol(Kind), Symbol(Modifier), etc.) which
+ * JSON.stringify skips at every depth. Per design Decision 6.
+ */
+export function cleanSchemaForSdk(schema: unknown): Record<string, unknown> {
+	return JSON.parse(JSON.stringify(schema));
+}
+
+type CaptureCallShape =
+	| { kind: "all-executable" }
+	| { kind: "single-capture"; captureTool: Tool; cleanedSchema: Record<string, unknown> }
+	| { kind: "rejected"; reason: string };
+
+/**
+ * Enforce Decision 3: capture mode is mutually exclusive with executable
+ * tools, and requires exactly one capture tool with an object-root schema.
+ */
+export function validateCaptureCallShape({
+	executable,
+	capture,
+}: { executable: Tool[]; capture: Tool[] }): CaptureCallShape {
+	if (capture.length === 0) {
+		return { kind: "all-executable" };
+	}
+	if (capture.length === 1 && executable.length === 0) {
+		const captureTool = capture[0];
+		const cleanedSchema = cleanSchemaForSdk(captureTool.parameters);
+		if (cleanedSchema.type !== "object") {
+			return {
+				kind: "rejected",
+				reason: `capture tool "${captureTool.name}" has non-object root schema type "${String(cleanedSchema.type)}" — capture mode requires an object root schema (Type.Object(...)). v1 limitation.`,
+			};
+		}
+		return { kind: "single-capture", captureTool, cleanedSchema };
+	}
+	if (capture.length > 1 && executable.length === 0) {
+		return {
+			kind: "rejected",
+			reason: `bridge output-capture v1 supports exactly one capture tool per call; ${capture.length} unregistered tools found: [${capture.map((t) => t.name).join(", ")}]. Split into separate calls or use exactly one capture tool.`,
+		};
+	}
+	// Mixed: at least one capture tool alongside executable tools
+	return {
+		kind: "rejected",
+		reason: `capture mode (unregistered: [${capture.map((t) => t.name).join(", ")}]) is mutually exclusive with executable tools (registered: [${executable.map((t) => t.name).join(", ")}]) in v1. A call must use either all executable tools or exactly one capture tool. v1 limitation.`,
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Provider entry point: streamSimple
 // ---------------------------------------------------------------------------
 
-function streamClaudeAgentSdk(
+export function streamClaudeAgentSdk(
 	model: Model<any>,
 	context: Context,
 	options?: SimpleStreamOptions,
@@ -910,6 +1042,37 @@ function streamClaudeAgentSdk(
 			orphanLog.info("pushAbortedError: orphan tool result post-abort");
 		});
 		return stream;
+	}
+
+	// ---- Case 0: output-capture shape gate (Decision 10) ----
+	// Classification runs only when lastMsg?.role !== "toolResult" (i.e. fresh-turn
+	// path). Cases 1 and 2 above have already returned for tool-result delivery.
+	// We check here — before touching the stack or shared state — so a capture
+	// call never supersedes an active user frame (Decision 4).
+	{
+		const activeNames = getActiveToolNameSet();
+		const { executable, capture } = classifyToolsForCapture(context, activeNames, askClaudeToolName);
+		const shape = validateCaptureCallShape({ executable, capture });
+
+		if (shape.kind === "rejected") {
+			log.warn({ captureTool: capture.map((t) => t.name), executable: executable.map((t) => t.name) }, `streamSimple: rejected capture-shape: ${shape.reason}`);
+			queueMicrotask(() => {
+				const out = newTurnOutput(model);
+				out.stopReason = "error";
+				out.errorMessage = shape.reason;
+				stream.push({ type: "start", partial: out });
+				stream.push({ type: "error", reason: "error", error: out });
+				stream.end();
+			});
+			return stream;
+		}
+
+		if (shape.kind === "single-capture") {
+			runCaptureQuery(model, shape.captureTool, shape.cleanedSchema, context, options, stream);
+			return stream;
+		}
+
+		// shape.kind === "all-executable" — fall through to Case 3.
 	}
 
 	// ---- Case 3: fresh user turn (or subagent / steer-as-fresh) ----
@@ -1066,7 +1229,7 @@ function startFreshQuery(
 	};
 	const mcpServers = buildMcpServers(mcpTools, frame);
 
-	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+	const queryOptions: NonNullable<Parameters<typeof _realQuery>[0]["options"]> = {
 		cwd,
 		disallowedTools: DISALLOWED_BUILTIN_TOOLS,
 		allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
@@ -1086,7 +1249,7 @@ function startFreshQuery(
 		`resume=${useResume ? cachedSessionId?.slice(0, 8) : "no"} effort=${effort ?? "default"} prompt="${promptText.slice(0, 60)}"`,
 	);
 
-	const sdkQuery = query({ prompt, options: queryOptions });
+	const sdkQuery = _queryFactory({ prompt, options: queryOptions });
 	frame.sdkQuery = sdkQuery;
 	stack.push(frame);
 
@@ -1186,6 +1349,250 @@ function startFreshQuery(
 }
 
 // ---------------------------------------------------------------------------
+// runCaptureQuery — isolated output-capture path (Decision 4)
+//
+// Emits exactly: one `start` event, then one terminal `done(toolUse)` or
+// `error` event. Suppresses all intermediate stream events (Decision 5).
+//
+// ISOLATION INVARIANTS: this function MUST NOT touch:
+//   - stack (no push, no pop, no top())
+//   - cachedSessionId (no reads or writes)
+//   - cachedSessionCwd (no reads or writes)
+//   - lastSentMessageHashes (no reads or writes)
+// These names are listed here to make it easy to audit for regressions.
+// ---------------------------------------------------------------------------
+
+export async function runCaptureQuery(
+	model: Model<any>,
+	captureTool: Tool,
+	cleanedSchema: Record<string, unknown>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	stream: AssistantMessageEventStream,
+): Promise<void> {
+	const captureLog = logger.child({ piSessionId: getPiSessionId(), model: model.id, mode: "capture", captureTool: captureTool.name });
+	captureLog.info(`runCaptureQuery: starting capture for tool "${captureTool.name}" model=${model.id}`);
+
+	// Pre-flight abort check.
+	const signal = options?.signal;
+	if (signal?.aborted) {
+		const out = newTurnOutput(model);
+		out.stopReason = "aborted";
+		out.errorMessage = "Operation aborted by user";
+		stream.push({ type: "start", partial: out });
+		stream.push({ type: "error", reason: "aborted", error: out });
+		stream.end();
+		return;
+	}
+
+	// Abort listener (wired after pre-flight, removed in every exit path).
+	let streamEnded = false;
+	let sdkQueryRef: ReturnType<typeof _realQuery> | null = null;
+	const onAbort = () => {
+		if (streamEnded) return;
+		streamEnded = true;
+		const out = newTurnOutput(model);
+		out.stopReason = "aborted";
+		out.errorMessage = "Operation aborted by user";
+		try {
+			stream.push({ type: "error", reason: "aborted", error: out });
+			stream.end();
+		} catch { /* stream already ended */ }
+		if (sdkQueryRef) { void sdkQueryRef.interrupt().catch(() => {}); }
+		captureLog.info("runCaptureQuery: aborted via signal");
+	};
+	if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+	// Image-block warn-log: capture mode is text-only (Decision 9).
+	let imageCount = 0;
+	for (const m of context.messages) {
+		const content = Array.isArray(m.content) ? m.content : [];
+		for (const block of content) {
+			if ((block as any).type === "image") imageCount++;
+		}
+	}
+	if (imageCount > 0) {
+		captureLog.warn({ imageCount }, `runCaptureQuery: dropping ${imageCount} image content block(s) — capture mode is text-only (per design Decision 9)`);
+	}
+
+	// Build prompt (text-only; Decision 9 documented fidelity limit).
+	const systemPrompt = context.systemPrompt ?? "";
+	const prompt = buildColdStartPrompt(context.messages);
+
+	// Empty-prompt guard: reject only when BOTH systemPrompt and prompt are empty.
+	if (!systemPrompt && !prompt) {
+		const out = newTurnOutput(model);
+		out.stopReason = "error";
+		out.errorMessage = "capture path: both systemPrompt and prompt are empty — the model has nothing to act on. Provide at least one non-empty message or a non-empty systemPrompt.";
+		try {
+			stream.push({ type: "start", partial: out });
+			stream.push({ type: "error", reason: "error", error: out });
+			stream.end();
+		} catch { /* ignore */ }
+		if (signal) signal.removeEventListener("abort", onAbort);
+		return;
+	}
+
+	// Build SDK options for the capture path (Decision 12, 13).
+	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
+	const extraArgs: Record<string, string | null> = { model: model.id, "strict-mcp-config": null };
+	const captureOptions: NonNullable<Parameters<typeof _realQuery>[0]["options"]> = {
+		// outputFormat: JSON-schema structured output (Decision 1, 6)
+		outputFormat: { type: "json_schema", schema: cleanedSchema },
+		// No mcpServers, no allowedTools (capture has no MCP surface)
+		disallowedTools: DISALLOWED_BUILTIN_TOOLS,
+		// Permission flags (Decision 13; both set per SDK type-doc requirement)
+		permissionMode: "bypassPermissions",
+		allowDangerouslySkipPermissions: true,
+		// Hermetic cwd (Decision 12: no working-tree dependency)
+		cwd: tmpdir(),
+		settingSources: [],
+		extraArgs,
+		...(effort ? { effort } : {}),
+		// systemPrompt forwarded verbatim; DO NOT blend pi-UI material (Decision 9)
+		systemPrompt,
+		// No resume: capture sessions are never warm-resumed (Decision 7)
+	};
+
+	captureLog.info({ schema: JSON.stringify(cleanedSchema).slice(0, 200) }, `streamSimple: fresh query model=${model.id} mode=capture captureTool=${captureTool.name} prompt="${prompt.slice(0, 60)}"`);
+
+	// Wrap SDK construction in try/catch (Decision 12: surface sync throw as error).
+	let sdkQuery: ReturnType<typeof _realQuery>;
+	try {
+		sdkQuery = _queryFactory({ prompt, options: captureOptions });
+		sdkQueryRef = sdkQuery;
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		const out = newTurnOutput(model);
+		out.stopReason = "error";
+		out.errorMessage = `capture path SDK construction failed: ${msg}`;
+		try {
+			stream.push({ type: "start", partial: out });
+			stream.push({ type: "error", reason: "error", error: out });
+			stream.end();
+		} catch { /* ignore */ }
+		if (signal) signal.removeEventListener("abort", onAbort);
+		captureLog.error({ err: msg }, `runCaptureQuery: SDK construction failed: ${msg}`);
+		return;
+	}
+
+	// Push start event (Decision 5: exactly one start + one terminal event).
+	const startOut = newTurnOutput(model);
+	stream.push({ type: "start", partial: startOut });
+
+	// Iterate SDK messages locally. Do NOT call consumeQuery (isolation requirement).
+	// Suppress all intermediate events; only inspect `result` SDKMessage (Decision 5).
+	let sawResult = false;
+	let capturedPid: number | undefined; // best-effort, don't fail if not exposed
+
+	try {
+		for await (const message of sdkQuery) {
+			if (streamEnded) break;
+
+			if (message.type === "system" && (message as any).subtype === "init") {
+				// Capture child PID at system:init (best-effort; not all SDK versions expose it).
+				if ((message as any).pid) capturedPid = (message as any).pid;
+				captureLog.info({ session: (message as any).session_id?.slice(0, 8), pid: capturedPid },
+					`runCaptureQuery: system:init session=${(message as any).session_id?.slice(0, 8)} pid=${capturedPid ?? "(not exposed)"}`
+				);
+				// ISOLATION: do NOT write cachedSessionId, cachedSessionCwd, lastSentMessageHashes
+				continue;
+			}
+
+			if (message.type !== "result") {
+				// Suppress all non-result messages (Decision 5): no pi-ai events emitted.
+				captureLog.debug({ type: message.type }, `runCaptureQuery: suppressing ${message.type} message`);
+				continue;
+			}
+
+			// ---- result SDKMessage ----
+			sawResult = true;
+			const result = message as any;
+
+			// Map usage (Decision 5).
+			const out = newTurnOutput(model);
+			if (result.usage) {
+				if (result.usage.input_tokens != null) out.usage.input = result.usage.input_tokens;
+				if (result.usage.output_tokens != null) out.usage.output = result.usage.output_tokens;
+				if (result.usage.cache_read_input_tokens != null) out.usage.cacheRead = result.usage.cache_read_input_tokens;
+				if (result.usage.cache_creation_input_tokens != null) out.usage.cacheWrite = result.usage.cache_creation_input_tokens;
+				out.usage.totalTokens = out.usage.input + out.usage.output + out.usage.cacheRead + out.usage.cacheWrite;
+				calculateCost(model, out.usage);
+			}
+
+			if (result.structured_output !== undefined) {
+				// Success path (Decision 5): synthesize toolCall block.
+				// Generate toolu_<random> id (matches Anthropic's prefix convention).
+				const toolCallId = "toolu_" + randomBytes(8).toString("hex");
+				out.stopReason = "toolUse";
+				out.content = [{
+					type: "toolCall",
+					id: toolCallId,
+					name: captureTool.name,
+					arguments: result.structured_output as Record<string, unknown>,
+				}];
+				captureLog.info({ toolCallId, tool: captureTool.name, in: out.usage.input, out: out.usage.output }, `runCaptureQuery: success structured_output for ${captureTool.name}`);
+				if (!streamEnded) {
+					streamEnded = true;
+					try {
+						stream.push({ type: "done", reason: "toolUse", message: out });
+						stream.end();
+					} catch { /* ignore */ }
+				}
+			} else {
+				// Error path: any terminal result lacking structured_output (Decision 5).
+				const subtype = result.subtype ?? "unknown";
+				const isErr = result.is_error ? " is_error=true" : "";
+				out.stopReason = "error";
+				out.errorMessage = `SDK structured-output failure: subtype=${subtype}${isErr}`;
+				captureLog.warn({ subtype, is_error: result.is_error }, `runCaptureQuery: result without structured_output: ${out.errorMessage}`);
+				if (!streamEnded) {
+					streamEnded = true;
+					try {
+						stream.push({ type: "error", reason: "error", error: out });
+						stream.end();
+					} catch { /* ignore */ }
+				}
+			}
+
+			// After terminal event: best-effort interrupt, then break (Decision 5).
+			void sdkQuery.interrupt().catch(() => {});
+			break;
+		}
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		captureLog.error({ err: msg }, `runCaptureQuery: iterator error: ${msg}`);
+		if (!streamEnded) {
+			streamEnded = true;
+			const out = newTurnOutput(model);
+			out.stopReason = "error";
+			out.errorMessage = `capture path SDK iterator error: ${msg}`;
+			try {
+				stream.push({ type: "error", reason: "error", error: out });
+				stream.end();
+			} catch { /* ignore */ }
+		}
+	}
+
+	// Iterator closed without result (e.g. empty iterator, interrupted before result).
+	if (!sawResult && !streamEnded) {
+		streamEnded = true;
+		const out = newTurnOutput(model);
+		out.stopReason = "error";
+		out.errorMessage = "capture path SDK iterator closed without result message";
+		captureLog.warn("runCaptureQuery: iterator closed without result");
+		try {
+			stream.push({ type: "error", reason: "error", error: out });
+			stream.end();
+		} catch { /* ignore */ }
+	}
+
+	// Finalize: remove abort listener (every exit path must reach here).
+	if (signal) signal.removeEventListener("abort", onAbort);
+	captureLog.info({ pid: capturedPid }, "runCaptureQuery: done");
+}
+
+// ---------------------------------------------------------------------------
 // AskClaude tool — Claude Code as a delegated agent for codebase Q&A.
 //
 // SEPARATE use of the SDK from the provider path. Uses its own one-shot query()
@@ -1228,7 +1635,7 @@ async function runAskClaude(
 		promptArg = wrapPromptStream(blocks);
 	}
 
-	const sdkQuery = query({
+	const sdkQuery = _queryFactory({
 		prompt: promptArg,
 		options: {
 			cwd,

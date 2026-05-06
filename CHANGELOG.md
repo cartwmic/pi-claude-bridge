@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-05-05
+
+- **Add: structured output / output-capture tools** — pass `ctx.tools = [captureTool]` with a single unregistered tool to receive a validated `toolCall` content block in the returned `AssistantMessage`, matching the shape direct pi-ai providers return. Uses the SDK's `outputFormat: { type: "json_schema", schema }` option with built-in validation and retry.
+- **Capture path is fully isolated** — runs a one-shot `query()` with `cwd: os.tmpdir()`, no shared stack, no session-cache writes, no interference with a concurrent interactive turn.
+- **`ctx.systemPrompt` forwarded verbatim** on the capture path (unlike the agent-loop path, which replaces it).
+- **`usage` and `cost` propagated** from the SDK result including cache-token accounting; also propagated on SDK validation-failure paths.
+- **Rejection errors for invalid call shapes** — multiple capture tools, mixed capture+executable, or non-object root schema all resolve with `stopReason: "error"` before any query is started.
+- **v1 limitations:** one capture tool per call; mutually exclusive with executable tools; object-root schema only; `tool.description` is dropped (embed instructions in `systemPrompt` or user message); capture-tool names that collide with active pi tool names route through MCP instead; multi-message history replay is text-only and lossy (images dropped, tool-call args truncated to 200 chars, tool-result content to 500 chars).
+- **Downstream:** `pi-session-search`'s `provider !== "claude-bridge"` workaround in `digest/builder.ts` is now deletable — see release notes.
+
 ## 0.3.1 — 2026-04-18
 
 - **Fix: empty thinking blocks on Opus 4.7** — Opus 4.7 silently changed default `thinking.display` from `"summarized"` to `"omitted"`, so streams emitted `thinking_start` + `signature_delta` with zero `thinking_delta` events, leaving `ThinkingBlock.thinking == ""`. Now pass `--thinking-display=summarized` via `extraArgs` whenever `effort` is set (both provider and AskClaude paths). Bump `@anthropic-ai/claude-agent-sdk` to ^0.2.111 (required for Opus 4.7 + `--thinking-display` CLI flag). See [anthropics/claude-agent-sdk-python#830](https://github.com/anthropics/claude-agent-sdk-python/pull/830).

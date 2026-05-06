@@ -644,6 +644,30 @@ caused `pi.registerProvider` to be skipped on re-load.
 - **Coherence:** the post-reload turn produces the requested marker token
   (proves inference actually fired, not just that the provider was wired).
 
+### S25 — Capture call during in-flight user turn
+
+**Goal:** prove that a pi-ai.complete() call using a single capture tool (`submit_digest`) can run concurrently with a normal user turn that has a long-running MCP tool (SlowTool, 10 s) mid-execution, without aborting or corrupting either call.
+
+**Model:** `claude-bridge/claude-haiku-4-5`
+
+**Extensions loaded:** `slow-tool-extension.ts` (registers `SlowTool`) + `fire-capture-extension.ts` (registers `/fire-capture` slash command whose handler calls `complete()` with `tools: [submitDigestTool]`).
+
+**Steps:**
+1. Send a prompt that causes the model to invoke `SlowTool` with `seconds=10`.
+2. Once the bridge log shows `mcp handler: SlowTool [toolu_…] — awaiting pi`, issue `/fire-capture` via tmux send-keys.
+3. Wait for the capture call to complete (bridge log `runCaptureQuery: done`).
+4. Wait for the original user turn to complete (`SlowTool completed` in pane + `caching session=` count increments).
+5. Send a second normal user prompt; assert warm-resume (`streamSimple: fresh query … resume=<session1-id>`).
+
+**Asserted behaviors:**
+- `A1` — SlowTool reaches awaiting-pi state before capture fires.
+- `A2` — Capture call completes (`runCaptureQuery: done` in bridge log).
+- `A3` — Zero `streamSimple: superseding active frame` lines — capture did NOT abort the user turn.
+- `A4` — Exactly ONE new `caching session=` line (only from the user turn; capture path leaves `cachedSessionId` untouched).
+- `A5` — Original user turn completes normally (`SlowTool completed` visible in pane).
+- `A6` — Second user turn warm-resumes on the same CC session_id as turn 1.
+- `A7` — Second user turn produces the requested response token (coherence: bridge still functional after concurrent capture).
+
 ### S24 — `/new` preserves working provider registration
 
 **Goal:** prove that `/new` doesn't drop the bridge from the rebuilt

@@ -126,7 +126,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - src/driver/settings.ts
       - tests/unit-driver-settings.mjs
-- [ ] 1.4 Implement `src/driver/pty.ts` — `node-pty` spawn, hook dispatch, SIGINT+grace abort (claude-tui-driver.pty-spawn-with-model-selection, .abort-propagates-to-the-pty, .driver-never-writes-to-user-global-claude-config, .unexpected-driver-exit-surfaces-as-error)
+- [x] 1.4 Implement `src/driver/pty.ts` — `node-pty` spawn, hook dispatch, SIGINT+grace abort (claude-tui-driver.pty-spawn-with-model-selection, .abort-propagates-to-the-pty, .driver-never-writes-to-user-global-claude-config, .unexpected-driver-exit-surfaces-as-error)
   - intent: feature
   - files_allowed:
       - src/driver/pty.ts

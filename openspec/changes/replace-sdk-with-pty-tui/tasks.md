@@ -111,12 +111,12 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - package-lock.json
       - ".npmignore"
   - allow_new_files: true
-- [ ] 1.4a Implement `src/driver/ansi.ts` — ANSI escape sequence stripper (CSI, OSC, 8-bit-char escapes) for use by D25's trust-dialog scanner and any future PTY-output scanning. Unit tests verify stripping correctness against fixture PTY outputs from real `claude` boots.
+- [x] 1.4a Implement `src/driver/ansi.ts` — ANSI escape sequence stripper (CSI, OSC, 8-bit-char escapes) for use by D25's trust-dialog scanner and any future PTY-output scanning. Unit tests verify stripping correctness against fixture PTY outputs from real `claude` boots.
   - intent: feature
   - files_allowed:
       - src/driver/ansi.ts
       - tests/unit-driver-ansi.mjs
-- [ ] 1.4b Implement trust-dialog scanner in `src/driver/pty.ts` per D25: attach output watcher on spawn, ANSI-strip via `ansi.ts`, detect trigger substrings, send `\r` on match, time out at 5s or on transcript-file-creation event. Failure-surface error path at 30s no-transcript no-dialog.
+- [x] 1.4b Implement trust-dialog scanner in `src/driver/pty.ts` per D25: attach output watcher on spawn, ANSI-strip via `ansi.ts`, detect trigger substrings, send `\r` on match, time out at 5s or on transcript-file-creation event. Failure-surface error path at 30s no-transcript no-dialog.
   - intent: feature
   - files_allowed:
       - src/driver/pty.ts

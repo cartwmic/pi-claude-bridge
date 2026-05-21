@@ -10,7 +10,7 @@ Standalone exploratory work that resolves the design.md Open Questions and
 clarify.md deferred findings. Spikes write notes to a temporary location
 (`.spike-notes/` at repo root) and DO NOT modify production code.
 
-- [ ] 0.1 Spike: system-prompt override in interactive `claude` mode (OQ1 / D7)
+- [x] 0.1 Spike: system-prompt override in interactive `claude` mode (OQ1 / D7)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
@@ -20,67 +20,67 @@ clarify.md deferred findings. Spikes write notes to a temporary location
       - "convert.ts"
       - "models.ts"
   - allow_new_files: true
-- [ ] 0.2 Spike: confirm CC TUI emits thinking blocks in transcript JSONL (OQ3 / A8)
+- [x] 0.2 Spike: confirm CC TUI emits thinking blocks in transcript JSONL (OQ3 / A8)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.3 Spike: `Stop` hook payload + transcript `result` entry shape (usage, cache tokens)
+- [x] 0.3 Spike: `Stop` hook payload + transcript `result` entry shape (usage, cache tokens)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.4 Spike: `fs.watch` reliability on macOS for transcript tailing (OQ2 / A7)
+- [x] 0.4 Spike: `fs.watch` reliability on macOS for transcript tailing (OQ2 / A7)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.5 Spike: CC TUI mid-turn `session_id` rotation behavior (OQ4 / C6)
+- [x] 0.5 Spike: CC TUI mid-turn `session_id` rotation behavior (OQ4 / C6)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.6 Spike: `node-pty` sufficient for `claude` interactive boot, or does the bridge need to respond to terminal queries (DEC primary/secondary device attributes, XTVERSION, DSR, window-size) like `smithersai/claude-p` does? (R11 / Round-1 B.P1#1)
+- [x] 0.6 Spike: `node-pty` sufficient for `claude` interactive boot, or does the bridge need to respond to terminal queries (DEC primary/secondary device attributes, XTVERSION, DSR, window-size) like `smithersai/claude-p` does? (R11 / Round-1 B.P1#1)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.7 Spike: verify `--setting-sources ""` and `--strict-mcp-config` actually isolate the spawned PTY from `~/.claude/settings.json` and `~/.claude/mcp.json` content; ALSO test `--setting-sources "user"` as a positive control; if `""` is rejected/silently-ignored, design the per-PTY `HOME=<scratch>` fallback. Use deterministic MCP `tools/list` introspection (NOT model self-report) to count exposed tools. (Round-1 A.P1#1, A.P1#2; Round-2 A.P1#2, A.P2#3)
+- [x] 0.7 Spike: verify `--setting-sources ""` and `--strict-mcp-config` actually isolate the spawned PTY from `~/.claude/settings.json` and `~/.claude/mcp.json` content; ALSO test `--setting-sources "user"` as a positive control; if `""` is rejected/silently-ignored, design the per-PTY `HOME=<scratch>` fallback. Use deterministic MCP `tools/list` introspection (NOT model self-report) to count exposed tools. (Round-1 A.P1#1, A.P1#2; Round-2 A.P1#2, A.P2#3)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.8 Spike: `--system-prompt 'TEST_SENTINEL_XYZ'` runtime verification in INTERACTIVE mode via `node-pty`, in a directory containing a fixture `CLAUDE.md` and with the user's real `~/.claude/` present; assert the model's reported system prompt contains the sentinel and NO `CLAUDE.md` content, NO auto-memory content (D7-final / constitution V; Round-2 A.P1#1)
+- [x] 0.8 Spike: `--system-prompt 'TEST_SENTINEL_XYZ'` runtime verification in INTERACTIVE mode via `node-pty`, in a directory containing a fixture `CLAUDE.md` and with the user's real `~/.claude/` present; assert the model's reported system prompt contains the sentinel and NO `CLAUDE.md` content, NO auto-memory content (D7-final / constitution V; Round-2 A.P1#1)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.10 Spike: `claude --json-schema '{...}'` availability in interactive mode (D5 alternative #1; Round-2 A.P3#1)
+- [x] 0.10 Spike: `claude --json-schema '{...}'` availability in interactive mode (D5 alternative #1; Round-2 A.P3#1)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.11 Spike: cold-start prompt-size measurement across realistic pi sessions; OS argv ceiling check (macOS ~256 KB, Linux ~2 MB); verify `--system-prompt-file <path>` and `--append-system-prompt-file <path>` exist (implied by `--help`'s `--bare` description listing `--system-prompt[-file]`) and work in interactive mode. **PRIMARY fallback candidate** (Round-5 A.P1#2): write cold-start history to a temp file in `os.tmpdir()` and pass `--system-prompt-file <tempfile>`; the positional argument carries only the new user message. If the flag is missing or `--print`-only, fall back to documenting v1 hard limit. (Round-2 B.P1#2 / Round-3 A.P1#3 / Round-5 A.P1#2 / R15)
+- [x] 0.11 Spike: cold-start prompt-size measurement across realistic pi sessions; OS argv ceiling check (macOS ~256 KB, Linux ~2 MB); verify `--system-prompt-file <path>` and `--append-system-prompt-file <path>` exist (implied by `--help`'s `--bare` description listing `--system-prompt[-file]`) and work in interactive mode. **PRIMARY fallback candidate** (Round-5 A.P1#2): write cold-start history to a temp file in `os.tmpdir()` and pass `--system-prompt-file <tempfile>`; the positional argument carries only the new user message. If the flag is missing or `--print`-only, fall back to documenting v1 hard limit. (Round-2 B.P1#2 / Round-3 A.P1#3 / Round-5 A.P1#2 / R15)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.12 Spike: verify `--session-id <uuid>` honors the supplied UUID and writes the transcript to `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` (cwd `/` → `-`); confirm encoding on macOS + Linux paths. Cross-check whether `SessionStart` payload includes `transcript_path` and matches the computed path. (Round-2 B.P1#1; revised Round-3 per D18)
+- [x] 0.12 Spike: verify `--session-id <uuid>` honors the supplied UUID and writes the transcript to `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` (cwd `/` → `-`); confirm encoding on macOS + Linux paths. Cross-check whether `SessionStart` payload includes `transcript_path` and matches the computed path. (Round-2 B.P1#1; revised Round-3 per D18)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.13 Spike: capture the JSON payload shapes `claude` writes to hook subprocess stdin for `SessionStart` and `Stop`, AND the JSON response shape `claude` expects the hook subprocess to write back to stdout (or whether empty stdout is acceptable). (Round-3 A.P2#4)
+- [x] 0.13 Spike: capture the JSON payload shapes `claude` writes to hook subprocess stdin for `SessionStart` and `Stop`, AND the JSON response shape `claude` expects the hook subprocess to write back to stdout (or whether empty stdout is acceptable). (Round-3 A.P2#4)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.14 Spike: **HARD GATE** — interactive-mode positional-prompt liveness (with trust-dialog scanner per D25). Spawn `claude --session-id <uuid> 'hello'` inside `node-pty` in a fresh `os.tmpdir()` cwd, attach the ANSI-aware scanner that watches for trigger substrings `Quick safety check` / `Accessing workspace:` and sends `\r` on match; wait 30s, assert: (i) scanner detected dialog + sent keystroke within 1s, (ii) `SessionStart` hook fires after keystroke, (iii) at least one assistant-message JSONL line appears at the deterministic transcript path (realpath-encoded cwd), (iv) the TUI process is still alive when interrupted by SIGINT, (v) `Stop` hook fires on SIGINT (or PTY exit is captured cleanly). Initial Phase 0 attempt (2026-05-21) found that without the scanner, the trust dialog blocks all of (ii)–(v). With scanner: PENDING re-run. (Round-5 A.P1#1; D25)
+- [x] 0.14 Spike: **HARD GATE** — interactive-mode positional-prompt liveness (with trust-dialog scanner per D25). Spawn `claude --session-id <uuid> 'hello'` inside `node-pty` in a fresh `os.tmpdir()` cwd, attach the ANSI-aware scanner that watches for trigger substrings `Quick safety check` / `Accessing workspace:` and sends `\r` on match; wait 30s, assert: (i) scanner detected dialog + sent keystroke within 1s, (ii) `SessionStart` hook fires after keystroke, (iii) at least one assistant-message JSONL line appears at the deterministic transcript path (realpath-encoded cwd), (iv) the TUI process is still alive when interrupted by SIGINT, (v) `Stop` hook fires on SIGINT (or PTY exit is captured cleanly). Initial Phase 0 attempt (2026-05-21) found that without the scanner, the trust dialog blocks all of (ii)–(v). With scanner: PENDING re-run. (Round-5 A.P1#1; D25)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.9 Promote spike findings: update `design.md` (D7-final confirmation, D11 fallback decision per T0.7, terminal-query handling decision, prompt-size fallback, SessionStart transcript-path verification, `--json-schema` availability), spec ACs if Phase 0 result changes them, and `analyze.md` outstanding risks.
+- [x] 0.9 Promote spike findings: update `design.md` (D7-final confirmation, D11 fallback decision per T0.7, terminal-query handling decision, prompt-size fallback, SessionStart transcript-path verification, `--json-schema` availability), spec ACs if Phase 0 result changes them, and `analyze.md` outstanding risks.
   - intent: refactor
   - files_allowed:
       - openspec/changes/replace-sdk-with-pty-tui/design.md

@@ -175,3 +175,17 @@ Full round-by-round log: `.opsx-review/replace-sdk-with-pty-tui/`. Summary of im
 - Major findings: **0** post Round-1+Round-2 revisions.
 - Minor findings: **0** — all AC↔design partial-coverage gaps closed in Round 2.
 - **Gate status:** READY for tasks. Round-3 adversarial review pending to verify Round-2 revisions hold.
+
+## Phase 0 spike outcomes (added 2026-05-21)
+
+All Phase 0 spikes complete. Risk table updates from empirical evidence:
+
+- **R11 (terminal queries) — RESOLVED + DROPPED.** Phase 0 T0.6 / T0.14 confirms `node-pty` alone is sufficient; `claude` emits XTVERSION / DA / iTerm2-progress / focus-tracking queries during boot and proceeds without synthetic responses. No ANSI responder needed in the driver.
+- **R12 (hook subprocess latency) — OBSERVED LOW.** T0.14 measured ~100ms cold-start of the Node hook on macOS arm64; well within the per-turn budget given only 2 hooks fire per session (SessionStart) + per turn (Stop). Carry into T4.7 benchmark.
+- **R13 (`--no-session-persistence`) — NO CHANGE.** Flag remains `--print`-only; interactive sessions persist under `~/.claude/projects/`. Bridge cleanup strategy (delete bridge-owned session files) unaffected.
+- **R14 (rollback requires republish) — NO CHANGE.** Defense plan stays the same: Phase 3 deletes are reversible via `git revert` + republish.
+- **R15 (argv overflow) — MITIGATED.** T0.11 confirms `--system-prompt-file <path>` works in BOTH `--print` AND interactive modes (undocumented but functional). Bridge will switch to file-form above a 50 KB heuristic. Risk now low.
+- **R16 (model-ask non-determinism) / R17 (capture-mode termination)** — deferred to Phase 1 integration tests against real `claude`; spike evidence consistent with the D16 deterministic-shim-response design.
+- **R18 / R19 / R20 / R21** (added Round 4-5 + 2026-05-21): all empirically addressed in Phase 0 (D25 trust scanner verified passing; node-pty postinstall +x scripted in T1.2a; skill_listing attachment confirmed present but mitigated via `--disable-slash-commands` for capture mode; transcript realpath encoding empirically verified in T0.14).
+
+All Phase 0 OQs from `design.md` are resolved (see Open Questions section). Phase 1 unblocked.

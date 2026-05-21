@@ -24,6 +24,14 @@
 // remainder on the next feed() and the now-complete sequence will be stripped
 // in that pass.
 
+// CSI CUF (cursor-forward): ESC [ Pn C — semantic horizontal movement.
+// Ink TUIs (Ink 5+) render word-separators as CSI CUF instead of literal
+// spaces; if we strip these blindly, "Accessing workspace:" arrives as
+// "Accessingworkspace:" and substring matching against the trust-dialog
+// fixture fails. Expand to Pn spaces (default 1) BEFORE the generic CSI
+// strip so visible word boundaries survive.
+const CSI_CUF_RE = /\x1b\[(\d*)C/g;
+
 // CSI: ESC [ <params 0x30-0x3F> <intermediates 0x20-0x2F> <final 0x40-0x7E>
 const CSI_RE = /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g;
 
@@ -62,6 +70,7 @@ export function stripAnsi(input: string): string {
 	return input
 		.replace(DCS_PM_APC_RE, "")
 		.replace(OSC_RE, "")
+		.replace(CSI_CUF_RE, (_, n) => " ".repeat(Math.max(1, Math.min(parseInt(n, 10) || 1, 256))))
 		.replace(CSI_RE, "")
 		.replace(ESC_CHARSET_RE, "")
 		.replace(ESC_SHORT_RE, "")

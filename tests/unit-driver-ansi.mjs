@@ -104,6 +104,35 @@ describe("stripAnsi — C1 controls", () => {
 	});
 });
 
+describe("stripAnsi — CSI CUF (cursor-forward) expansion", () => {
+	it("expands ESC [ 1 C to a single space", () => {
+		assert.equal(stripAnsi("a\x1b[1Cb"), "a b");
+	});
+
+	it("expands ESC [ C (no param) to one space (default)", () => {
+		assert.equal(stripAnsi("a\x1b[Cb"), "a b");
+	});
+
+	it("expands ESC [ 3 C to three spaces", () => {
+		assert.equal(stripAnsi("a\x1b[3Cb"), "a   b");
+	});
+
+	it("reconstructs Ink-rendered 'Accessing workspace:' (word-CUF-word pattern)", () => {
+		const raw = "\x1b[1CAccessing\x1b[1Cworkspace:\x1b[1C/tmp/foo";
+		const stripped = stripAnsi(raw);
+		assert.ok(stripped.includes("Accessing workspace:"), `expected substring in ${JSON.stringify(stripped)}`);
+	});
+
+	it("reconstructs Ink-rendered 'Quick safety check'", () => {
+		const raw = "\x1b[1CQuick\x1b[1Csafety\x1b[1Ccheck:";
+		assert.ok(stripAnsi(raw).includes("Quick safety check"));
+	});
+
+	it("caps absurd CUF counts at 256", () => {
+		assert.equal(stripAnsi("a\x1b[9999Cb").length, 1 + 256 + 1);
+	});
+});
+
 describe("stripAnsi — Ink TUI fixture (trust dialog shape)", () => {
 	it("recovers 'Accessing workspace:' from colorized output", () => {
 		const raw =

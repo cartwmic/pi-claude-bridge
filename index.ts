@@ -44,6 +44,7 @@ import { dirname, join, resolve } from "path";
 import { pascalCase } from "change-case";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
+import { streamClaudeViaPty } from "./src/driver/streamPty.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -144,6 +145,22 @@ const newAssistantMessageEventStream: () => AssistantMessageEventStream =
 // (override CLAUDE_BRIDGE_DEBUG_MAX_BYTES for size).
 // Output is JSON-per-line; each record carries `level`, `time` (ISO),
 // `msg`, plus any structured fields the call site attached.
+
+/**
+ * T1.9 driver-selection env switch. Default "sdk" during Phase 1; flipped
+ * to "pty" in Phase 3 cutover. Reading at module-evaluation time is fine
+ * because tests can re-import or use the `__driverOverride` test hook.
+ *
+ * Allowed values:
+ *   "sdk" (default) — existing @anthropic-ai/claude-agent-sdk path
+ *   "pty"           — new node-pty-driven `claude` interactive TUI path
+ *                     (T1.10)
+ */
+export const CLAUDE_BRIDGE_DRIVER = (process.env.CLAUDE_BRIDGE_DRIVER === "pty" ? "pty" : "sdk") as "sdk" | "pty";
+let _driverOverride: "sdk" | "pty" | undefined;
+/** Test-only override. */
+export function __setDriverOverrideForTests(d: "sdk" | "pty" | undefined): void { _driverOverride = d; }
+export function __getActiveDriver(): "sdk" | "pty" { return _driverOverride ?? CLAUDE_BRIDGE_DRIVER; }
 
 const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG !== "0";
 const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), ".pi", "agent", "claude-bridge.log");
@@ -759,7 +776,7 @@ async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDK
  * reads as background context. Format is intentionally explicit so the
  * model knows it's history, not the current request.
  */
-function buildColdStartPrompt(messages: Context["messages"]): string {
+export function buildColdStartPrompt(messages: Context["messages"]): string {
 	if (messages.length === 0) return "";
 	if (messages.length === 1 && messages[0].role === "user") {
 		// First-ever turn — no prior history to embed.
@@ -952,6 +969,31 @@ export function streamClaudeAgentSdk(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	// T1.9 / T1.10 driver dispatch. If CLAUDE_BRIDGE_DRIVER=pty, route the
+	// main-provider path through the PTY driver. Capture-shape calls still
+	// flow to the SDK path below (output-capture v1 is SDK-backed; Phase 2
+	// adds the PTY capture port).
+	if (__getActiveDriver() === "pty") {
+		const { executable, capture } = classifyToolsForCapture(context, getActiveToolNameSet(), "");
+		const shape = validateCaptureCallShape({ executable, capture });
+		if (shape.kind === "all-executable") {
+			const skillsAppend = extractSkillsBlock(context.systemPrompt);
+			const agentsAppend = extractAgentsAppend();
+			const appendSystem = extractAppendSystem();
+			const appendParts = [agentsAppend, appendSystem, skillsAppend].filter((p): p is string => Boolean(p));
+			const sysParts = [context.systemPrompt, ...appendParts].filter((p): p is string => Boolean(p && p.length > 0));
+			const systemPrompt = sysParts.length > 0 ? sysParts.join("\n\n") : "You are a helpful coding assistant.";
+			const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+			return streamClaudeViaPty(model, context, options, {
+				systemPrompt,
+				makeStream: newAssistantMessageEventStream,
+				tools: executable,
+				cwd,
+			});
+		}
+		// Capture shape falls through to SDK path for v0; Phase 2 ports.
+	}
+
 	const stream = newAssistantMessageEventStream();
 	const lastMsg = context.messages[context.messages.length - 1];
 

@@ -154,11 +154,11 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - src/mcp/router.ts
       - tests/unit-mcp-router.mjs
-- [ ] 1.9 Add `CLAUDE_BRIDGE_DRIVER` env switch in `index.ts`; default = `sdk` during Phase 1
+- [x] 1.9 Add `CLAUDE_BRIDGE_DRIVER` env switch in `index.ts`; default = `sdk` during Phase 1
   - intent: feature
   - files_allowed:
       - index.ts
-- [ ] 1.10 Wire main-provider path to PTY driver when flag = `pty`; preserve all existing conversation-state machinery (divergence detection, abort coordination, supersede, session cache hint)
+- [x] 1.10 Wire main-provider path to PTY driver when flag = `pty`; preserve all existing conversation-state machinery (divergence detection, abort coordination, supersede, session cache hint)
   - intent: feature
   - files_allowed:
       - index.ts

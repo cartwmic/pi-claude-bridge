@@ -121,7 +121,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - src/driver/pty.ts
       - tests/unit-driver-trust-scanner.mjs
-- [ ] 1.3 Implement `src/driver/settings.ts` — builds inline `--settings` JSON (hooks + permissions deny set per claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration)
+- [x] 1.3 Implement `src/driver/settings.ts` — builds inline `--settings` JSON (hooks + permissions deny set per claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration)
   - intent: feature
   - files_allowed:
       - src/driver/settings.ts
@@ -131,7 +131,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - src/driver/pty.ts
       - tests/unit-driver-pty.mjs
-- [ ] 1.5 Implement `src/driver/transcript.ts` — JSONL tailer + event emitter (transcript-stream.* full requirement set)
+- [x] 1.5 Implement `src/driver/transcript.ts` — JSONL tailer + event emitter (transcript-stream.* full requirement set)
   - intent: feature
   - files_allowed:
       - src/driver/transcript.ts

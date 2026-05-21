@@ -170,6 +170,10 @@ async function runHookMode(args: ParsedArgs): Promise<void> {
 	} finally {
 		peer.destroy();
 	}
+	// Force exit: stdin watchers / inner timers can otherwise keep the event
+	// loop alive for up to 5s, blocking claude from proceeding past the hook.
+	process.stdout.write("");
+	process.exit(0);
 }
 
 function readStdinToString(): Promise<string> {

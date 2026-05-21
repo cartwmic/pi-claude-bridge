@@ -140,6 +140,10 @@ export interface McpConfigBuilderOptions {
 	shimPath: string;
 	/** Per-PTY unix socket path. */
 	socketPath: string;
+	/** Absolute path to the per-PTY tools.json the shim advertises. */
+	toolsFile: string;
+	/** Optional capture-tool name (capture-mode only) so shim handles it locally. */
+	captureTool?: string;
 	/** Display name for the shim server in `--mcp-config`. Default: "pi-bridge". */
 	serverName?: string;
 }
@@ -153,12 +157,14 @@ export interface McpConfigBuilderOptions {
  */
 export function buildMcpConfigJson(opts: McpConfigBuilderOptions): string {
 	const name = opts.serverName ?? "pi-bridge";
+	const shimArgs = ["--mode", "mcp", "--socket", opts.socketPath, "--tools-file", opts.toolsFile];
+	if (opts.captureTool) shimArgs.push("--capture-tool", opts.captureTool);
 	const config = {
 		mcpServers: {
 			[name]: {
 				type: "stdio" as const,
 				command: opts.shimPath,
-				args: ["--mode", "mcp", "--socket", opts.socketPath],
+				args: shimArgs,
 			},
 		},
 	};

@@ -20,7 +20,7 @@ import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { stripAnsi } from "./ansi.js";
-import { buildSettingsJson, buildMcpConfigJson, buildAllowedToolsArg } from "./settings.js";
+import { buildSettingsJson, buildMcpConfigJson } from "./settings.js";
 import { TranscriptTailer, computeTranscriptPath, type TranscriptEvent } from "./transcript.js";
 import {
 	Router,
@@ -434,7 +434,12 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 
 	// Build CLI args.
 	const settings = buildSettingsJson({ shimPath: opts.shimPath, socketPath });
-	const mcpConfig = buildMcpConfigJson({ shimPath: opts.shimPath, socketPath });
+	const mcpConfig = buildMcpConfigJson({
+		shimPath: opts.shimPath,
+		socketPath,
+		toolsFile: toolsFilePath,
+		captureTool: opts.capture?.toolName,
+	});
 
 	const args: string[] = [];
 	if (opts.resumeSessionId) {
@@ -457,7 +462,14 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	args.push("--permission-mode", "bypassPermissions");
 	args.push("--dangerously-skip-permissions");
 	args.push("--settings", settings);
-	args.push("--allowedTools", buildAllowedToolsArg());
+	// NOTE on --allowedTools: claude's commander parser declares it as
+	// variadic (`<tools...>`), which consumes ALL subsequent positional
+	// arguments — including our positional PROMPT. Dropping it is safe:
+	// the bridged surface is already isolated by `--strict-mcp-config`
+	// (no user MCP servers), `--setting-sources ""` (no user/project/local
+	// settings), and the inline `permissions.deny` set in --settings (all
+	// native built-ins blocked). The `mcp__custom-tools__*` namespace is
+	// already the only callable surface.
 	// Capture mode: also disable slash commands (F4 mitigation).
 	if (opts.mode === "capture") {
 		args.push("--disable-slash-commands");

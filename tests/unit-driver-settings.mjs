@@ -104,7 +104,7 @@ describe("buildSettingsJson", () => {
 });
 
 describe("buildMcpConfigJson", () => {
-	const opts = { shimPath: "/abs/path/to/shim.js", socketPath: "/tmp/sock.sock" };
+	const opts = { shimPath: "/abs/path/to/shim.js", socketPath: "/tmp/sock.sock", toolsFile: "/tmp/tools.json" };
 
 	it("returns a valid JSON string", () => {
 		assert.doesNotThrow(() => JSON.parse(buildMcpConfigJson(opts)));
@@ -120,12 +120,19 @@ describe("buildMcpConfigJson", () => {
 		assert.ok("pi-bridge" in j.mcpServers);
 	});
 
-	it("server entry uses stdio transport pointing at shim with --mode mcp + --socket", () => {
+	it("server entry uses stdio transport pointing at shim with --mode mcp + --socket + --tools-file", () => {
 		const j = JSON.parse(buildMcpConfigJson(opts));
 		const server = j.mcpServers["pi-bridge"];
 		assert.equal(server.type, "stdio");
 		assert.equal(server.command, opts.shimPath);
-		assert.deepEqual(server.args, ["--mode", "mcp", "--socket", opts.socketPath]);
+		assert.deepEqual(server.args, ["--mode", "mcp", "--socket", opts.socketPath, "--tools-file", opts.toolsFile]);
+	});
+
+	it("adds --capture-tool when provided", () => {
+		const j = JSON.parse(buildMcpConfigJson({ ...opts, captureTool: "extractor" }));
+		const args = j.mcpServers["pi-bridge"].args;
+		assert.ok(args.includes("--capture-tool"));
+		assert.equal(args[args.indexOf("--capture-tool") + 1], "extractor");
 	});
 
 	it("custom serverName option is honored", () => {
@@ -138,8 +145,9 @@ describe("settings + mcp-config integration", () => {
 	it("both payloads reference the same socket path", () => {
 		const shimPath = "/abs/shim.js";
 		const socketPath = "/tmp/abc-def.sock";
+		const toolsFile = "/tmp/tools.json";
 		const s = JSON.parse(buildSettingsJson({ shimPath, socketPath }));
-		const m = JSON.parse(buildMcpConfigJson({ shimPath, socketPath }));
+		const m = JSON.parse(buildMcpConfigJson({ shimPath, socketPath, toolsFile }));
 		const settingsSocketRef = s.hooks.SessionStart[0].hooks[0].command;
 		const mcpSocketRef = m.mcpServers["pi-bridge"].args.join(" ");
 		assert.ok(settingsSocketRef.includes(socketPath));

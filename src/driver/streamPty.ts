@@ -16,7 +16,15 @@
 // `AssistantMessageEventStream` that pi-ai consumes.
 
 import { randomBytes } from "node:crypto";
-import { createRequire } from "node:module";
+import { appendFileSync } from "node:fs";
+
+function writeBridgeLogLine(msg: string): void {
+	const path = process.env.CLAUDE_BRIDGE_DEBUG_PATH;
+	if (!path) return;
+	try {
+		appendFileSync(path, JSON.stringify({ level: 30, time: new Date().toISOString(), msg }) + "\n");
+	} catch {}
+}
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
@@ -134,19 +142,19 @@ function toolsToRouterDefs(tools: Tool[]): RouterToolDefinition[] {
 }
 
 function resolveShimPath(): string {
-	// Resolve the built shim entry. Falls back to source-tree dev path.
-	const req = createRequire(import.meta.url);
-	try {
-		return req.resolve("./dist/mcp/shim.js");
-	} catch {
-		try {
-			return req.resolve("pi-claude-bridge/dist/mcp/shim.js");
-		} catch {
-			// Last-resort: relative to this file's compiled location
-			// (driver/streamPty.js → ../mcp/shim.js).
-			return new URL("../mcp/shim.js", import.meta.url).pathname;
-		}
-	}
+	// In production: dist/driver/streamPty.js → ../mcp/shim.js = dist/mcp/shim.js.
+	// In dev (tsx-loaded source): src/driver/streamPty.ts → ../mcp/shim.ts. tsx
+	// resolves the .js extension to .ts at runtime, but the SHIM is invoked as
+	// a CHILD PROCESS via node-pty's spawn of `claude` which spawns it via
+	// the MCP stdio transport — that child is a fresh Node process WITHOUT
+	// tsx loaded. So in dev we MUST point at the built dist/mcp/shim.js, not
+	// the .ts source. The build pipeline (npm run build) emits dist/ from
+	// the project root, so we walk up from this file: src/driver/streamPty.ts
+	// (or dist/driver/streamPty.js) → ../../dist/mcp/shim.js.
+	const hereUrl = import.meta.url;
+	// Walk two levels up (driver → src OR dist, then up to project root),
+	// then descend into dist/mcp/shim.js.
+	return new URL("../../dist/mcp/shim.js", hereUrl).pathname;
 }
 
 // --- Entry point ---------------------------------------------------------
@@ -218,6 +226,7 @@ export function streamClaudeViaPty(
 	(async () => {
 		try {
 			const tools = toolsToRouterDefs(extras.tools);
+			writeBridgeLogLine(`streamSimple: PTY spawn model=${model.id} promptLen=${prompt.length} sysLen=${extras.systemPrompt.length} tools=${tools.length}`);
 			const handle = await spawnDriver({
 				shimPath: resolveShimPath(),
 				model: model.id,
@@ -229,6 +238,7 @@ export function streamClaudeViaPty(
 				signal: options?.signal as AbortSignal | undefined,
 			});
 
+			writeBridgeLogLine(`streamSimple: spawned session=${handle.sessionId.slice(0, 8)} transcriptPath=${handle.transcriptPath}`);
 			handle.on("transcript", (e: TranscriptEvent) => {
 				if (ended) return;
 				switch (e.kind) {
@@ -358,6 +368,10 @@ export function streamClaudeViaPty(
 			});
 
 			handle.on("done", (d) => {
+				// Emit a 'caching session=' compatible log line into the bridge
+				// debug log so scenario-lib's scn_send completion detector still
+				// fires on the PTY path. (Originally an SDK-path signal.)
+				writeBridgeLogLine(`streamSimple: caching session=${handle.sessionId.slice(0, 8)} done=${d.reason}`);
 				if (d.reason === "aborted") {
 					out.stopReason = "stop";
 					endWith({ type: "error", reason: "aborted", error: out });

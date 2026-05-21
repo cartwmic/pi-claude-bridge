@@ -2,12 +2,15 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
 
-Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript).
+Pi extension that integrates Claude Code as a pi model provider.
 
-> Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
+**v1.0.0 (BREAKING):** the bridge now drives the real interactive `claude` TUI binary via `node-pty` instead of using the `@anthropic-ai/claude-agent-sdk` library. This means the model behavior matches `claude` exactly (same prompt-cache semantics, same skills, same hooks, same transcript shape) and the bridge never imports SDK internals. Set `CLAUDE_BRIDGE_DRIVER=pty` to opt-in during Phase 2; Phase 3 makes it the default and drops the SDK code path entirely. The `AskClaude` pi tool is REMOVED in v1.0.0 — it was a thin SDK wrapper with no underlying engine after the SDK removal.
+
+Requires the `claude` binary on `$PATH` at runtime (tested-against range: `claude 2.1.x`).
+
+> Original SDK-backed bridge was built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal. v1.0.0 retains the conversation-state machinery (session caching, divergence detection, abort coordination) but moves the underlying inference driver from the SDK to the PTY.
 
 1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
-2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
 
 Uses your Claude Max/Pro subscription. I believe this is compliant with Anthropic's terms because only the real Claude Code is touching the API and it's to enable [local development](https://x.com/trq212/status/2024212380142752025) not to steal API calls for some other commerical purpose. That said, obviously this extension is not endorsed or supported by Anthropic.
 <p>

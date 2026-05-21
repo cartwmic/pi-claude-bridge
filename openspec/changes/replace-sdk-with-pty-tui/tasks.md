@@ -217,45 +217,45 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
 
 ## 2. Phase 2 — Capture path + AskClaude removal
 
-- [ ] 2.1 Implement `src/capture.ts` — forced MCP tool-call capture on PTY driver (output-capture MODIFIED + new ADDED Requirements)
+- [x] 2.1 Implement `src/capture.ts` — forced MCP tool-call capture on PTY driver (output-capture MODIFIED + new ADDED Requirements)
   - intent: feature
   - files_allowed:
       - src/capture.ts
       - tests/unit-capture.mjs
-- [ ] 2.2 Wire `streamSimple` capture-shape detection to new capture path; preserve classification logic from `output-capture.output-capture-classification-of-ctx-tools` + `strict-call-shape`
+- [x] 2.2 Wire `streamSimple` capture-shape detection to new capture path; preserve classification logic from `output-capture.output-capture-classification-of-ctx-tools` + `strict-call-shape`
   - intent: refactor
   - files_allowed:
       - index.ts
       - src/capture.ts
   - allow_new_files: false
-- [ ] 2.3 Integration test: capture-mode happy path (output-capture.synthesized-toolcall-content-block-on-success)
+- [x] 2.3 Integration test: capture-mode happy path (output-capture.synthesized-toolcall-content-block-on-success)
   - intent: feature
   - files_allowed:
       - tests/int-pty-capture-success.mjs
-- [ ] 2.4 Integration test: capture mid-conversation isolation (output-capture.capture-path-isolation)
+- [x] 2.4 Integration test: capture mid-conversation isolation (output-capture.capture-path-isolation)
   - intent: feature
   - files_allowed:
       - tests/int-pty-capture-isolation.mjs
-- [ ] 2.5 Integration test: capture error path — model never calls capture tool (output-capture.surface-absent-capture-tool-call-as-error)
+- [x] 2.5 Integration test: capture error path — model never calls capture tool (output-capture.surface-absent-capture-tool-call-as-error)
   - intent: feature
   - files_allowed:
       - tests/int-pty-capture-error.mjs
-- [ ] 2.6 Integration test: capture path honors AbortSignal (output-capture.capture-path-honors-abortsignal)
+- [x] 2.6 Integration test: capture path honors AbortSignal (output-capture.capture-path-honors-abortsignal)
   - intent: feature
   - files_allowed:
       - tests/int-pty-capture-abort.mjs
-- [ ] 2.7 Remove `AskClaude` tool — delete `runAskClaude`, `wireAskClaudeTool`, config schema, env switch
+- [x] 2.7 Remove `AskClaude` tool — delete `runAskClaude`, `wireAskClaudeTool`, config schema, env switch
   - intent: refactor
   - files_allowed:
       - index.ts
       - tests/**/*
   - allow_new_files: false
-- [ ] 2.8 Update README — remove AskClaude section, document driver change in Provider section
+- [x] 2.8 Update README — remove AskClaude section, document driver change in Provider section
   - intent: refactor
   - files_allowed:
       - README.md
   - allow_new_files: false
-- [ ] 2.9 Update CHANGELOG — breaking-release entry (SDK removal, AskClaude removal, streaming-granularity change)
+- [x] 2.9 Update CHANGELOG — breaking-release entry (SDK removal, AskClaude removal, streaming-granularity change)
   - intent: refactor
   - files_allowed:
       - CHANGELOG.md

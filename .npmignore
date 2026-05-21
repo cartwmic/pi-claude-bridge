@@ -1,0 +1,16 @@
+# Test + dev artifacts
+tests/
+.spike-notes/
+.opsx-review/
+openspec/
+worktrees/
+*.log
+*.tsbuildinfo
+.env*
+.DS_Store
+tsconfig.json
+tsconfig.build.json
+TODO.md
+
+# Source maps (we ship .js + .d.ts only)
+dist/**/*.map

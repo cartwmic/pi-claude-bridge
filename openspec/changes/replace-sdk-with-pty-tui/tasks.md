@@ -92,18 +92,18 @@ clarify.md deferred findings. Spikes write notes to a temporary location
 
 New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env switch chooses. SDK is default until Phase 3.
 
-- [ ] 1.1 Create worktree at `worktrees/replace-sdk-with-pty-tui`; capture Worktree Base SHA into `review.md`
+- [x] 1.1 Create worktree at `worktrees/replace-sdk-with-pty-tui`; capture Worktree Base SHA into `review.md`
   - intent: infra
   - files_allowed:
       - openspec/changes/replace-sdk-with-pty-tui/review.md
   - allow_new_files: false
-- [ ] 1.2 Add runtime dependencies: `node-pty`, `@modelcontextprotocol/sdk`. Do NOT remove SDK deps yet (Phase 3 cleanup)
+- [x] 1.2 Add runtime dependencies: `node-pty`, `@modelcontextprotocol/sdk`. Do NOT remove SDK deps yet (Phase 3 cleanup)
   - intent: infra
   - files_allowed:
       - package.json
       - package-lock.json
   - allow_new_files: false
-- [ ] 1.2a Add build pipeline (Round-1 B.P1#4 / D14): create `tsconfig.build.json` emitting to `dist/`; add `"build": "tsc -p tsconfig.build.json"` script; expand `package.json` `files` whitelist to include `dist/**`; add `bin` entry pointing at `dist/mcp/shim.js`; ensure `prepublishOnly` runs the build. ALSO add `postinstall` script `chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true` per Phase-0 F2 / R19 (node-pty 1.1.0 prebuild bug).
+- [x] 1.2a Add build pipeline (Round-1 B.P1#4 / D14): create `tsconfig.build.json` emitting to `dist/`; add `"build": "tsc -p tsconfig.build.json"` script; expand `package.json` `files` whitelist to include `dist/**`; add `bin` entry pointing at `dist/mcp/shim.js`; ensure `prepublishOnly` runs the build. ALSO add `postinstall` script `chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true` per Phase-0 F2 / R19 (node-pty 1.1.0 prebuild bug).
   - intent: infra
   - files_allowed:
       - tsconfig.build.json

@@ -5,3 +5,5 @@ node_modules/
 eli/.DS_Store
 .DS_Store
 eli/
+dist/
+*.tsbuildinfo

@@ -75,7 +75,7 @@ clarify.md deferred findings. Spikes write notes to a temporary location
   - files_allowed:
       - ".spike-notes/**/*"
   - allow_new_files: true
-- [ ] 0.14 Spike: **HARD GATE** — interactive-mode positional-prompt liveness. Spawn `claude --session-id <uuid> 'hello'` inside `node-pty`, wait 30s without sending stdin, assert: (i) `SessionStart` hook fires, (ii) at least one assistant-message JSONL line appears at the deterministic transcript path, (iii) the TUI process is still alive when interrupted by SIGINT, (iv) `Stop` hook fires on SIGINT (or PTY exit is captured cleanly). If FAILS, design.md needs a new D-decision re-evaluating the entire interactive-mode-positional-prompt assumption. (Round-5 A.P1#1)
+- [ ] 0.14 Spike: **HARD GATE** — interactive-mode positional-prompt liveness (with trust-dialog scanner per D25). Spawn `claude --session-id <uuid> 'hello'` inside `node-pty` in a fresh `os.tmpdir()` cwd, attach the ANSI-aware scanner that watches for trigger substrings `Quick safety check` / `Accessing workspace:` and sends `\r` on match; wait 30s, assert: (i) scanner detected dialog + sent keystroke within 1s, (ii) `SessionStart` hook fires after keystroke, (iii) at least one assistant-message JSONL line appears at the deterministic transcript path (realpath-encoded cwd), (iv) the TUI process is still alive when interrupted by SIGINT, (v) `Stop` hook fires on SIGINT (or PTY exit is captured cleanly). Initial Phase 0 attempt (2026-05-21) found that without the scanner, the trust dialog blocks all of (ii)–(v). With scanner: PENDING re-run. (Round-5 A.P1#1; D25)
   - intent: infra
   - files_allowed:
       - ".spike-notes/**/*"
@@ -103,7 +103,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - package.json
       - package-lock.json
   - allow_new_files: false
-- [ ] 1.2a Add build pipeline (Round-1 B.P1#4 / D14): create `tsconfig.build.json` emitting to `dist/`; add `"build": "tsc -p tsconfig.build.json"` script; expand `package.json` `files` whitelist to include `dist/**`; add `bin` entry pointing at `dist/mcp/shim.js`; ensure `prepublishOnly` runs the build.
+- [ ] 1.2a Add build pipeline (Round-1 B.P1#4 / D14): create `tsconfig.build.json` emitting to `dist/`; add `"build": "tsc -p tsconfig.build.json"` script; expand `package.json` `files` whitelist to include `dist/**`; add `bin` entry pointing at `dist/mcp/shim.js`; ensure `prepublishOnly` runs the build. ALSO add `postinstall` script `chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true` per Phase-0 F2 / R19 (node-pty 1.1.0 prebuild bug).
   - intent: infra
   - files_allowed:
       - tsconfig.build.json
@@ -111,6 +111,16 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - package-lock.json
       - ".npmignore"
   - allow_new_files: true
+- [ ] 1.4a Implement `src/driver/ansi.ts` — ANSI escape sequence stripper (CSI, OSC, 8-bit-char escapes) for use by D25's trust-dialog scanner and any future PTY-output scanning. Unit tests verify stripping correctness against fixture PTY outputs from real `claude` boots.
+  - intent: feature
+  - files_allowed:
+      - src/driver/ansi.ts
+      - tests/unit-driver-ansi.mjs
+- [ ] 1.4b Implement trust-dialog scanner in `src/driver/pty.ts` per D25: attach output watcher on spawn, ANSI-strip via `ansi.ts`, detect trigger substrings, send `\r` on match, time out at 5s or on transcript-file-creation event. Failure-surface error path at 30s no-transcript no-dialog.
+  - intent: feature
+  - files_allowed:
+      - src/driver/pty.ts
+      - tests/unit-driver-trust-scanner.mjs
 - [ ] 1.3 Implement `src/driver/settings.ts` — builds inline `--settings` JSON (hooks + permissions deny set per claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration)
   - intent: feature
   - files_allowed:
@@ -310,6 +320,21 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - tests/int-tarball-verify.sh
       - .github/workflows/**/*.yml
+- [ ] 4.9 Trust-dialog scanner robustness test — spawn `claude` in fresh tmpdir, assert scanner detects + answers within 1s and transcript appears within 5s (D25)
+  - intent: feature
+  - files_allowed:
+      - tests/int-trust-dialog-scanner.mjs
+  - allow_new_files: true
+- [ ] 4.10 Trust-dialog scanner non-interference test — spawn in already-trusted cwd, assert scanner times out silently with zero keystrokes sent (D25)
+  - intent: feature
+  - files_allowed:
+      - tests/int-trust-dialog-noninterference.mjs
+  - allow_new_files: true
+- [ ] 4.11 Trust-dialog scanner failure surface test — stub PTY stream with neither dialog nor transcript; assert documented error within timeout (D25 / R18)
+  - intent: feature
+  - files_allowed:
+      - tests/unit-trust-dialog-failure.mjs
+  - allow_new_files: true
 - [ ] 4.5 Produce `verify.md` (per Verification Mode = retained-required) — canonical AC↔test mapping for EVERY AC ID in `specs/**/spec.md` (do NOT hard-code an AC count; enumerate dynamically; Round-2 A.P2#1)
   - intent: refactor
   - files_allowed:

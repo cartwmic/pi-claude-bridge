@@ -283,6 +283,51 @@ Each block separated by a blank line. If `ctx.systemPrompt` is empty, the assemb
 
 **4-point test:** multiple-approaches? minor. lasting? medium. disagreement? no. future-constraint? no. → **ADR candidate N** (1 of 4).
 
+### D18: Deterministic transcript path via pre-generated `--session-id` (added Round-3; corrected Phase-0 F1)
+
+**Choice:** Discover the transcript path WITHOUT depending on hook payload contracts. For each PTY spawn:
+
+1. Bridge generates a UUID at spawn time via `crypto.randomUUID()`.
+2. Spawn flag `--session-id <uuid>` is added (per `claude --help`: "Use a specific session ID for the conversation (must be a valid UUID)").
+3. Bridge computes the transcript path: `path.join(os.homedir(), ".claude", "projects", encodeCwd(fs.realpathSync(process.cwd())), uuid + ".jsonl")` where `encodeCwd(p)` replaces `/` with `-`. **Phase 0 F1 correction (2026-05-21):** the cwd MUST be passed through `realpath` before encoding — macOS `/var/folders/...` resolves to `/private/var/folders/...` and `claude` uses the realpath-encoded form. Without `realpathSync`, the computed path will MISS the actual transcript file on macOS for any tmpdir-based cwd.
+4. The transcript tailer opens the path AS SOON AS the file appears via a brief `fs.watch` on the parent directory.
+5. The `SessionStart` hook is still registered (D9), but its only purpose is to confirm the model run has begun. If `SessionStart` payload happens to include `transcript_path`, the bridge asserts it matches the computed path and logs a warn-level entry if not.
+
+**Constitution III compliance:** the bridge reads `~/.claude/projects/<encoded-realpath-cwd>/<uuid>.jsonl` where `<uuid>` is a value the bridge itself generated. **Constitution III was amended in this change (v1.0.0 → v1.1.0)** to add exemption (b): "the path was deterministically computed from a session UUID the bridge itself generated." Amendment ratified by THIS Scale-L change's adversarial-review-cycle.
+
+**Eliminates** the Round-2 "directory-snapshot + mtime" fallback (constitution-III-violating per Round-3 B.P1#2 + race-prone per Round-3 A.P2) AND the dependency on `SessionStart` payload containing `transcript_path` (Round-2 B.P1#1).
+
+**4-point test:** multiple-approaches? yes. lasting? yes. disagreement? minor. future-constraint? yes. → **ADR candidate Y** (4 of 4).
+
+### D25: Workspace trust-dialog handling (added 2026-05-21 after Phase 0 T0.14)
+
+**Choice:** The bridge implements an ANSI-aware PTY-output scanner that detects the `claude` interactive workspace-trust dialog and auto-answers it. Detection looks for the substring `Quick safety check` (or alternately `Accessing workspace:`) in ANSI-stripped PTY output for the first ~5 seconds after spawn. On detection, the scanner sends `\r` over the PTY (which selects the default "Yes, trust this project" option per current `claude` 2.1.114 layout). The scanner stops watching on first match OR after the bounded window expires OR on first transcript-file-creation event.
+
+**Why a scanner (not a pre-trusted dir):** Trust state lives under `~/.claude/` (constitution III forbids writes). Pre-trusting a dir requires spawning `claude` there once and answering the dialog — which requires the scanner anyway. Pre-trusted-dir would only amortize scanner work, not replace it. Single mechanism covers all cases:
+  - First-time pi project: scanner runs once, the user's project is then trusted by `claude`'s persistent state for all subsequent runs.
+  - Capture mode (`cwd = tmpdir()`): scanner runs every call (~100–500ms latency overhead).
+  - Already-trusted cwd: scanner sees nothing matching, times out silently, no harm done.
+
+**Detection contract:**
+- Strip ANSI escape sequences (CSI `\x1b\[...`, OSC `\x1b]...\x07`, 8-bit-character escapes) from PTY output via a small reusable helper in `src/driver/ansi.ts`.
+- Search the stripped buffer for either trigger substring case-insensitively.
+- On match: write `\r` to PTY input. Mark dialog answered.
+- After 5s without a match: stop scanning, proceed normally.
+- ALSO stop scanning on first transcript-file-creation event (dialog can't fire after that).
+
+**Failure modes (per constitution VII):**
+- IF the dialog fires but the scanner does NOT detect it within the window, the PTY hangs. After 30s of no transcript creation AND process still alive, the driver SHALL emit an `error` event whose `errorMessage` is `"workspace trust dialog not detected; claude TUI may have changed its boot UI"` and kill the PTY. R18 captures this.
+- IF the scanner matches a FALSE POSITIVE (model output contains "Quick safety check" in the first 5s), the auto-answer keystroke goes into the PTY input buffer. Benign (model is busy producing output). The 5s window minimizes this risk; the dialog appears within ~500ms of spawn empirically.
+
+**Test surface (Phase 4):**
+- T4.9: scanner robustness — spawn `claude` in fresh tmpdir, assert detect+answer within 1s, transcript appears within 5s.
+- T4.10: scanner non-interference — spawn in already-trusted cwd, assert silent timeout with no keystroke.
+- T4.11: scanner failure surface — spoof a PTY stream with no dialog + no transcript, assert documented error emitted within timeout.
+
+**Phase 0 spike re-run:** T0.14 re-attempted with scanner in place. All other Phase 0 spikes that need a live interactive `claude` either run in a pre-trusted cwd (this repo's worktree, already trusted) OR include the scanner.
+
+**4-point test:** multiple-approaches? yes. lasting? yes. disagreement? yes. future-constraint? yes. → **ADR candidate Y** (4 of 4).
+
 ### D19: Shim executable path resolution (added Round-4)
 
 **Choice (added in Round-4 adversarial revision per B.P1#1):** The bridge does NOT rely on `pi-claude-bridge-shim` being on `$PATH` in the spawned `claude`'s child environment. Instead, the bridge resolves the shim's absolute path at PTY-spawn time using `require.resolve('pi-claude-bridge/dist/mcp/shim.js')` (or `import.meta.resolve` in pure-ESM contexts) and passes the absolute path to BOTH:
@@ -463,6 +508,10 @@ The current bridge (index.ts:1008-1016, 1260-1336) deliberately keeps aborted fr
 | R15 | Cold-start positional argument exceeds OS argv size limit (~256 KB macOS, ~2 MB Linux) on long-history turns (Round-2 B.P1#2) | Low (most turns) / Medium (after long sessions + restart) | High | **Round-5 A.P1#2 insight**: `claude --help` shows `--system-prompt[-file]` and `--append-system-prompt[-file]`, implying `--system-prompt-file <path>` and `--append-system-prompt-file <path>` exist. These read prompt content FROM A FILE, escaping argv entirely. Phase 0 T0.11 verifies the flags exist + work in interactive mode. If verified: on argv-overflow, the bridge writes cold-start history to a per-PTY temp file in `os.tmpdir()` (permissible per constitution III — not under `~/.claude/`) and passes `--system-prompt-file <tempfile>` instead of `--system-prompt <inline>`. The positional argument carries only the new user message. File is cleaned up on PTY exit. If `--system-prompt-file` does not exist or is `--print`-only, fall back to surfacing `stopReason: "error"` (v1 hard limit; CHANGELOG documents). |
 | R16 | Model-asks-itself "what tools do you have?" as a verification mechanism is non-deterministic (Round-2 A.P2#3) | High | Medium | Integration tests T1.15/T1.16 use deterministic MCP `tools/list` introspection (against the shim's advertised set) instead of model self-report. Spike T0.7 uses the same deterministic introspection. |
 | R17 | Model ignores capture-mode's "end your turn now" English instruction (Round-2 A.P3#3) | Low (modern instruction-following models) | Low (D16's repeated-call -32603 limits damage) | Phase 4 benchmark T4.8 measures capture-mode termination latency distribution across N runs; if median diverges materially from "end_turn after first call", evaluate setting `max_tokens` via inline `--settings` for capture turns. |
+| R18 | Trust-dialog scanner brittle to `claude` TUI redesigns (D25) — Anthropic shipping an Ink redesign changing the trust dialog wording/layout would stop detection; every fresh-trust spawn would hang until the documented timeout | Medium | High | Pin tested `claude` version range (T4.7); CI tests T4.9/T4.10/T4.11 exercise scanner against pinned binary; runtime warn on version skew; scanner failure surfaces as `stopReason: "error"` per constitution VII rather than silent hang. |
+| R19 | `node-pty` 1.1.0 prebuild ships `spawn-helper` without execute bit (Phase 0 F2) — `posix_spawnp` fails until `chmod +x` is applied | High (every fresh `npm install`) | High (blocks all bridge functionality) | `package.json` `postinstall` script: `chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null \|\| true`. File upstream issue. Document in README. T1.2a includes the postinstall hook. |
+| R20 | Interactive `claude` injects `attachment.skill_listing` regardless of `--system-prompt` (Phase 0 F4) — model sees user's global skill metadata even on capture path | Low | Low | For capture mode ALSO pass `--disable-slash-commands` (per `claude --help`). Verify in follow-up spike. Document. |
+| R21 | Transcript path uses `realpath(cwd)` not lexical cwd (Phase 0 F1) — macOS `/var/folders/...` resolves to `/private/var/folders/...`; D18's original `cwd.replaceAll("/","-")` was wrong | Resolved in D18 | Was-blocker if shipped | D18 amended (see above); driver calls `fs.realpathSync(cwd)` before encoding. T0.8 transcript inspection confirmed. |
 | R13 | Interactive `claude` does not honor `--no-session-persistence` (flag is `--print`-only); every bridge-spawned PTY accumulates a transcript file on disk | High | Low | Documented in proposal Impact. The bridge does not clean these files (constitution III); they accumulate at the same rate the user's own `claude` usage produces them. Mitigation deferred unless disk usage becomes a complaint. |
 | R14 | Post-Phase-3 rollback requires re-publishing a prior npm version AND in-repo rollback spans 5+ commits (steps 13.1, 13.3, 14.1, 14.2, 14.3, 14.5) | Low | Medium | CHANGELOG documents post-Phase-3 rollback as "`npm install pi-claude-bridge@<previous>`" for downstream consumers; for in-repo rollback the cut-over commits are tagged contiguously so a `git revert <Phase-3-range>` runs as one operation; T4.6a adds a rollback-rehearsal step in Phase 4 (`git revert <range>; npm test`) before publishing. Recommend Phase 3 cut-over as `1.0.0` major bump to make the upgrade decision explicit. |
 

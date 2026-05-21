@@ -18,14 +18,14 @@ WHEN the bridge starts a fresh turn for a model registered under provider `claud
 - **AND** the spawned arguments include `--setting-sources ""` (preventing user/project/local settings from overriding the bridge's inline config)
 - **AND** the spawned arguments include `--permission-mode bypassPermissions` (preventing interactive permission dialogs)
 - **AND** the spawned arguments include `--system-prompt <text>` with the path-appropriate system prompt content
-- **AND** the spawned arguments include `--session-id <uuid>` with a pre-generated UUID the bridge will use to compute the transcript path deterministically
+- **AND** the spawned arguments include `--session-id <uuid>` with a pre-generated UUID the bridge will use to compute the transcript path deterministically (via `~/.claude/projects/<encoded-realpath-cwd>/<uuid>.jsonl` where the cwd is passed through `fs.realpathSync` before `/` → `-` encoding; see design D18)
 - **AND** the spawned arguments include `--settings` carrying inline hook handlers for `SessionStart` and `Stop` only (NOT `PreToolUse` — dropped per design D9/D11)
 - **AND** the spawned arguments include the disallowed-tool surface enforcing constitution principle IV
 - **AND** the pi user prompt is delivered as the trailing positional CLI argument (text content only; image content is handled per the "Image content handling in v1" requirement)
 
-#### Scenario: Transcript path is computed deterministically from the pre-generated UUID
-- **WHEN** the driver generates a UUID `<uuid>` and spawns with `--session-id <uuid>` in cwd `/Users/x/proj`
-- **THEN** the bridge computes the transcript path as `~/.claude/projects/-Users-x-proj/<uuid>.jsonl` (cwd `/` chars replaced by `-`)
+#### Scenario: Transcript path is computed deterministically from the pre-generated UUID (with realpath cwd)
+- **WHEN** the driver generates a UUID `<uuid>` and spawns with `--session-id <uuid>` in lexical cwd `/var/folders/.../tmp-x` (macOS) whose `fs.realpathSync` returns `/private/var/folders/.../tmp-x`
+- **THEN** the bridge computes the transcript path as `~/.claude/projects/-private-var-folders-...-tmp-x/<uuid>.jsonl` (realpath cwd with `/` → `-`)
 - **AND** the transcript tailer opens that path as soon as it appears on disk (parent-directory `fs.watch` for file-creation event)
 - **AND** the bridge does NOT depend on the `SessionStart` hook payload carrying a `transcript_path` field for discovery
 
@@ -88,6 +88,29 @@ WHEN pi signals abort on the current turn's `AbortSignal`, THE driver SHALL deli
 - **THEN** the driver delivers an interrupt to the PTY
 - **AND** the active stream pushes a `done` event with `reason: "aborted"`
 - **AND** the PTY is reaped before the next turn starts
+
+### Requirement: Workspace trust dialog is auto-answered by the bridge
+
+WHEN the driver spawns `claude` in a cwd that `claude` does not yet trust, `claude` interactive mode draws a workspace-trust dialog before firing any hooks or writing the transcript file. THE driver SHALL include an ANSI-aware PTY-output scanner that watches the first 5 seconds of PTY output for the trigger substrings `Quick safety check` and `Accessing workspace:` (case-insensitive, after ANSI escape sequences are stripped). On either match, THE driver SHALL write `\r` to the PTY's input (selecting the default "Yes, trust this project" option). THE scanner SHALL stop watching on first match, on transcript-file-creation event, or after the 5s window elapses, whichever comes first.
+
+#### Scenario: Fresh tmpdir cwd triggers trust dialog; scanner auto-answers
+- **WHEN** the driver spawns `claude` in `os.tmpdir()` (an untrusted cwd)
+- **AND** within ~500ms the PTY output contains the trust dialog
+- **THEN** the scanner detects the trigger substring within 1s
+- **AND** writes `\r` to the PTY input
+- **AND** the transcript file appears within 5s of the keystroke
+- **AND** the `SessionStart` hook fires after the dialog is dismissed
+
+#### Scenario: Already-trusted cwd; scanner times out silently
+- **WHEN** the driver spawns `claude` in a cwd `claude` has previously trusted
+- **AND** no trust dialog is drawn in PTY output
+- **THEN** the scanner times out at 5s without sending any keystroke
+- **AND** no harm to the spawned session
+
+#### Scenario: Trust dialog never detected AND transcript never appears
+- **IF** the PTY produces no detected dialog AND no transcript file within 30s of spawn AND the process is still alive
+- **THEN** the driver pushes an `error` event whose `errorMessage` is `"workspace trust dialog not detected; claude TUI may have changed its boot UI"`
+- **AND** the PTY is killed
 
 ### Requirement: Driver never writes to user-global Claude config
 
@@ -190,6 +213,7 @@ WHEN pi signals abort while a turn is mid-tool-round (an MCP tool call is parked
 | claude-tui-driver.abort-propagates-to-the-pty | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.driver-never-writes-to-user-global-claude-config | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.unexpected-driver-exit-surfaces-as-error | [ ] | [ ] | [ ] | [ ] | [ ] |
+| claude-tui-driver.workspace-trust-dialog-is-auto-answered-by-the-bridge | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.image-content-handling-in-v1 | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.hook-relay-subprocess-is-the-bridges-hook-ipc-channel | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.abort-lifecycle-is-decoupled-from-stop-hook-firing | [ ] | [ ] | [ ] | [ ] | [ ] |

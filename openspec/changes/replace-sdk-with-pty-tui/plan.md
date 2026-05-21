@@ -66,17 +66,19 @@ simple ordered lists where PTY integration prevents pure TDD.
 - **Verification:** `npm run test:unit` green; `npm run typecheck` green.
 - **Rollback:** `git revert` the commit; leaves Phase 0 + Step 2 intact.
 
-## Plan step 4: PTY driver core (`src/driver/pty.ts`)
+## Plan step 4: PTY driver core (`src/driver/pty.ts` + `src/driver/ansi.ts` + trust scanner)
 
-- **Covers:** T1.4
+- **Covers:** T1.4, T1.4a, T1.4b
 - **Pre-conditions:** Step 3 done.
 - **Action (TDD where feasible; PTY spawn integration test gates pure TDD):**
   1. Write failing unit test for abort behavior using a fake PTY (claude-tui-driver.abort-propagates-to-the-pty).
   2. Run → FAIL.
   3. Implement `spawn()`, `interrupt()`, `kill()` with the 3-second SIGINT→SIGKILL grace window (D10). Hook callbacks are stubs at this stage.
   4. Run unit test → PASS.
-  5. Add an integration smoke test that spawns real `claude` with `--version`-equivalent or smallest possible turn and asserts process lifecycle. Cite ACs `claude-tui-driver.pty-spawn-with-model-selection` and `.unexpected-driver-exit-surfaces-as-error`.
-  6. Commit (`feat(driver): PTY spawn, hook dispatch, abort propagation`).
+  5. Implement `src/driver/ansi.ts` (T1.4a) — ANSI CSI/OSC/8-bit escape stripper. Unit tests with fixture PTY outputs.
+  6. Implement trust-dialog scanner in `pty.ts` (T1.4b per D25): on spawn, attach an output watcher; ANSI-strip incoming bytes; search for `Quick safety check` / `Accessing workspace:`; send `\r` on match; stop on match / transcript-creation / 5s timeout; emit error if 30s elapses without dialog AND without transcript.
+  7. Add an integration smoke test that spawns real `claude` in a fresh `os.tmpdir()` and asserts: scanner detects+answers + transcript appears + process lifecycle clean. Cite ACs `claude-tui-driver.pty-spawn-with-model-selection`, `.unexpected-driver-exit-surfaces-as-error`, `.workspace-trust-dialog-is-auto-answered-by-the-bridge`.
+  8. Commit (`feat(driver): PTY spawn + ANSI scanner + workspace-trust auto-answer + abort propagation`).
 - **Verification:** unit + integration smoke green; the `tests/int-claude-dir-audit.mjs` runtime directory-diff check (T4.2) asserts no BRIDGE-AUTHORED write occurred under `~/.claude/` during the test (transcripts written by `claude` itself under `~/.claude/projects/` are allowed; the assertion targets `~/.claude/sessions/`, `~/.claude/settings.json`, etc.) (cite AC `.driver-never-writes-to-user-global-claude-config`; Round-2 B.P2#1).
 - **Rollback:** `git revert`.
 

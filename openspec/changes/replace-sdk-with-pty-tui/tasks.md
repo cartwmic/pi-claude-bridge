@@ -263,7 +263,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
 
 ## 3. Phase 3 — Cut over
 
-- [ ] 3.1 Default `CLAUDE_BRIDGE_DRIVER` to `pty`; keep `sdk` value rejected with deprecation error
+- [x] 3.1 Default `CLAUDE_BRIDGE_DRIVER` to `pty`; keep `sdk` value rejected with deprecation error
   - intent: refactor
   - files_allowed:
       - index.ts
@@ -284,7 +284,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - "**/*.ts"
   - allow_new_files: false
-- [ ] 3.5 Final README pass — `pi-claude-bridge` description updated, capabilities section reflects new architecture
+- [x] 3.5 Final README pass — `pi-claude-bridge` description updated, capabilities section reflects new architecture
   - intent: refactor
   - files_allowed:
       - README.md

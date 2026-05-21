@@ -90,7 +90,11 @@ const DISALLOWED_BUILTIN_TOOLS = [
 let _queryFactory: typeof _realQuery = _realQuery;
 
 /** Test-only: swap the query factory and return a restorer. Not part of the public API. */
+// When SDK query factory is injected, force driver override to "sdk" so the
+// SDK code path is exercised. Tests that want to exercise the PTY path do
+// not inject a query factory; they set driver override to "pty" explicitly.
 export function __setQueryFactoryForTests(f: typeof _realQuery): () => void {
+	__setDriverOverrideForTests("sdk");
 	const prev = _queryFactory;
 	_queryFactory = f;
 	return () => { _queryFactory = prev; };
@@ -148,18 +152,29 @@ const newAssistantMessageEventStream: () => AssistantMessageEventStream =
 // `msg`, plus any structured fields the call site attached.
 
 /**
- * T1.9 driver-selection env switch. Default "sdk" during Phase 1; flipped
- * to "pty" in Phase 3 cutover. Reading at module-evaluation time is fine
- * because tests can re-import or use the `__driverOverride` test hook.
+ * Driver-selection env switch. v1.0.0 default = "pty" (Phase 3 cutover).
+ * "sdk" value is REJECTED at module load with a deprecation error per
+ * tasks.md T3.1.
  *
- * Allowed values:
- *   "sdk" (default) — existing @anthropic-ai/claude-agent-sdk path
- *   "pty"           — new node-pty-driven `claude` interactive TUI path
- *                     (T1.10)
+ * The SDK code path remains physically present in this module for v1.0.x
+ * (T3.2 physical delete + T3.3 dependency removal are deferred to v1.1.0
+ * to keep the v1.0.0 cut focused on the driver swap; rollback within
+ * v1.0.x can still flip to a custom build that re-enables 'sdk' via an
+ * undocumented backdoor for emergencies).
  */
-export const CLAUDE_BRIDGE_DRIVER = (process.env.CLAUDE_BRIDGE_DRIVER === "pty" ? "pty" : "sdk") as "sdk" | "pty";
+const _rawDriver = (process.env.CLAUDE_BRIDGE_DRIVER ?? "").trim().toLowerCase();
+if (_rawDriver === "sdk") {
+	// eslint-disable-next-line no-console
+	console.error(
+		"pi-claude-bridge: CLAUDE_BRIDGE_DRIVER=sdk was removed in v1.0.0. " +
+		"The bridge now drives the interactive `claude` TUI via node-pty (CLAUDE_BRIDGE_DRIVER=pty, the default). " +
+		"Unset CLAUDE_BRIDGE_DRIVER or set it to 'pty' to continue.",
+	);
+	throw new Error("CLAUDE_BRIDGE_DRIVER=sdk removed in v1.0.0");
+}
+export const CLAUDE_BRIDGE_DRIVER: "pty" = "pty";
 let _driverOverride: "sdk" | "pty" | undefined;
-/** Test-only override. */
+/** Test-only override. Tests may still set 'sdk' to exercise legacy paths. */
 export function __setDriverOverrideForTests(d: "sdk" | "pty" | undefined): void { _driverOverride = d; }
 export function __getActiveDriver(): "sdk" | "pty" { return _driverOverride ?? CLAUDE_BRIDGE_DRIVER; }
 

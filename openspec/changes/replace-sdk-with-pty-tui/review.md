@@ -20,7 +20,7 @@ modes and dispatches behavior.
 
 <!-- Captured by apply at worktree creation. Leave empty until apply starts. -->
 
-**Worktree Base SHA:** <empty until apply captures it>
+**Worktree Base SHA:** `27a471ceeb643c8ce386e66fdce3cc64a957cc57`
 
 ## Manual Adjustments
 
@@ -34,4 +34,4 @@ modes and dispatches behavior.
 
 <!-- Transient observations appended during apply. -->
 
-- (none yet)
+- 2026-05-21 00:31 — Worktree created at `worktrees/replace-sdk-with-pty-tui`. Base SHA `27a471c`. Adversarial review complete (5 rounds, treadmill stop); persistent log in `.opsx-review/replace-sdk-with-pty-tui/`. Beginning Phase 0 spikes.

@@ -164,52 +164,52 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - index.ts
       - src/driver/**/*.ts
       - src/mcp/**/*.ts
-- [ ] 1.11 Integration test: end-to-end main-provider turn via PTY driver (text-only)
+- [x] 1.11 Integration test: end-to-end main-provider turn via PTY driver (text-only)
   - intent: feature
   - files_allowed:
       - tests/int-pty-main-turn.sh
       - tests/int-pty-main-turn.mjs
-- [ ] 1.12 Integration test: tool-round via PTY driver (model calls bridged tool, pi delivers result, model continues)
+- [x] 1.12 Integration test: tool-round via PTY driver (model calls bridged tool, pi delivers result, model continues)
   - intent: feature
   - files_allowed:
       - tests/int-pty-tool-round.sh
       - tests/int-pty-tool-round.mjs
-- [ ] 1.13 Integration test: abort mid-turn (claude-tui-driver.abort-propagates-to-the-pty, .abort-lifecycle-is-decoupled-from-stop-hook-firing)
+- [x] 1.13 Integration test: abort mid-turn (claude-tui-driver.abort-propagates-to-the-pty, .abort-lifecycle-is-decoupled-from-stop-hook-firing)
   - intent: feature
   - files_allowed:
       - tests/int-pty-abort.sh
       - tests/int-pty-abort.mjs
-- [ ] 1.14 Integration test: hook-relay end-to-end (claude-tui-driver.hook-relay-subprocess-is-the-bridges-hook-ipc-channel)
+- [x] 1.14 Integration test: hook-relay end-to-end (claude-tui-driver.hook-relay-subprocess-is-the-bridges-hook-ipc-channel)
   - intent: feature
   - files_allowed:
       - tests/int-hook-relay.sh
       - tests/int-hook-relay.mjs
-- [ ] 1.15 Integration test: user-global MCP server isolation via deterministic MCP `tools/list` introspection (claude-tui-driver.pty-spawn-with-model-selection scenario "User-global MCP server isolated from the spawned PTY"; Round-2 A.P2#3)
+- [x] 1.15 Integration test: user-global MCP server isolation via deterministic MCP `tools/list` introspection (claude-tui-driver.pty-spawn-with-model-selection scenario "User-global MCP server isolated from the spawned PTY"; Round-2 A.P2#3)
   - intent: feature
   - files_allowed:
       - tests/int-strict-mcp-config.sh
       - tests/int-strict-mcp-config.mjs
-- [ ] 1.16 Integration test: user-global `permissions.allow` does not re-enable disallowed tool, verified via deterministic introspection (claude-tui-driver.pty-spawn-with-model-selection scenario; Round-2 A.P2#3)
+- [x] 1.16 Integration test: user-global `permissions.allow` does not re-enable disallowed tool, verified via deterministic introspection (claude-tui-driver.pty-spawn-with-model-selection scenario; Round-2 A.P2#3)
   - intent: feature
   - files_allowed:
       - tests/int-setting-sources-isolation.sh
       - tests/int-setting-sources-isolation.mjs
-- [ ] 1.17 Integration test: abort mid-tool-round preserves late-tool-result coherence (claude-tui-driver.abort-preserves-late-tool-result-coherence-with-pi; Round-2 B.P1#3)
+- [x] 1.17 Integration test: abort mid-tool-round preserves late-tool-result coherence (claude-tui-driver.abort-preserves-late-tool-result-coherence-with-pi; Round-2 B.P1#3)
   - intent: feature
   - files_allowed:
       - tests/int-pty-abort-late-tool-result.sh
       - tests/int-pty-abort-late-tool-result.mjs
-- [ ] 1.18 Integration test: `Stop` arrives before terminal `result` written; bounded settle window catches the late `result` (transcript-stream Stop pre-flush settle scenario; Round-2 B.P1#4 / D17)
+- [x] 1.18 Integration test: `Stop` arrives before terminal `result` written; bounded settle window catches the late `result` (transcript-stream Stop pre-flush settle scenario; Round-2 B.P1#4 / D17)
   - intent: feature
   - files_allowed:
       - tests/int-transcript-settle-window.sh
       - tests/int-transcript-settle-window.mjs
-- [ ] 1.19 Integration test: warm-resume with immediate assistant output — baseline offset captured BEFORE spawn; no lines lost (D24 / Round-5 B.P1#4)
+- [x] 1.19 Integration test: warm-resume with immediate assistant output — baseline offset captured BEFORE spawn; no lines lost (D24 / Round-5 B.P1#4)
   - intent: feature
   - files_allowed:
       - tests/int-pty-warm-resume-no-loss.sh
       - tests/int-pty-warm-resume-no-loss.mjs
-- [ ] 1.20 Integration test: hook command with absolute path containing a space (D19 + Round-5 A.P2 shell quoting)
+- [x] 1.20 Integration test: hook command with absolute path containing a space (D19 + Round-5 A.P2 shell quoting)
   - intent: feature
   - files_allowed:
       - tests/int-hook-quoted-path.sh

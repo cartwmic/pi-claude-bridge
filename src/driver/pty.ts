@@ -198,6 +198,34 @@ export function setPtySpawn(fn: PtySpawnFn): void {
 	_ptySpawn = fn;
 }
 
+// T4.7 — runtime version check, executed at most once per bridge process,
+// at the first spawn (NOT at extension load time, per R9). Warns if the
+// detected `claude --version` falls outside the tested-against range.
+const TESTED_AGAINST_RANGE = { major: 2, minorMin: 1, minorMax: 1 };
+let _versionCheckDone = false;
+async function runVersionCheckOnce(claudeBin: string): Promise<void> {
+	if (_versionCheckDone) return;
+	_versionCheckDone = true;
+	try {
+		const { execFileSync } = await import("node:child_process");
+		const out = execFileSync(claudeBin, ["--version"], { encoding: "utf8", timeout: 5000 });
+		const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
+		if (!m) return;
+		const maj = Number(m[1]);
+		const min = Number(m[2]);
+		if (maj !== TESTED_AGAINST_RANGE.major || min < TESTED_AGAINST_RANGE.minorMin || min > TESTED_AGAINST_RANGE.minorMax) {
+			// eslint-disable-next-line no-console
+			console.warn(
+				`pi-claude-bridge: claude ${out.trim()} is outside tested-against range ` +
+				`(>=${TESTED_AGAINST_RANGE.major}.${TESTED_AGAINST_RANGE.minorMin}.x <=${TESTED_AGAINST_RANGE.major}.${TESTED_AGAINST_RANGE.minorMax}.x). ` +
+				`Behavior may diverge.`,
+			);
+		}
+	} catch {
+		// Best-effort: missing-binary or stat failure surfaces elsewhere.
+	}
+}
+
 async function loadPtySpawn(): Promise<PtySpawnFn> {
 	if (_ptySpawn) return _ptySpawn;
 	const m: any = await import("node-pty");
@@ -439,6 +467,7 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 
 	// Spawn PTY.
 	const ptySpawn = await loadPtySpawn();
+	await runVersionCheckOnce(opts.claudeBin ?? "claude");
 	const proc = ptySpawn(
 		opts.claudeBin ?? "claude",
 		args,

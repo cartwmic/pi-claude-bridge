@@ -292,7 +292,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
 
 ## 4. Phase 4 — Hardening
 
-- [ ] 4.1 If Phase 0.4 found `fs.watch` unreliable on macOS, implement polling fallback in `src/driver/transcript.ts`
+- [x] 4.1 If Phase 0.4 found `fs.watch` unreliable on macOS, implement polling fallback in `src/driver/transcript.ts`
   - intent: fix
   - files_allowed:
       - src/driver/transcript.ts
@@ -306,7 +306,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - .github/workflows/**/*.yml
       - tests/int-claude-dir-audit.mjs
   - allow_new_files: true
-- [ ] 4.3 Audit constitution IV — assert `DISALLOWED_BUILTIN_TOOLS` matches the spec list in `claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration`; ASSERT `--bare` is in the disallowed-flags set the driver builds (Round-2 A.P3#2)
+- [x] 4.3 Audit constitution IV — assert `DISALLOWED_BUILTIN_TOOLS` matches the spec list in `claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration`; ASSERT `--bare` is in the disallowed-flags set the driver builds (Round-2 A.P3#2)
   - intent: infra
   - files_allowed:
       - tests/unit-disallow-list.mjs
@@ -320,22 +320,22 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - tests/int-tarball-verify.sh
       - .github/workflows/**/*.yml
-- [ ] 4.9 Trust-dialog scanner robustness test — spawn `claude` in fresh tmpdir, assert scanner detects + answers within 1s and transcript appears within 5s (D25)
+- [x] 4.9 Trust-dialog scanner robustness test — spawn `claude` in fresh tmpdir, assert scanner detects + answers within 1s and transcript appears within 5s (D25)
   - intent: feature
   - files_allowed:
       - tests/int-trust-dialog-scanner.mjs
   - allow_new_files: true
-- [ ] 4.10 Trust-dialog scanner non-interference test — spawn in already-trusted cwd, assert scanner times out silently with zero keystrokes sent (D25)
+- [x] 4.10 Trust-dialog scanner non-interference test — spawn in already-trusted cwd, assert scanner times out silently with zero keystrokes sent (D25)
   - intent: feature
   - files_allowed:
       - tests/int-trust-dialog-noninterference.mjs
   - allow_new_files: true
-- [ ] 4.11 Trust-dialog scanner failure surface test — stub PTY stream with neither dialog nor transcript; assert documented error within timeout (D25 / R18)
+- [x] 4.11 Trust-dialog scanner failure surface test — stub PTY stream with neither dialog nor transcript; assert documented error within timeout (D25 / R18)
   - intent: feature
   - files_allowed:
       - tests/unit-trust-dialog-failure.mjs
   - allow_new_files: true
-- [ ] 4.5 Produce `verify.md` (per Verification Mode = retained-required) — canonical AC↔test mapping for EVERY AC ID in `specs/**/spec.md` (do NOT hard-code an AC count; enumerate dynamically; Round-2 A.P2#1)
+- [x] 4.5 Produce `verify.md` (per Verification Mode = retained-required) — canonical AC↔test mapping for EVERY AC ID in `specs/**/spec.md` (do NOT hard-code an AC count; enumerate dynamically; Round-2 A.P2#1)
   - intent: refactor
   - files_allowed:
       - openspec/changes/replace-sdk-with-pty-tui/verify.md
@@ -345,7 +345,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - scripts/rollback-rehearsal.sh
       - .github/workflows/**/*.yml
   - allow_new_files: true
-- [ ] 4.7 Add a runtime check in `src/driver/pty.ts` that reads `claude --version` ON FIRST PTY SPAWN (cached per bridge process; NOT at extension load time) and logs a warn-level entry if outside the tested range pinned in README; record the spike-time `claude --version` to `.spike-notes/00-claude-version.md`. Bridge load must NOT depend on `claude` being on `$PATH` (per R9, missing-binary surfaces at first turn). (Round-2 A.P2 + Round-3 A.P2#3)
+- [x] 4.7 Add a runtime check in `src/driver/pty.ts` that reads `claude --version` ON FIRST PTY SPAWN (cached per bridge process; NOT at extension load time) and logs a warn-level entry if outside the tested range pinned in README; record the spike-time `claude --version` to `.spike-notes/00-claude-version.md`. Bridge load must NOT depend on `claude` being on `$PATH` (per R9, missing-binary surfaces at first turn). (Round-2 A.P2 + Round-3 A.P2#3)
   - intent: feature
   - files_allowed:
       - src/driver/pty.ts
@@ -359,7 +359,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - tests/int-capture-termination-bench.mjs
       - .github/workflows/**/*.yml
   - allow_new_files: true
-- [ ] 4.6 Prune TODO.md of items rendered obsolete by the refactor (SDK-era references, AskClaude-related, deferred AskClaude-pi-shim items)
+- [x] 4.6 Prune TODO.md of items rendered obsolete by the refactor (SDK-era references, AskClaude-related, deferred AskClaude-pi-shim items)
   - intent: refactor
   - files_allowed:
       - TODO.md

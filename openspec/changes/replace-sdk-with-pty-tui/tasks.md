@@ -136,12 +136,12 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - src/driver/transcript.ts
       - tests/unit-transcript-stream.mjs
-- [ ] 1.6 Implement `src/mcp/ipc.ts` — unique-per-PTY unix-socket transport (R10 mitigation: random socket path via `randomBytes`)
+- [x] 1.6 Implement `src/mcp/ipc.ts` — unique-per-PTY unix-socket transport (R10 mitigation: random socket path via `randomBytes`)
   - intent: feature
   - files_allowed:
       - src/mcp/ipc.ts
       - tests/unit-mcp-ipc.mjs
-- [ ] 1.7 Implement `src/mcp/shim.ts` — multi-mode executable (`--mode mcp` and `--mode hook`) per `mcp-stdio-shim.shim-binary-serves-both-mcp-server-and-hook-relay-roles`, plus capture-mode deterministic response per `.capture-mode-tool-calls-receive-deterministic-shim-response`, all the earlier shim ACs, and the hook IPC contract from `claude-tui-driver.hook-relay-subprocess-is-the-bridges-hook-ipc-channel`. Wire bin entry in `package.json`.
+- [x] 1.7 Implement `src/mcp/shim.ts` — multi-mode executable (`--mode mcp` and `--mode hook`) per `mcp-stdio-shim.shim-binary-serves-both-mcp-server-and-hook-relay-roles`, plus capture-mode deterministic response per `.capture-mode-tool-calls-receive-deterministic-shim-response`, all the earlier shim ACs, and the hook IPC contract from `claude-tui-driver.hook-relay-subprocess-is-the-bridges-hook-ipc-channel`. Wire bin entry in `package.json`.
   - intent: feature
   - files_allowed:
       - src/mcp/shim.ts
@@ -149,7 +149,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - package.json
       - tests/unit-mcp-shim.mjs
       - tests/unit-hook-relay.mjs
-- [ ] 1.8 Implement `src/mcp/router.ts` — in-process router, preserves Promise-parking contract (mcp-stdio-shim.shim-forwards-tool-calls-to-the-in-process-router)
+- [x] 1.8 Implement `src/mcp/router.ts` — in-process router, preserves Promise-parking contract (mcp-stdio-shim.shim-forwards-tool-calls-to-the-in-process-router)
   - intent: feature
   - files_allowed:
       - src/mcp/router.ts

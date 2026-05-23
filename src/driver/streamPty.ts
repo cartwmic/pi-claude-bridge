@@ -239,6 +239,14 @@ interface ActiveSession {
 	handle: DriverHandle;
 	modelId: string;
 	cwd: string;
+	/** D15: marked true on abort. activeSession is NOT nulled immediately;
+	 * the next pi event (toolResult or fresh turn) decides its fate.
+	 * - toolResult → deliver to parked entry (router will stash via
+	 *   pendingResults since PTY socket is detached), emit
+	 *   `tool-result delivery to aborted frame` log, then null session.
+	 * - fresh user turn → supersede: drain synthetically, null session.
+	 * - timeout (5s default) → null session passively. */
+	wasAborted: boolean;
 	/** Reverse-lookup: CC's emitted tool name (e.g. `mcp__custom-tools__bash`)
 	 *  → pi's original tool name (e.g. `bash` or `mcp__custom-tools__bash`). */
 	nameMap: Map<string, string>;
@@ -366,14 +374,20 @@ export function streamClaudeViaPty(
 	if (lastMsg?.role === "toolResult" && activeSession) {
 		const session = activeSession;
 		const trailing = extractTrailingToolResults(context.messages);
+		const toAbortedFrame = session.wasAborted;
 		writeBridgeLogLine(
-			`streamSimple: tool-result delivery, ${trailing.length} results, ${session.pendingEntries.size} resolvers waiting`,
+			`streamSimple: tool-result delivery, ${trailing.length} results, ${session.pendingEntries.size} resolvers waiting${toAbortedFrame ? " (post-abort, D15)" : ""}`,
 		);
 
 		// Re-wire the active session's stream to the NEW pi-ai stream so
 		// subsequent transcript events (text-deltas, next tool_use, Stop)
-		// flow into pi's TUI.
-		resetTurnState(session, stream, model.id);
+		// flow into pi's TUI. Skip on aborted-frame delivery: the handle is
+		// dead, the router socket is detached, and the result is stashed in
+		// router.pendingResults for D15 replay. We just need to close the
+		// new pi-ai stream with aborted.
+		if (!toAbortedFrame) {
+			resetTurnState(session, stream, model.id);
+		}
 
 		// Deliver each result to its parked entry. CC will resume generating.
 		// If the parked entry hasn't arrived yet (race: pi acted on the
@@ -395,13 +409,37 @@ export function streamClaudeViaPty(
 			try {
 				entry.deliverResult(content, r.isError);
 				writeBridgeLogLine(
-					`tool-result delivery: ${shortName} [${r.id}]${r.isError ? " (isError)" : ""}`,
+					`tool-result delivery: ${shortName} [${r.id}]${r.isError ? " (isError)" : ""}${toAbortedFrame ? " (to aborted frame)" : ""}`,
 				);
+				if (toAbortedFrame) {
+					writeBridgeLogLine(
+						`tool-result delivery to aborted frame: real content preserved via router.pendingResults (D15)`,
+					);
+				}
 			} catch (err) {
 				writeBridgeLogLine(
 					`tool-result delivery failed: ${shortName} [${r.id}] err=${(err as Error)?.message ?? String(err)}`,
 				);
 			}
+		}
+		// If we delivered into an aborted frame, close the pi-ai stream
+		// with aborted-error — CC is gone, no further content can stream.
+		if (toAbortedFrame) {
+			const out = newTurnOutput(model.id);
+			out.stopReason = "aborted";
+			out.errorMessage =
+				"Operation aborted by user (real tool result captured for next-turn resume, D15)";
+			queueMicrotask(() => {
+				try {
+					stream.push({ type: "start", partial: out });
+					stream.push({ type: "error", reason: "aborted", error: out });
+					stream.end();
+				} catch {}
+			});
+			// Drain remaining state and tear down.
+			session.pendingEntries.clear();
+			session.pendingEarlyResults.clear();
+			activeSession = null;
 		}
 		return stream;
 	}
@@ -409,7 +447,10 @@ export function streamClaudeViaPty(
 	// ---- Case 2: orphaned tool result (no active session) ----
 	if (lastMsg?.role === "toolResult") {
 		writeBridgeLogLine(
-			`streamSimple: orphaned tool-result, no active session — emitting aborted`,
+			`streamSimple: orphaned tool result, no active query — emitting aborted`,
+		);
+		writeBridgeLogLine(
+			`pushAbortedError: orphan tool result post-abort`,
 		);
 		const orphanOut = newTurnOutput(model.id);
 		orphanOut.stopReason = "aborted";
@@ -548,6 +589,7 @@ function startFreshTurn(
 				handle,
 				modelId: model.id,
 				cwd: extras.cwd,
+				wasAborted: false,
 				nameMap,
 				pendingEntries: new Map(),
 				pendingEarlyResults: new Map(),
@@ -750,20 +792,45 @@ function startFreshTurn(
 				);
 				if (activeSession === session) {
 					if (d.reason === "aborted") {
-						writeBridgeLogLine(`onAbort: session=${handle.sessionId.slice(0, 8)}`);
+						writeBridgeLogLine(
+							`onAbort: session=${handle.sessionId.slice(0, 8)}, pendingResolvers=${session.pendingEntries.size} (deferred drain — waiting for pi's next event)`,
+						);
+						// FM1 (D15): if abort fires while pi is awaiting a tool
+						// result, surface aborted to the pi stream explicitly so
+						// pi's TUI doesn't go silent.
+						const awaitingPi = session.pendingEntries.size + session.pendingParkedEntries.length > 0;
+						if (awaitingPi) {
+							writeBridgeLogLine(
+								`pushAbortedError: pi was awaiting tool result, surfacing aborted to pi stream (pendingEntries=${session.pendingEntries.size})`,
+							);
+						}
 						if (!session.ended) {
 							session.out.stopReason = "stop";
 							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						}
-						// D15: PRESERVE warm-resume cache across abort. CC's session
-						// JSONL retains all messages up to the abort point. The next
-						// fresh user turn can warm-resume from this sid and the model
-						// has full prior context (including the interrupted turn).
+						// D15: PRESERVE warm-resume cache across abort + DON'T null
+						// activeSession immediately. The next pi event (toolResult
+						// or fresh turn) decides:
+						//   - toolResult → Case 1 delivers into now-aborted entry,
+						//     router stashes via pendingResults.
+						//   - fresh turn → Case 3 supersedes (drains synthetically).
+						//   - timeout → passive cleanup after 5s.
 						cachedSessionId = handle.sessionId;
 						cachedSessionCwd = session.cwd;
 						writeBridgeLogLine(
 							`warm-resume: cached sid=${handle.sessionId.slice(0, 8)} cwd=${session.cwd} (across abort, D15)`,
 						);
+						session.wasAborted = true;
+						// Passive cleanup if no pi event lands within 5s.
+						setTimeout(() => {
+							if (activeSession === session && session.wasAborted) {
+								writeBridgeLogLine(
+									`onAbort: passive cleanup (no pi event landed within 5s) session=${handle.sessionId.slice(0, 8)}`,
+								);
+								activeSession = null;
+							}
+						}, 5000);
+						return; // Do NOT null activeSession.
 					} else if (d.reason === "error") {
 						if (!session.ended) {
 							session.out.stopReason = "error";

@@ -7,3 +7,4 @@ eli/.DS_Store
 eli/
 dist/
 *.tsbuildinfo
+2026-*.jsonl

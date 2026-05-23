@@ -866,11 +866,24 @@ function startFreshTurn(
 						//     router stashes via pendingResults.
 						//   - fresh turn → Case 3 supersedes (drains synthetically).
 						//   - timeout → passive cleanup after 5s.
-						cachedSessionId = handle.sessionId;
-						cachedSessionCwd = session.cwd;
-						writeBridgeLogLine(
-							`warm-resume: cached sid=${handle.sessionId.slice(0, 8)} cwd=${session.cwd} (across abort, D15)`,
-						);
+						// Cache eligibility: only preserve when the abort happened
+						// at a CLEAN boundary (no in-flight tool calls). If pending
+						// resolvers exist, the JSONL has a dangling tool_use without
+						// matching tool_result; CC's --resume refuses to load such
+						// transcripts and exits with code 1. Drop the cache in that
+						// case so next turn cold-starts.
+						if (!awaitingPi) {
+							cachedSessionId = handle.sessionId;
+							cachedSessionCwd = session.cwd;
+							writeBridgeLogLine(
+								`warm-resume: cached sid=${handle.sessionId.slice(0, 8)} cwd=${session.cwd} (across abort, D15)`,
+							);
+						} else {
+							writeBridgeLogLine(
+								`warm-resume: skipping cache after abort (pendingResolvers=${session.pendingEntries.size}; dangling tool_use would break --resume)`,
+							);
+							clearWarmResumeCache("abort-with-pending");
+						}
 						session.wasAborted = true;
 						// Passive cleanup if no pi event lands within 5s.
 						setTimeout(() => {

@@ -113,7 +113,7 @@ scn_send() {
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 	if (( wait_for_completion )); then
-		local timeout=120
+		local timeout=${SCN_SEND_TIMEOUT:-180}
 		local start=$SECONDS
 		while (( SECONDS - start < timeout )); do
 			local cur=0

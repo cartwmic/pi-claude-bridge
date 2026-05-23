@@ -144,14 +144,56 @@ function buildPromptText(messages: Context["messages"]): { prompt: string; image
 
 /**
  * Convert pi-ai Tool definitions to router-shaped tool definitions for the
- * shim's advertised set. Names use the `mcp__custom-tools__*` prefix.
+ * shim's advertised set.
+ *
+ * Tool-name layering (the source of MANY hours of debugging):
+ *   - pi gives us tools with names like `bash`, `read`, `write`, `edit`.
+ *   - We MUST keep an inner `mcp__custom-tools__` prefix on what we
+ *     advertise to the shim's tools/list — dropping it causes CC's MCP
+ *     server validation to silently refuse to start (SessionStart hook
+ *     never fires), because CC reserves bare names like `bash` for its
+ *     own built-ins.
+ *   - Our MCP server name in --mcp-config is `pi-bridge` (see
+ *     src/driver/settings.ts buildMcpConfigJson). CC prepends this
+ *     server name when surfacing tools to the model, so the model sees
+ *     a name like `mcp__pi-bridge__mcp__custom-tools__bash` and emits
+ *     tool_use blocks with THAT full name.
+ *   - On the way back, we must strip BOTH prefixes (`mcp__pi-bridge__`
+ *     and `mcp__custom-tools__`) before sending the ToolCall to pi.
+ *     The reverse-lookup nameMap handles every form CC might emit.
+ *
+ * Returns the prefixed defs AND a reverse-lookup map from every plausible
+ * emitted form CC might use → pi's original tool name.
  */
-function toolsToRouterDefs(tools: Tool[]): RouterToolDefinition[] {
-	return tools.map((t) => ({
-		name: `mcp__custom-tools__${t.name}`,
-		description: t.description ?? "",
-		inputSchema: t.parameters ?? { type: "object" },
-	}));
+function toolsToRouterDefs(tools: Tool[]): { defs: RouterToolDefinition[]; nameMap: Map<string, string> } {
+	const nameMap = new Map<string, string>();
+	const defs = tools.map((t) => {
+		const inner = `mcp__custom-tools__${t.name}`;
+		const withServer = `mcp__pi-bridge__${inner}`;
+		for (const form of [t.name, inner, withServer]) {
+			nameMap.set(form, t.name);
+			nameMap.set(form.toLowerCase(), t.name);
+		}
+		return {
+			name: inner,
+			description: t.description ?? "",
+			inputSchema: t.parameters ?? { type: "object" },
+		};
+	});
+	return { defs, nameMap };
+}
+
+/** Reverse-lookup a tool name from CC's emitted form to pi's original. */
+function resolvePiToolName(emittedName: string, nameMap: Map<string, string>): string {
+	const direct = nameMap.get(emittedName);
+	if (direct) return direct;
+	const lower = nameMap.get(emittedName.toLowerCase());
+	if (lower) return lower;
+	let name = emittedName;
+	for (const prefix of ["mcp__pi-bridge__", "mcp__custom-tools__"]) {
+		if (name.startsWith(prefix)) name = name.slice(prefix.length);
+	}
+	return name;
 }
 
 function resolveShimPath(): string {
@@ -197,6 +239,9 @@ interface ActiveSession {
 	handle: DriverHandle;
 	modelId: string;
 	cwd: string;
+	/** Reverse-lookup: CC's emitted tool name (e.g. `mcp__custom-tools__bash`)
+	 *  → pi's original tool name (e.g. `bash` or `mcp__custom-tools__bash`). */
+	nameMap: Map<string, string>;
 	// pendingEntries: keyed by Anthropic toolUseId (the id pi sees). Populated
 	// only after a tool-use transcript event + tool-call-parked event are
 	// paired via FIFO (see correlateParked).
@@ -229,7 +274,7 @@ function correlateParked(session: ActiveSession): void {
 	while (session.pendingToolUseIds.length > 0 && session.pendingParkedEntries.length > 0) {
 		const toolUseId = session.pendingToolUseIds.shift()!;
 		const entry = session.pendingParkedEntries.shift()!;
-		const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
+		const shortName = resolvePiToolName(entry.name, session.nameMap);
 		// Check if pi already delivered a result for this toolUseId (race:
 		// transcript event fired faster than CC's MCP dispatch).
 		const early = session.pendingEarlyResults.get(toolUseId);
@@ -346,7 +391,7 @@ export function streamClaudeViaPty(
 				continue;
 			}
 			session.pendingEntries.delete(r.id);
-			const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
+			const shortName = resolvePiToolName(entry.name, session.nameMap);
 			try {
 				entry.deliverResult(content, r.isError);
 				writeBridgeLogLine(
@@ -471,7 +516,10 @@ function startFreshTurn(
 
 	(async () => {
 		try {
-			const tools = toolsToRouterDefs(extras.tools);
+			const { defs: tools, nameMap } = toolsToRouterDefs(extras.tools);
+			writeBridgeLogLine(
+				`tools: ${extras.tools.map((t) => t.name).join(",")}`,
+			);
 			writeBridgeLogLine(
 				`streamSimple: PTY spawn model=${model.id} promptLen=${prompt.length} sysLen=${extras.systemPrompt.length} tools=${tools.length}`,
 			);
@@ -500,6 +548,7 @@ function startFreshTurn(
 				handle,
 				modelId: model.id,
 				cwd: extras.cwd,
+				nameMap,
 				pendingEntries: new Map(),
 				pendingEarlyResults: new Map(),
 				pendingToolUseIds: [],
@@ -585,9 +634,7 @@ function startFreshTurn(
 							session.textBuffer = "";
 						}
 						const idx = session.totalContentIndex++;
-						const piToolName = e.name.startsWith("mcp__custom-tools__")
-							? e.name.slice("mcp__custom-tools__".length)
-							: e.name;
+						const piToolName = resolvePiToolName(e.name, session.nameMap);
 						const piToolUseId = e.toolUseId || "toolu_" + randomBytes(8).toString("hex");
 						// Queue toolUseId for FIFO pairing with the tool-call-parked
 						// event from CC's MCP shim.

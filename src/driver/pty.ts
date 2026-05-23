@@ -29,6 +29,17 @@ import {
 	type ToolResultContent,
 } from "../mcp/router.js";
 import { generateSocketPath } from "../mcp/ipc.js";
+import { appendFileSync } from "node:fs";
+
+/** Internal diagnostic log line writer (mirrors streamPty's writeBridgeLogLine).
+ *  Only writes if CLAUDE_BRIDGE_DEBUG_PATH is set. */
+function diagLog(msg: string): void {
+	const path = process.env.CLAUDE_BRIDGE_DEBUG_PATH;
+	if (!path) return;
+	try {
+		appendFileSync(path, JSON.stringify({ level: 30, time: new Date().toISOString(), msg }) + "\n");
+	} catch {}
+}
 
 // =============================================================================
 // TrustDialogScanner (D25)
@@ -401,6 +412,11 @@ export interface SpawnDriverOptions {
 	 * model starts processing. Default 90000ms (Opus + large pi sysprompt
 	 * can take 30–60s). */
 	transcriptCreationTimeoutMs?: number;
+	/** D22 follow-up: extra fixed wait after Ink quiescence on warm-resume
+	 * (--resume) spawns, before typing the user prompt. CC's resume boot
+	 * splash is brief; quiescence returns before the input area is
+	 * focus-ready. Default 500ms. */
+	inkResumeWarmupMs?: number;
 }
 
 /**
@@ -735,19 +751,30 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 			if (scanner) scanner.cancel();
 			void (async () => {
 				try {
+					const quiesceStart = Date.now();
 					await quiescence.waitForQuiescent();
+					const quiesceMs = Date.now() - quiesceStart;
 					if (handle.isAborted) return;
-					// D27: bundle system prompt + user prompt into a single typed
-					// user message. The system content goes in <system_context>
-					// tags; the user prompt follows. If systemPrompt is empty,
-					// just type the user prompt verbatim.
+					// Warm-resume: Ink's quiescence detector returns immediately
+					// because CC's `--resume` boot splash is brief; the input area
+					// isn't focus-ready yet when SessionStart hook fires. Without
+					// this extra wait, the typed prompt is swallowed and CC never
+					// processes the user turn. 500ms empirically settles the resumed
+					// TUI input. Configurable via inkResumeWarmupMs.
+					if (opts.resumeSessionId) {
+						const warmupMs = opts.inkResumeWarmupMs ?? 500;
+						await new Promise((r) => setTimeout(r, warmupMs));
+						if (handle.isAborted) return;
+					}
 					const bundled = composeBundledUserMessage(opts.systemPrompt, opts.prompt);
+					diagLog(`pty: typing prompt len=${bundled.length} resume=${!!opts.resumeSessionId} quiesceMs=${quiesceMs}`);
 					await typePromptWithDebounce(
 						proc,
 						bundled,
 						opts.inkEnterDebounceMs ?? INK_ENTER_DEBOUNCE_DEFAULT_MS,
 					);
 					promptTyped = true;
+					diagLog(`pty: prompt typed (Enter sent) resume=${!!opts.resumeSessionId}`);
 				} catch (err) {
 					handle.markErrored(
 						`typed-injection failed: ${(err as Error)?.message ?? String(err)}`,

@@ -583,6 +583,16 @@ function startFreshTurn(
 								contentIndex: session.textContentIndex,
 								partial: session.out,
 							});
+							// Scenario-lib compat: SDK path emitted streaming activity
+							// (per-content-block usage events) mid-turn. PTY tailer
+							// only emits usage post-Stop, so scenarios polling
+							// `"msg":"usage:` to detect 'streaming started' miss the
+							// window. Emit a dedicated log line on the first text
+							// delta so abort-mid-stream scenarios (s7, s9, s13, s20)
+							// have a reliable mid-turn marker.
+							writeBridgeLogLine(
+								`streamSimple: streaming session=${session.handle.sessionId.slice(0, 8)}`,
+							);
 						}
 						const delta = e.text;
 						session.textBuffer += delta;
@@ -745,8 +755,15 @@ function startFreshTurn(
 							session.out.stopReason = "stop";
 							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						}
-						// D22: aborted turns break transcript coherence; drop cache.
-						clearWarmResumeCache("abort");
+						// D15: PRESERVE warm-resume cache across abort. CC's session
+						// JSONL retains all messages up to the abort point. The next
+						// fresh user turn can warm-resume from this sid and the model
+						// has full prior context (including the interrupted turn).
+						cachedSessionId = handle.sessionId;
+						cachedSessionCwd = session.cwd;
+						writeBridgeLogLine(
+							`warm-resume: cached sid=${handle.sessionId.slice(0, 8)} cwd=${session.cwd} (across abort, D15)`,
+						);
 					} else if (d.reason === "error") {
 						if (!session.ended) {
 							session.out.stopReason = "error";

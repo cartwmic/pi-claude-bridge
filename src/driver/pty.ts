@@ -412,10 +412,11 @@ export interface SpawnDriverOptions {
 	 * model starts processing. Default 90000ms (Opus + large pi sysprompt
 	 * can take 30–60s). */
 	transcriptCreationTimeoutMs?: number;
-	/** D22 follow-up: extra fixed wait after Ink quiescence on warm-resume
-	 * (--resume) spawns, before typing the user prompt. CC's resume boot
-	 * splash is brief; quiescence returns before the input area is
-	 * focus-ready. Default 500ms. */
+	/** Fixed wait after Ink quiescence (silent window detected) but before
+	 * typing the user prompt. Quiescence-detected does NOT guarantee the
+	 * input area is focus-ready; on warm-resume or second cold-spawn the
+	 * TUI cursor takes ~300–500ms more to settle. Default: 300ms cold,
+	 * 500ms warm-resume. Set to 0 to disable. */
 	inkResumeWarmupMs?: number;
 }
 
@@ -736,6 +737,12 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	// Typed-injection state (D26)
 	let sessionStartFired = false;
 	let promptTyped = false;
+	let transcriptActivitySeen = false;
+	tailer.on("event", (e: TranscriptEvent) => {
+		if (e.kind === "text-delta" || e.kind === "tool-use" || e.kind === "thinking-delta" || e.kind === "usage") {
+			transcriptActivitySeen = true;
+		}
+	});
 	router.on("hookEvent", (e: { event: string; payload: Record<string, unknown>; resolve: (stdout: string) => void }) => {
 		handle.emitTyped("hook", { event: e.event as "SessionStart" | "Stop", payload: e.payload });
 		// Send Stop → trigger transcript settle.
@@ -755,14 +762,16 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 					await quiescence.waitForQuiescent();
 					const quiesceMs = Date.now() - quiesceStart;
 					if (handle.isAborted) return;
-					// Warm-resume: Ink's quiescence detector returns immediately
-					// because CC's `--resume` boot splash is brief; the input area
-					// isn't focus-ready yet when SessionStart hook fires. Without
-					// this extra wait, the typed prompt is swallowed and CC never
-					// processes the user turn. 500ms empirically settles the resumed
-					// TUI input. Configurable via inkResumeWarmupMs.
-					if (opts.resumeSessionId) {
-						const warmupMs = opts.inkResumeWarmupMs ?? 500;
+					// Ink's quiescence detector can return with quiesceMs=0 when
+					// CC's startup splash is brief (warm-resume, or second cold
+					// spawn within a pi process after a prior abort). Quiescence
+					// detected does NOT mean the input area is focus-ready. Without
+					// this extra wait the typed prompt is swallowed; SessionStart
+					// fires but no usage events follow and we hit the 90s transcript
+					// creation timeout. Default warmup is conservative; configurable
+					// via inkResumeWarmupMs.
+					const warmupMs = opts.inkResumeWarmupMs ?? (opts.resumeSessionId ? 800 : 700);
+					if (warmupMs > 0) {
 						await new Promise((r) => setTimeout(r, warmupMs));
 						if (handle.isAborted) return;
 					}
@@ -775,6 +784,21 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 					);
 					promptTyped = true;
 					diagLog(`pty: prompt typed (Enter sent) resume=${!!opts.resumeSessionId}`);
+					// Watchdog: if typed prompt didn't land (CC's input area
+					// wasn't ready), re-type after 20s/40s/60s of silence. Each
+					// retry is cheap; ineffective if CC processed first attempt.
+					const retryDelays = [20_000, 20_000, 20_000];
+					for (let i = 0; i < retryDelays.length; i++) {
+						await new Promise((r) => setTimeout(r, retryDelays[i]));
+						if (handle.isAborted) return;
+						if (transcriptActivitySeen) return;
+						diagLog(`pty: prompt re-type attempt ${i + 1} (no transcript activity after ${(i + 1) * 20}s)`);
+						await typePromptWithDebounce(
+							proc,
+							bundled,
+							opts.inkEnterDebounceMs ?? INK_ENTER_DEBOUNCE_DEFAULT_MS,
+						);
+					}
 				} catch (err) {
 					handle.markErrored(
 						`typed-injection failed: ${(err as Error)?.message ?? String(err)}`,

@@ -22,20 +22,20 @@ scn_pi_start
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Count from 1 to 100. For EACH number write 2-3 sentences of meditative reflection in markdown. Do not skip any numbers. Take your time."
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
-# Poll the bridge log for streaming activity, then send Escape MID-stream.
-# We want to abort BEFORE 'caching session=' appears (that's the turn-complete marker).
+# Poll the bridge log for SessionStart (CC has spawned and is processing),
+# then send Escape MID-stream. PTY path buffers JSONL writes until Stop, so
+# we can't rely on text-delta indicators here — use SessionStart + sleep to
+# land Escape during model generation.
 deadline=$((SECONDS + 30))
 sent_escape=0
 while (( SECONDS < deadline )); do
 	if grep -qE "caching session=" "$BRIDGE_LOG" 2>/dev/null; then
-		# Turn already finished — too late to abort mid-stream.
 		echo "WARN: model finished before abort window opened" >&2
 		break
 	fi
-	# Wait for the SDK to have started streaming (first usage line means content is flowing).
-	if grep -qE "\"msg\":\"usage:" "$BRIDGE_LOG" 2>/dev/null; then
-		sleep 2  # let some content actually appear
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
+	if grep -qE "hook event=SessionStart" "$BRIDGE_LOG" 2>/dev/null; then
+		sleep 6  # CC processing time before abort
+		"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 		sent_escape=1
 		break
 	fi

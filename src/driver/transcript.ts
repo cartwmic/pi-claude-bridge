@@ -504,6 +504,11 @@ function numOrZero(v: unknown): number {
  * by the caller (this function does NOT realpath — it assumes caller did).
  */
 export function computeTranscriptPath(homeDir: string, realpathedCwd: string, uuid: string): string {
-	const encodedCwd = realpathedCwd.replaceAll("/", "-");
+	// CC's encoding replaces BOTH `/` AND `.` with `-`. Without the dot
+	// substitution, a cwd containing a dot-prefixed segment (e.g.
+	// `.test-output`) produces a different encoded directory than CC writes
+	// to, and the tailer hangs waiting for a file that never appears in our
+	// computed path. Discovered via s18/s19 sandbox-cwd scenarios.
+	const encodedCwd = realpathedCwd.replaceAll("/", "-").replaceAll(".", "-");
 	return `${homeDir}/.claude/projects/${encodedCwd}/${uuid}.jsonl`;
 }

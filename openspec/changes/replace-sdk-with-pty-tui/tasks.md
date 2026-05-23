@@ -438,17 +438,17 @@ Completion criterion for this change is now: ALL S0-S25 pi-tui scenario tests pa
 Each unfailing scenario falls into one of: (a) real bridge gap → implement, (b) scenario obsolete → update spec, (c) environment/flake → debug + fix root cause.
 
 #### Bucket A — warm-resume cache (D22, was v1.1.0 deferred)
-- [ ] 7.1 Port `cachedSessionId` + `cachedSessionCwd` + `lastSentMessageHashes` from SDK path's index.ts to streamPty.ts
-- [ ] 7.2 Add divergence-detection (cwd change, pi hash-chain divergence, /fork, /compact, /reload, /new) — emit `clearSession` log line on drop
-- [ ] 7.3 Spawn with `--resume <cached-id>` (NOT `--session-id`) on warm path; transcript tailer opens existing file from EOF baseline per D22 + D24
-- [ ] 7.4 Emit `streamSimple: fresh query resume=<sid>` (vs `resume=no`) on warm spawn
+- [x] 7.1 Port `cachedSessionId` + `cachedSessionCwd` from SDK path's index.ts to streamPty.ts (commit 20ed823). Deferred: `lastSentMessageHashes` divergence detection — see 7.2.
+- [ ] 7.2 Add divergence-detection (cwd change, pi hash-chain divergence, /fork, /compact, /reload, /new) — emit `clearSession` log line on drop. Current impl: drops cache on abort/error/supersede only.
+- [x] 7.3 Spawn with `--resume <cached-id>` (NOT `--session-id`) on warm path (commit 20ed823); transcript tailer opens existing file from EOF baseline per D22 + D24 (TranscriptTailer.startFromEOF option)
+- [x] 7.4 Emit `streamSimple: fresh query resume=<sid>` (vs `resume=no`) on warm spawn (commit 20ed823)
 - [ ] Unblocks: s6, s10, s10b, s12, s17, s23 (post-reload), s24 (post-/new), and the "session: expected 1, got N" assertion in s0, s11, s14
 
 #### Bucket B — real tool round-trip (replace v0 stub `[pi: deferred]`)
-- [ ] 7.5 Port `pendingResolvers` + `pendingResults` from SDK path's index.ts to streamPty.ts
-- [ ] 7.6 On `tool-call-parked`: park a Promise; deliver pi's real `tool_result` from the next `streamSimple()` call to that frame; no synthetic stub
-- [ ] 7.7 Wire FIFO toolUseId matching for concurrent (parallel) tool calls in one assistant turn
-- [ ] 7.8 Emit `mcp handler: <tool> [<id>] — early result` when tool resolves synchronously (e.g. handler computes inline)
+- [x] 7.5 Port `pendingEntries` (resolvers) + `pendingEarlyResults` from SDK path's index.ts to streamPty.ts (commit f895fd2 + 20ed823 race fix)
+- [x] 7.6 On `tool-call-parked`: park the entry; deliver pi's real `tool_result` from the next `streamSimple()` call to the active session; no synthetic stub (commit f895fd2)
+- [x] 7.7 Wire FIFO toolUseId ↔ parked-entry matching for concurrent tool calls (commit f895fd2): `pendingToolUseIds` + `pendingParkedEntries` queues + `correlateParked()` drainer
+- [x] 7.8 Emit `mcp handler: <tool> [<id>] — early result, returning` when pi delivers result before parked entry arrives (commit 20ed823)
 - [ ] Unblocks: s1, s2, s3, s4, s6, s11, s14 (subagent), s18, s19, s20 (mid-tool-execution), s25-capture-during-turn
 
 #### Bucket C — abort + steer + supersede machinery (D15)
@@ -458,9 +458,9 @@ Each unfailing scenario falls into one of: (a) real bridge gap → implement, (b
 - [ ] Unblocks: s5 (abort-during-stream), s7 (abort+resume), s8 (abort during long bash), s9 (abort during tool round), s13 (rapid abort), s15 (subagent with parent fork), s16b (history-divergence supersede)
 
 #### Bucket D — first-turn-after-pi-boot transcript-timeout flake
-- [ ] 7.12 Investigate: turn 2 of S0 succeeds reliably (5s, full Stop hook); turn 1 90s-timeouts intermittently. Hypotheses: (a) pi UI rendering during boot races with claude PTY input; (b) claude TUI input buffer not ready when typed-injection fires despite Ink quiescence detected; (c) Anthropic API queuing for first OAuth-authenticated request per process. Capture PTY output for failing turn 1, identify root cause, fix.
-- [ ] 7.13 If fix is "wait longer before first type", expose `sessionStartFirstTurnWarmupMs` SpawnDriverOptions with sensible default
-- [ ] Unblocks: turn 1 of every multi-turn scenario; primary cause of remaining transcript-timeout failures across the suite
+- [x] 7.12 Root cause for s18/s19 "transcript file did not appear within 90000ms" was NOT a typed-injection or warm-up race: it was a transcript-path encoding mismatch (commit 4db9447). CC encodes both `/` AND `.` as `-` in `~/.claude/projects/<encoded-cwd>/...`; our `computeTranscriptPath` only converted `/`, so a cwd containing a dot-prefixed segment (e.g. `.test-output/scenarios/s18-sandbox`) produced a stale path. The tailer waited 90s for a file CC was never going to write there. Other 90s-timeout reports in non-sandbox scenarios may be rate-limit, OAuth queuing, or genuine model latency; defer to per-scenario triage (7.16).
+- [ ] 7.13 Open follow-up: warm-resume (--resume) Turn 2 in sandbox-cwd scenarios still hangs after SessionStart fires. Symptom: SessionStart logged, but no usage / mcp handler / tool-result for the second turn. Hypothesis: typed-injection works for fresh `--session-id` but `--resume`'s TUI state requires extra interaction. Investigation outstanding.
+- [ ] Remaining unblocks: warm-resume Turn 2+ in sandbox scenarios; rate-limit/OAuth-queue 90s timeouts in non-sandbox scenarios.
 
 #### Bucket E — capture-mode integration with concurrent main-path turn (s25)
 - [ ] 7.14 Implement capture-mode hermetic-cwd PTY spawn isolation per D5/D21 — ensure capture call does NOT clobber the main-path `cachedSessionId` or count toward main-path `unique_sids`

@@ -2,18 +2,31 @@
 //
 // T1.10 PTY-driven streamSimple path. Selected when CLAUDE_BRIDGE_DRIVER=pty.
 //
-// v0 scope: cold-start fresh-turn execution.
-//   - Text-only positional prompt (image content stripped with warn).
-//   - Bridged MCP tool surface (router parks tool_call frames; deliverResult
-//     routes pi's eventual tool_result back to the model).
-//   - AbortSignal propagation.
-//   - One turn at a time, no supersede / divergence / cache for v0; the
-//     SDK path's stack-of-frames machinery is preserved for Phase 3 cutover
-//     by porting the existing index.ts state into this driver layer in a
-//     follow-up.
+// Phase-7 Bucket B (2026-05-23): persistent-handle tool round-trip.
 //
-// Public surface: `streamClaudeViaPty(model, context, options)` returns an
-// `AssistantMessageEventStream` that pi-ai consumes.
+//   The pi-ai protocol turn boundary is the tool_call/tool_result handshake:
+//   - First streamSimple call (fresh user turn) spawns a `claude` PTY,
+//     types the user prompt, streams text-deltas, and on first tool_use
+//     emits `done(toolUse)` to end the pi-ai stream. The PTY stays alive.
+//   - Pi executes the tool locally and calls streamSimple AGAIN with a
+//     trailing `toolResult` message. We re-wire to the SAME PTY handle,
+//     deliver the result through the router (which lets the model resume),
+//     and project subsequent transcript events onto the NEW pi-ai stream.
+//   - Repeats until the model emits text + Stop hook → done(stop), at
+//     which point we tear down the handle and clear active-session state.
+//
+//   On supersede (fresh turn arrives while an active handle still has
+//   pending parked tool_calls): drain those resolvers with synthetic
+//   "[Tool execution interrupted by user before completion]" text (per
+//   index.ts SDK-path ABORTED_TOOL_RESULT_TEXT contract), abort the
+//   handle, then spawn a fresh one.
+//
+//   Capture path (output-capture shape) still routes through
+//   `runCaptureQueryPty` (separate entry point) — capture sessions never
+//   share state with main mode and don't need this handle persistence.
+//
+// Public surface: `streamClaudeViaPty(model, context, options, extras)`
+// returns an AssistantMessageEventStream that pi-ai consumes.
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -34,11 +47,11 @@ import type {
 	Tool,
 	ToolCall,
 } from "@mariozechner/pi-ai";
-import { spawnDriver } from "./pty.js";
-import type { RouterToolDefinition } from "../mcp/router.js";
+import { spawnDriver, type DriverHandle } from "./pty.js";
+import type { RouterToolDefinition, ToolResultContent } from "../mcp/router.js";
 import type { TranscriptEvent } from "./transcript.js";
 
-// --- Helpers -------------------------------------------------------------
+const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before completion]";
 
 function newTurnOutput(modelId: string): AssistantMessage {
 	return {
@@ -142,50 +155,121 @@ function toolsToRouterDefs(tools: Tool[]): RouterToolDefinition[] {
 }
 
 function resolveShimPath(): string {
-	// In production: dist/driver/streamPty.js → ../mcp/shim.js = dist/mcp/shim.js.
-	// In dev (tsx-loaded source): src/driver/streamPty.ts → ../mcp/shim.ts. tsx
-	// resolves the .js extension to .ts at runtime, but the SHIM is invoked as
-	// a CHILD PROCESS via node-pty's spawn of `claude` which spawns it via
-	// the MCP stdio transport — that child is a fresh Node process WITHOUT
-	// tsx loaded. So in dev we MUST point at the built dist/mcp/shim.js, not
-	// the .ts source. The build pipeline (npm run build) emits dist/ from
-	// the project root, so we walk up from this file: src/driver/streamPty.ts
-	// (or dist/driver/streamPty.js) → ../../dist/mcp/shim.js.
 	const hereUrl = import.meta.url;
-	// Walk two levels up (driver → src OR dist, then up to project root),
-	// then descend into dist/mcp/shim.js.
 	return new URL("../../dist/mcp/shim.js", hereUrl).pathname;
 }
 
-// --- Entry point ---------------------------------------------------------
+// --- Trailing tool-result extraction ------------------------------------
+
+interface TrailingToolResult {
+	id: string;
+	content: string;
+	isError: boolean;
+}
+
+function extractTrailingToolResults(messages: Context["messages"]): TrailingToolResult[] {
+	const results: TrailingToolResult[] = [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as any;
+		if (m.role !== "toolResult") break;
+		const content = flattenMessageText(m.content);
+		results.unshift({
+			id: m.toolCallId || m.tool_call_id || m.id || "",
+			content,
+			isError: !!m.isError,
+		});
+	}
+	return results;
+}
+
+// --- Active-session state (module-level) --------------------------------
+//
+// pi-claude-bridge runs one main-mode handle at a time per process (single
+// user-driven conversation). On supersede we drain + abort + replace.
+// Capture mode uses a separate entry point and doesn't touch this state.
+
+interface PendingEntry {
+	name: string;
+	deliverResult: (content: ToolResultContent, isError?: boolean) => void;
+}
+
+interface ActiveSession {
+	handle: DriverHandle;
+	modelId: string;
+	cwd: string;
+	// pendingEntries: keyed by Anthropic toolUseId (the id pi sees). Populated
+	// only after a tool-use transcript event + tool-call-parked event are
+	// paired via FIFO (see correlateParked).
+	pendingEntries: Map<string, PendingEntry>;
+	// FIFO queues for tool-use ↔ parked-entry correlation. Tool-use transcript
+	// events carry the Anthropic toolUseId (what pi sees); tool-call-parked
+	// events carry CC's MCP request id (router-generated). They arrive in the
+	// same order CC dispatches the tool calls; we pair them FIFO.
+	pendingToolUseIds: string[]; // Anthropic toolUseId, awaiting a parked entry
+	pendingParkedEntries: PendingEntry[]; // parked entry, awaiting a toolUseId
+	// Per-pi-turn-stream state (rotated when tool round-trip lands a new call):
+	currentStream: AssistantMessageEventStream;
+	out: AssistantMessage;
+	textBuffer: string;
+	textContentIndex: number;
+	totalContentIndex: number;
+	started: boolean;
+	ended: boolean;
+}
+
+function correlateParked(session: ActiveSession): void {
+	// Drain matching pairs from both FIFO queues.
+	while (session.pendingToolUseIds.length > 0 && session.pendingParkedEntries.length > 0) {
+		const toolUseId = session.pendingToolUseIds.shift()!;
+		const entry = session.pendingParkedEntries.shift()!;
+		session.pendingEntries.set(toolUseId, entry);
+		const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
+		writeBridgeLogLine(`mcp handler: ${shortName} [${toolUseId}] — awaiting pi`);
+	}
+}
+
+let activeSession: ActiveSession | null = null;
+
+// --- Per-turn stream helpers (operate on `activeSession`) ---------------
+
+function ensureStarted(s: ActiveSession): void {
+	if (s.started) return;
+	s.started = true;
+	s.currentStream.push({ type: "start", partial: s.out });
+}
+
+function endWith(
+	s: ActiveSession,
+	ev:
+		| { type: "done"; reason: "stop" | "toolUse"; message: AssistantMessage }
+		| { type: "error"; reason: "aborted" | "error"; error: AssistantMessage },
+): void {
+	if (s.ended) return;
+	s.ended = true;
+	ensureStarted(s);
+	s.currentStream.push(ev as any);
+	s.currentStream.end();
+}
+
+function resetTurnState(s: ActiveSession, stream: AssistantMessageEventStream, modelId: string): void {
+	s.currentStream = stream;
+	s.out = newTurnOutput(modelId);
+	s.textBuffer = "";
+	s.textContentIndex = -1;
+	s.totalContentIndex = 0;
+	s.started = false;
+	s.ended = false;
+}
+
+// --- Entry point --------------------------------------------------------
 
 export interface StreamPtyExtras {
-	/** Pre-built system prompt (already combined per main-provider rules). */
 	systemPrompt: string;
-	/** Stream factory provided by caller (so index.ts owns the event-stream type). */
 	makeStream: () => AssistantMessageEventStream;
-	/** Active tools (output-capture path will call a separate runCaptureQueryPty). */
 	tools: Tool[];
-	/** Working directory for `claude` spawn. */
 	cwd: string;
 }
 
-/**
- * v0 PTY-path streamSimple replacement. Returns the pi-ai event stream.
- *
- * Behavior:
- *   - Spawn driver with the resolved CLI args, listen for transcript events,
- *     project onto the pi-ai stream.
- *   - First text-delta → emit start, text_start, text_delta.
- *   - Subsequent text-deltas → emit text_delta.
- *   - tool_use observed in transcript → emit toolcall_start + toolcall_end +
- *     done(toolUse). The router-side parked tool_call is what causes the
- *     subsequent pi tool execution + streamSimple(tool_result) call; for v0
- *     each pi-side resolution is fire-and-forget (we don't yet preserve
- *     stack state for follow-ups; that's Phase 3).
- *   - Stop hook + settle window → done(stop) with final usage.
- *   - Abort signal → driver.abort() → done(error, reason: aborted).
- */
 export function streamClaudeViaPty(
 	model: Model<any>,
 	context: Context,
@@ -193,44 +277,144 @@ export function streamClaudeViaPty(
 	extras: StreamPtyExtras,
 ): AssistantMessageEventStream {
 	const stream = extras.makeStream();
-	const out = newTurnOutput(model.id);
-	let started = false;
-	let ended = false;
-	let textBuffer = "";
-	let textContentIndex = -1;
-	let totalContentIndex = 0;
+	const lastMsg = context.messages[context.messages.length - 1];
 
-	const { prompt, imagesDropped } = buildPromptText(context.messages);
-	if (imagesDropped > 0) {
-		// emit warn via stderr (caller can inspect via debug log if needed)
-		process.stderr.write(`pi-claude-bridge: stripped ${imagesDropped} image block(s) from main-provider prompt (v1 limitation)\n`);
+	// ---- Case 1: tool-result delivery to active handle ----
+	if (lastMsg?.role === "toolResult" && activeSession) {
+		const session = activeSession;
+		const trailing = extractTrailingToolResults(context.messages);
+		writeBridgeLogLine(
+			`streamSimple: tool-result delivery, ${trailing.length} results, ${session.pendingEntries.size} resolvers waiting`,
+		);
+
+		// Re-wire the active session's stream to the NEW pi-ai stream so
+		// subsequent transcript events (text-deltas, next tool_use, Stop)
+		// flow into pi's TUI.
+		resetTurnState(session, stream, model.id);
+
+		// Deliver each result to its parked entry. CC will resume generating.
+		for (const r of trailing) {
+			const entry = session.pendingEntries.get(r.id);
+			if (!entry) {
+				writeBridgeLogLine(
+					`streamSimple: orphan tool-result id=${r.id} (no parked entry; ignoring)`,
+				);
+				continue;
+			}
+			session.pendingEntries.delete(r.id);
+			const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
+			try {
+				entry.deliverResult(
+					[{ type: "text" as const, text: r.content || "" }],
+					r.isError,
+				);
+				writeBridgeLogLine(
+					`tool-result delivery: ${shortName} [${r.id}]${r.isError ? " (isError)" : ""}`,
+				);
+			} catch (err) {
+				writeBridgeLogLine(
+					`tool-result delivery failed: ${shortName} [${r.id}] err=${(err as Error)?.message ?? String(err)}`,
+				);
+			}
+		}
+		return stream;
 	}
 
-	const ensureStarted = () => {
-		if (started) return;
-		started = true;
-		stream.push({ type: "start", partial: out });
-	};
+	// ---- Case 2: orphaned tool result (no active session) ----
+	if (lastMsg?.role === "toolResult") {
+		writeBridgeLogLine(
+			`streamSimple: orphaned tool-result, no active session — emitting aborted`,
+		);
+		const orphanOut = newTurnOutput(model.id);
+		orphanOut.stopReason = "aborted";
+		orphanOut.errorMessage = "Operation aborted (tool result arrived after handle teardown)";
+		queueMicrotask(() => {
+			try {
+				stream.push({ type: "start", partial: orphanOut });
+				stream.push({ type: "error", reason: "aborted", error: orphanOut });
+				stream.end();
+			} catch {}
+		});
+		return stream;
+	}
 
-	const endWith = (
-		ev: { type: "done"; reason: "stop" | "toolUse"; message: AssistantMessage } |
-			{ type: "error"; reason: "aborted" | "error"; error: AssistantMessage },
-	) => {
-		if (ended) return;
-		ended = true;
-		ensureStarted();
-		stream.push(ev as any);
-		stream.end();
-	};
+	// ---- Case 3: fresh user turn ----
+	// If an active session still has parked tool_calls, the user has
+	// superseded the previous turn. Drain synthetically + abort + spawn fresh.
+	if (activeSession) {
+		const stale = activeSession;
+		const totalPending = stale.pendingEntries.size + stale.pendingParkedEntries.length;
+		writeBridgeLogLine(
+			`streamSimple: superseding active frame (pendingEntries=${totalPending}), interrupting`,
+		);
+		// Drain BOTH correlated and uncorrelated parked entries so CC's MCP
+		// shim unblocks. Uncorrelated entries have no toolUseId yet (no
+		// matching tool-use transcript event) — synthesize one for the log.
+		for (const [id, entry] of stale.pendingEntries.entries()) {
+			try {
+				entry.deliverResult(
+					[{ type: "text" as const, text: ABORTED_TOOL_RESULT_TEXT }],
+					true,
+				);
+			} catch {}
+			writeBridgeLogLine(
+				`tool-result delivery: ${entry.name.replace(/^mcp__custom-tools__/, "")} [${id}] (synthetic interrupted-by-user)`,
+			);
+		}
+		stale.pendingEntries.clear();
+		for (const entry of stale.pendingParkedEntries) {
+			try {
+				entry.deliverResult(
+					[{ type: "text" as const, text: ABORTED_TOOL_RESULT_TEXT }],
+					true,
+				);
+			} catch {}
+			writeBridgeLogLine(
+				`tool-result delivery: ${entry.name.replace(/^mcp__custom-tools__/, "")} [uncorrelated] (synthetic interrupted-by-user)`,
+			);
+		}
+		stale.pendingParkedEntries.length = 0;
+		stale.pendingToolUseIds.length = 0;
+		// End the stale stream if not yet ended.
+		if (!stale.ended) {
+			try {
+				stale.out.stopReason = "stop";
+				endWith(stale, { type: "error", reason: "aborted", error: stale.out });
+			} catch {}
+		}
+		// Detach the module-level pointer NOW so the abort's "done" handler
+		// (which would otherwise null it) doesn't race a fresh spawn below.
+		activeSession = null;
+		// Fire-and-forget abort. The stale handle's listeners may still
+		// emit events but they'll find no activeSession to write to.
+		void stale.handle.abort().catch(() => {});
+	}
+
+	// Spawn fresh handle and set up the new session.
+	startFreshTurn(model, context, options, extras, stream);
+	return stream;
+}
+
+function startFreshTurn(
+	model: Model<any>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	extras: StreamPtyExtras,
+	stream: AssistantMessageEventStream,
+): void {
+	const { prompt, imagesDropped } = buildPromptText(context.messages);
+	if (imagesDropped > 0) {
+		process.stderr.write(
+			`pi-claude-bridge: stripped ${imagesDropped} image block(s) from main-provider prompt (v1 limitation)\n`,
+		);
+	}
 
 	(async () => {
 		try {
 			const tools = toolsToRouterDefs(extras.tools);
-			writeBridgeLogLine(`streamSimple: PTY spawn model=${model.id} promptLen=${prompt.length} sysLen=${extras.systemPrompt.length} tools=${tools.length}`);
-			// Scenario-lib compat: emit "fresh query" log line with resume= field.
-			// v0 streamPty cold-starts every turn (warm-resume is v1.1.0 work), so
-			// the resume value is always "no". When warm-resume lands, switch to
-			// the cached session id.
+			writeBridgeLogLine(
+				`streamSimple: PTY spawn model=${model.id} promptLen=${prompt.length} sysLen=${extras.systemPrompt.length} tools=${tools.length}`,
+			);
 			writeBridgeLogLine(`streamSimple: fresh query resume=no model=${model.id}`);
 			const handle = await spawnDriver({
 				shimPath: resolveShimPath(),
@@ -243,117 +427,171 @@ export function streamClaudeViaPty(
 				signal: options?.signal as AbortSignal | undefined,
 			});
 
-			writeBridgeLogLine(`streamSimple: spawned session=${handle.sessionId.slice(0, 8)} transcriptPath=${handle.transcriptPath}`);
-			handle.on("hook", (e: { event: string; payload: Record<string, unknown> }) => {
+			writeBridgeLogLine(
+				`streamSimple: spawned session=${handle.sessionId.slice(0, 8)} transcriptPath=${handle.transcriptPath}`,
+			);
+
+			// Build the active session BEFORE wiring listeners so they can
+			// reference it via closure on this stable object identity.
+			const session: ActiveSession = {
+				handle,
+				modelId: model.id,
+				cwd: extras.cwd,
+				pendingEntries: new Map(),
+				pendingToolUseIds: [],
+				pendingParkedEntries: [],
+				currentStream: stream,
+				out: newTurnOutput(model.id),
+				textBuffer: "",
+				textContentIndex: -1,
+				totalContentIndex: 0,
+				started: false,
+				ended: false,
+			};
+			activeSession = session;
+
+			handle.on("hook", (e) => {
 				writeBridgeLogLine(`streamSimple: hook event=${e.event} session=${handle.sessionId.slice(0, 8)}`);
 			});
+
 			handle.on("transcript", (e: TranscriptEvent) => {
-				if (ended) return;
+				// Only act if THIS handle is still the active one and the
+				// current pi-ai stream hasn't ended for this turn.
+				if (activeSession !== session) return;
+				if (session.ended && e.kind !== "done" && e.kind !== "error") return;
 				switch (e.kind) {
 					case "text-delta": {
-						ensureStarted();
-						if (textContentIndex === -1) {
-							textContentIndex = totalContentIndex++;
-							out.content.push({ type: "text", text: "" });
-							stream.push({ type: "text_start", contentIndex: textContentIndex, partial: out });
+						ensureStarted(session);
+						if (session.textContentIndex === -1) {
+							session.textContentIndex = session.totalContentIndex++;
+							session.out.content.push({ type: "text", text: "" });
+							session.currentStream.push({
+								type: "text_start",
+								contentIndex: session.textContentIndex,
+								partial: session.out,
+							});
 						}
 						const delta = e.text;
-						textBuffer += delta;
-						(out.content[textContentIndex] as any).text = textBuffer;
-						stream.push({
+						session.textBuffer += delta;
+						(session.out.content[session.textContentIndex] as any).text = session.textBuffer;
+						session.currentStream.push({
 							type: "text_delta",
-							contentIndex: textContentIndex,
+							contentIndex: session.textContentIndex,
 							delta,
-							partial: out,
+							partial: session.out,
 						});
 						return;
 					}
 					case "thinking-delta": {
-						ensureStarted();
-						const idx = totalContentIndex++;
-						out.content.push({ type: "thinking", thinking: e.text, thinkingSignature: e.signature ?? "" } as any);
-						stream.push({ type: "thinking_start", contentIndex: idx, partial: out });
+						ensureStarted(session);
+						const idx = session.totalContentIndex++;
+						session.out.content.push({
+							type: "thinking",
+							thinking: e.text,
+							thinkingSignature: e.signature ?? "",
+						} as any);
+						session.currentStream.push({ type: "thinking_start", contentIndex: idx, partial: session.out });
 						if (e.text) {
-							stream.push({ type: "thinking_delta", contentIndex: idx, delta: e.text, partial: out });
+							session.currentStream.push({
+								type: "thinking_delta",
+								contentIndex: idx,
+								delta: e.text,
+								partial: session.out,
+							});
 						}
-						stream.push({ type: "thinking_end", contentIndex: idx, content: e.text, partial: out });
+						session.currentStream.push({
+							type: "thinking_end",
+							contentIndex: idx,
+							content: e.text,
+							partial: session.out,
+						});
 						return;
 					}
 					case "tool-use": {
-						ensureStarted();
+						ensureStarted(session);
 						// Close any in-flight text block.
-						if (textContentIndex !== -1) {
-							stream.push({
+						if (session.textContentIndex !== -1) {
+							session.currentStream.push({
 								type: "text_end",
-								contentIndex: textContentIndex,
-								content: textBuffer,
-								partial: out,
+								contentIndex: session.textContentIndex,
+								content: session.textBuffer,
+								partial: session.out,
 							});
-							textContentIndex = -1;
-							textBuffer = "";
+							session.textContentIndex = -1;
+							session.textBuffer = "";
 						}
-						const idx = totalContentIndex++;
-						// Translate `mcp__custom-tools__foo` back to `foo` for pi.
+						const idx = session.totalContentIndex++;
 						const piToolName = e.name.startsWith("mcp__custom-tools__")
 							? e.name.slice("mcp__custom-tools__".length)
 							: e.name;
+						const piToolUseId = e.toolUseId || "toolu_" + randomBytes(8).toString("hex");
+						// Queue toolUseId for FIFO pairing with the tool-call-parked
+						// event from CC's MCP shim.
+						session.pendingToolUseIds.push(piToolUseId);
+						correlateParked(session);
 						const toolCall: ToolCall = {
 							type: "toolCall" as const,
-							id: e.toolUseId || "toolu_" + randomBytes(8).toString("hex"),
+							id: piToolUseId,
 							name: piToolName,
 							arguments: (e.input ?? {}) as Record<string, unknown>,
 						};
-						out.content.push({
+						session.out.content.push({
 							type: "toolCall",
 							id: toolCall.id,
 							name: piToolName,
 							arguments: toolCall.arguments,
 						} as any);
-						stream.push({ type: "toolcall_start", contentIndex: idx, partial: out });
-						stream.push({
+						session.currentStream.push({
+							type: "toolcall_start",
+							contentIndex: idx,
+							partial: session.out,
+						});
+						session.currentStream.push({
 							type: "toolcall_end",
 							contentIndex: idx,
 							toolCall,
-							partial: out,
+							partial: session.out,
 						});
-						out.stopReason = "toolUse";
-						endWith({ type: "done", reason: "toolUse", message: out });
+						session.out.stopReason = "toolUse";
+						endWith(session, { type: "done", reason: "toolUse", message: session.out });
 						return;
 					}
 					case "usage": {
-						out.usage.input += e.usage.input;
-						out.usage.output += e.usage.output;
-						out.usage.cacheRead += e.usage.cacheRead;
-						out.usage.cacheWrite += e.usage.cacheWrite;
-						out.usage.totalTokens = out.usage.input + out.usage.output;
+						session.out.usage.input += e.usage.input;
+						session.out.usage.output += e.usage.output;
+						session.out.usage.cacheRead += e.usage.cacheRead;
+						session.out.usage.cacheWrite += e.usage.cacheWrite;
+						session.out.usage.totalTokens = session.out.usage.input + session.out.usage.output;
+						writeBridgeLogLine(
+							`usage: cacheRead=${e.usage.cacheRead} cacheWrite=${e.usage.cacheWrite} input=${e.usage.input} output=${e.usage.output}`,
+						);
 						return;
 					}
 					case "warn":
-						// Surfaced via stderr; tailer keeps going.
 						return;
 					case "error": {
-						out.stopReason = "error";
-						out.errorMessage = e.errorMessage;
-						endWith({ type: "error", reason: "error", error: out });
+						session.out.stopReason = "error";
+						session.out.errorMessage = e.errorMessage;
+						endWith(session, { type: "error", reason: "error", error: session.out });
 						return;
 					}
 					case "done": {
 						// Flush any in-flight text block.
-						if (textContentIndex !== -1) {
-							stream.push({
+						if (session.textContentIndex !== -1) {
+							session.currentStream.push({
 								type: "text_end",
-								contentIndex: textContentIndex,
-								content: textBuffer,
-								partial: out,
+								contentIndex: session.textContentIndex,
+								content: session.textBuffer,
+								partial: session.out,
 							});
-							textContentIndex = -1;
+							session.textContentIndex = -1;
 						}
 						if (e.reason === "aborted") {
-							out.stopReason = "stop";
-							endWith({ type: "error", reason: "aborted", error: out });
+							session.out.stopReason = "stop";
+							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						} else {
-							out.stopReason = "stop";
-							endWith({ type: "done", reason: "stop", message: out });
+							session.out.stopReason = "stop";
+							endWith(session, { type: "done", reason: "stop", message: session.out });
 						}
 						return;
 					}
@@ -361,60 +599,70 @@ export function streamClaudeViaPty(
 			});
 
 			handle.on("tool-call-parked", (entry) => {
-				// Scenario-lib compat: emit "mcp handler: <tool> [<id>] — awaiting pi"
-				// log line so scenario-lib's tool-handler counters work the same
-				// as on the SDK path. SDK path used the SHORT tool name (no
-				// `mcp__custom-tools__` prefix); strip for compat.
-				const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
-				writeBridgeLogLine(`mcp handler: ${shortName} [${entry.id}] — awaiting pi`);
-				// v0: we don't await pi's eventual tool_result delivery here
-				// (no stack/frame integration yet). The transcript path's
-				// tool-use block has already emitted `done(toolUse)`. To
-				// avoid a stale-tool-call hang on the model side, deliver a
-				// synthetic stub immediately so the shim returns. Phase 3
-				// will rewire this through the full frame machinery.
-				try {
-					entry.deliverResult(
-						[{ type: "text", text: "[pi: tool execution deferred; see follow-up message]" }],
-						false,
-					);
-					writeBridgeLogLine(`tool-result delivery: ${shortName} [${entry.id}]`);
-				} catch {}
+				if (activeSession !== session) {
+					// Late-arriving park after supersede — drain synthetically
+					// so CC's MCP shim doesn't hang.
+					try {
+						entry.deliverResult(
+							[{ type: "text", text: ABORTED_TOOL_RESULT_TEXT }],
+							true,
+						);
+					} catch {}
+					return;
+				}
+				// Queue the parked entry; correlate FIFO with any pending
+				// tool-use transcript event. The handshake log line
+				// (`mcp handler: <tool> [<toolUseId>] — awaiting pi`) is emitted
+				// from correlateParked() once both sides are paired, so the
+				// `[<id>]` in the log is always the Anthropic toolUseId that
+				// scenario-lib asserts against.
+				session.pendingParkedEntries.push({
+					name: entry.name,
+					deliverResult: entry.deliverResult,
+				});
+				correlateParked(session);
 			});
 
 			handle.on("done", (d) => {
-				// Emit a 'caching session=' compatible log line into the bridge
-				// debug log so scenario-lib's scn_send completion detector still
-				// fires on the PTY path. (Originally an SDK-path signal.)
-				writeBridgeLogLine(`streamSimple: caching session=${handle.sessionId.slice(0, 8)} done=${d.reason}`);
-				if (d.reason === "aborted") {
-					// Scenario-lib compat: SDK-era abort signal.
-					writeBridgeLogLine(`onAbort: session=${handle.sessionId.slice(0, 8)}`);
-					out.stopReason = "stop";
-					endWith({ type: "error", reason: "aborted", error: out });
-				} else if (d.reason === "error") {
-					out.stopReason = "error";
-					out.errorMessage = d.errorMessage;
-					endWith({ type: "error", reason: "error", error: out });
-				}
-				// stop-settled is handled via transcript "done" event above.
-			});
-
-			// Scenario-lib compat: emit per-turn usage line when transcript reports usage.
-			handle.on("transcript", (e: TranscriptEvent) => {
-				if (e.kind !== "usage") return;
-				const u = e.usage;
 				writeBridgeLogLine(
-					`usage: cacheRead=${u.cacheRead} cacheWrite=${u.cacheWrite} input=${u.input} output=${u.output}`,
+					`streamSimple: caching session=${handle.sessionId.slice(0, 8)} done=${d.reason}`,
 				);
+				if (activeSession === session) {
+					if (d.reason === "aborted") {
+						writeBridgeLogLine(`onAbort: session=${handle.sessionId.slice(0, 8)}`);
+						if (!session.ended) {
+							session.out.stopReason = "stop";
+							endWith(session, { type: "error", reason: "aborted", error: session.out });
+						}
+					} else if (d.reason === "error") {
+						if (!session.ended) {
+							session.out.stopReason = "error";
+							session.out.errorMessage = d.errorMessage;
+							endWith(session, { type: "error", reason: "error", error: session.out });
+						}
+					}
+					// stop-settled is handled via transcript "done" above.
+					activeSession = null;
+				}
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			const out = newTurnOutput(model.id);
 			out.stopReason = "error";
 			out.errorMessage = `streamClaudeViaPty: ${msg}`;
-			endWith({ type: "error", reason: "error", error: out });
+			try {
+				stream.push({ type: "start", partial: out });
+				stream.push({ type: "error", reason: "error", error: out });
+				stream.end();
+			} catch {}
+			if (activeSession?.modelId === model.id && !activeSession.handle) {
+				activeSession = null;
+			}
 		}
 	})();
+}
 
-	return stream;
+// Test-only hook: reset module state between integration test runs.
+export function __resetActiveSessionForTests(): void {
+	activeSession = null;
 }

@@ -428,3 +428,49 @@ D26 fixed positional-prompt failure; subsequent validation revealed Anthropic's 
 - [x] 6.10 Update spec.md to fold D27 into the "Prompt injection via typed input post-SessionStart" requirement
 - [x] 6.11 Update design.md: SUPERSEDE D7-final, add D26+D27 cross-references, document the alternatives rejected
 - [-] 6.12 Full S0-S25 scenario re-run end-to-end via pi: blocked by separate MCP-shim-via-pi-spawn issue (PTY log shows "1 MCP server failed · /mcp" intermittently when bridge is invoked through pi's tmux-driven scenario harness, but direct `spawnDriver()` works cleanly). Tracked as v1.1.0 follow-up; D27 core architecture verified working in isolation.
+
+## Phase 7 — Full scenario suite passes (added 2026-05-23 per owner directive)
+
+Completion criterion for this change is now: ALL S0-S25 pi-tui scenario tests pass via `bash scripts/run-all-scenarios.sh` (28 scenarios, 0 failures, 0 timeouts). Previously-deferred v1.1.0 items are absorbed into v1.0.0 scope.
+
+### Categorization of currently-failing scenarios (baseline: 5 PASS / 19 FAIL / 4 TIMEOUT post mechanical fixes in commit 4eabc9e)
+
+Each unfailing scenario falls into one of: (a) real bridge gap → implement, (b) scenario obsolete → update spec, (c) environment/flake → debug + fix root cause.
+
+#### Bucket A — warm-resume cache (D22, was v1.1.0 deferred)
+- [ ] 7.1 Port `cachedSessionId` + `cachedSessionCwd` + `lastSentMessageHashes` from SDK path's index.ts to streamPty.ts
+- [ ] 7.2 Add divergence-detection (cwd change, pi hash-chain divergence, /fork, /compact, /reload, /new) — emit `clearSession` log line on drop
+- [ ] 7.3 Spawn with `--resume <cached-id>` (NOT `--session-id`) on warm path; transcript tailer opens existing file from EOF baseline per D22 + D24
+- [ ] 7.4 Emit `streamSimple: fresh query resume=<sid>` (vs `resume=no`) on warm spawn
+- [ ] Unblocks: s6, s10, s10b, s12, s17, s23 (post-reload), s24 (post-/new), and the "session: expected 1, got N" assertion in s0, s11, s14
+
+#### Bucket B — real tool round-trip (replace v0 stub `[pi: deferred]`)
+- [ ] 7.5 Port `pendingResolvers` + `pendingResults` from SDK path's index.ts to streamPty.ts
+- [ ] 7.6 On `tool-call-parked`: park a Promise; deliver pi's real `tool_result` from the next `streamSimple()` call to that frame; no synthetic stub
+- [ ] 7.7 Wire FIFO toolUseId matching for concurrent (parallel) tool calls in one assistant turn
+- [ ] 7.8 Emit `mcp handler: <tool> [<id>] — early result` when tool resolves synchronously (e.g. handler computes inline)
+- [ ] Unblocks: s1, s2, s3, s4, s6, s11, s14 (subagent), s18, s19, s20 (mid-tool-execution), s25-capture-during-turn
+
+#### Bucket C — abort + steer + supersede machinery (D15)
+- [ ] 7.9 Port `superseding active frame` detection from SDK path: when pi sends new turn while a frame is mid-tool, supersede gracefully
+- [ ] 7.10 Implement deferred-tool-result preservation per D15 invariant (PTY torn down on abort but router state preserved)
+- [ ] 7.11 Emit `streamSimple: superseding active frame` log line
+- [ ] Unblocks: s5 (abort-during-stream), s7 (abort+resume), s8 (abort during long bash), s9 (abort during tool round), s13 (rapid abort), s15 (subagent with parent fork), s16b (history-divergence supersede)
+
+#### Bucket D — first-turn-after-pi-boot transcript-timeout flake
+- [ ] 7.12 Investigate: turn 2 of S0 succeeds reliably (5s, full Stop hook); turn 1 90s-timeouts intermittently. Hypotheses: (a) pi UI rendering during boot races with claude PTY input; (b) claude TUI input buffer not ready when typed-injection fires despite Ink quiescence detected; (c) Anthropic API queuing for first OAuth-authenticated request per process. Capture PTY output for failing turn 1, identify root cause, fix.
+- [ ] 7.13 If fix is "wait longer before first type", expose `sessionStartFirstTurnWarmupMs` SpawnDriverOptions with sensible default
+- [ ] Unblocks: turn 1 of every multi-turn scenario; primary cause of remaining transcript-timeout failures across the suite
+
+#### Bucket E — capture-mode integration with concurrent main-path turn (s25)
+- [ ] 7.14 Implement capture-mode hermetic-cwd PTY spawn isolation per D5/D21 — ensure capture call does NOT clobber the main-path `cachedSessionId` or count toward main-path `unique_sids`
+- [ ] 7.15 Wire `runCaptureQuery: done` log line emission
+- [ ] Unblocks: s25-capture-during-turn
+
+#### Bucket F — obsolete-scenario updates (if any)
+- [ ] 7.16 Per-scenario triage in `verify.md`: for any scenario whose failing assertion encodes SDK-era behavior that the PTY architecture intentionally diverges from (e.g. specific tool-prefix names, specific log-line wording beyond what bridge can compatibility-emit), either update the scenario to reflect the new architecture or document the deliberate behavior change with rationale. NO scenario is permanently exempted.
+
+#### Bucket G — final verification
+- [ ] 7.17 Run `SCENARIO_PARALLEL=5 bash scripts/run-all-scenarios.sh` against real `claude` binary on real OAuth Max-plan account; assert `Passed: 28 Failed: 0 Timeout: 0`
+- [ ] 7.18 Re-run with `SCENARIO_PARALLEL=1` sequential to confirm no parallelism-only successes (would mask race conditions)
+- [ ] 7.19 Update `verify.md` Completion Decision from amber → green; mark change ready to archive

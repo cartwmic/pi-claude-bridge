@@ -256,3 +256,63 @@ Full end-to-end suite via pi tmux harness reveals a separate `1 MCP server faile
 ### Updated Completion Decision
 
 **green for D27 architecture; amber for v1.0.0 ship-readiness** — core architecture verified; one remaining shim-via-pi-spawn issue blocks full scenario validation but does not affect D27 correctness. v1.0.0 may ship with D27 + documented v1.1.0 followup, OR hold for the shim-via-pi-spawn investigation.
+
+## Phase 7 — Full scenario suite gating (added 2026-05-23 per owner directive)
+
+**Completion criterion change.** Previously verify gated on unit tests + a partial-suite scenario sample with v1.1.0-deferred shortfalls accepted. As of 2026-05-23, the criterion is hard: `bash scripts/run-all-scenarios.sh` reports `Passed: 28 Failed: 0 Timeout: 0`. No scenario may be deferred. Any scenario currently failing must be either:
+
+(a) Resolved by extending the bridge implementation to cover the tested behavior, OR
+(b) Determined to encode an obsolete expectation and updated in this change with rationale recorded per-scenario.
+
+This explicitly absorbs the following work previously deferred to v1.1.0 into v1.0.0 scope: warm-resume session cache, real tool round-trip with pendingResolvers/pendingResults, abort+steer+supersede frame machinery, capture-mode isolation against concurrent main-path turns, first-turn-after-pi-boot flake debug. See `tasks.md` Phase 7 (7.1–7.19).
+
+### Baseline scenario triage (commit 4eabc9e, post-mechanical-fix run)
+
+| Scenario | Status | Root cause | Bucket | Resolution path |
+|---|---|---|---|---|
+| s0 | FAIL | First-turn transcript timeout (turn 1 90s flake; turn 2 works) | D | 7.12 |
+| s1 | FAIL | Tool round-trip stubbed (`[pi: deferred]`); 2 cold-starts no warm | B + A | 7.5, 7.1 |
+| s2 | FAIL | Tool round-trip stubbed | B | 7.5 |
+| s3 | FAIL | Tool round-trip stubbed | B | 7.5 |
+| s4 | FAIL | Tool round-trip stubbed + over-invocation | B | 7.5 |
+| s5 | FAIL | Abort+supersede not implemented | C | 7.9, 7.10 |
+| s6 | FAIL | Warm-resume not implemented + tool round-trip | A + B | 7.1, 7.5 |
+| s7 | FAIL | Abort+resume not implemented | C | 7.9 |
+| s8 | FAIL | Abort during long bash not implemented | C | 7.10 |
+| s9 | FAIL | Abort during tool round not implemented | C | 7.10 |
+| s10 | PASS | — | — | none |
+| s10b | FAIL | Warm-resume not implemented | A | 7.1 |
+| s11 | FAIL | Concurrent tool calls FIFO not implemented | B | 7.5, 7.7 |
+| s12 | TIMEOUT | Warm-resume + tool round-trip | A + B | 7.1, 7.5 |
+| s13 | FAIL | Rapid-abort + transcript timeout flake | C + D | 7.9, 7.12 |
+| s14 | FAIL | Subagent tool not invoked (tool round-trip) | B | 7.5 |
+| s15 | FAIL | Subagent + session attribution | B + C | 7.5, 7.9 |
+| s16a | FAIL | Fork session_start events not emitted | C | 7.9 |
+| s16b | FAIL | History divergence detection not implemented | A | 7.2 |
+| s17 | TIMEOUT | Tool round-trip + warm-resume | A + B | 7.1, 7.5 |
+| s18 | TIMEOUT | Read tool not surfacing contents | B + D | 7.5, 7.12 |
+| s19 | TIMEOUT | Read tool not surfacing seed content | B + D | 7.5, 7.12 |
+| s20 | FAIL | Mid-tool-execution window not enterable | B | 7.5 |
+| s21-investigate | PASS | — | — | none |
+| s22-investigate | PASS | — | — | none |
+| s23 | PASS | — | — | none |
+| s24 | PASS | — | — | none |
+| s25-capture-during-turn | FAIL | Capture mode isolation + cachedSessionId clobber | E | 7.14, 7.15 |
+
+**Baseline:** 5 PASS / 19 FAIL / 4 TIMEOUT. Target: 28 PASS / 0 FAIL / 0 TIMEOUT.
+
+### Bucket-by-bucket effort estimate
+
+| Bucket | Tasks | Implementation surface | Estimated unblocks |
+|---|---|---|---|
+| A: warm-resume | 7.1–7.4 | streamPty.ts cache + divergence; tailer EOF-baseline | s6, s10b, s12, s16b, s17 + multi-session assertions in s0, s1, s11, s14 |
+| B: tool round-trip | 7.5–7.8 | streamPty.ts pendingResolvers; remove `[pi: deferred]` stub | s1, s2, s3, s4, s6, s11, s14, s17, s18, s19, s20 |
+| C: abort/steer/supersede | 7.9–7.11 | streamPty.ts frame machinery; D15 invariant impl | s5, s7, s8, s9, s13, s15, s16a |
+| D: first-turn flake | 7.12–7.13 | spawn race investigation; possibly first-turn warmup | turn 1 across many scenarios; root cause likely shared |
+| E: capture-mode isolation | 7.14–7.15 | capture cached-session separation | s25-capture-during-turn |
+| F: obsolete-scenario updates | 7.16 | (TBD per scenario) | none expected, but possible |
+| G: final verification | 7.17–7.19 | full-suite run + amber→green | all |
+
+### Updated Completion Decision
+
+**red** — 23 of 28 scenarios currently fail or timeout. Phase 7 work (7.1–7.19) is required before this change may archive. v1.1.0 deferral language in prior verify sections is RESCINDED.

@@ -259,6 +259,7 @@ simple ordered lists where PTY integration prevents pure TDD.
 - `grep -rn "@anthropic-ai" package.json src/ index.ts convert.ts models.ts tests/` returns empty (excluding `package-lock.json`).
 - `grep -rn "AskClaude\|askClaude" src/ index.ts tests/` returns empty.
 - Every AC ID in `specs/**/spec.md` appears in at least one test file (per `verify.md` Check 5).
+- **`bash scripts/run-all-scenarios.sh` reports `Passed: 28 Failed: 0 Timeout: 0`** — every existing pi-tui scenario test passes end-to-end against a real `claude` binary on a real OAuth account, executed via the pi tmux harness. NO scenario may be deferred, skipped, or expected-to-fail. Any scenario currently failing implies either (a) the bridge implementation needs to grow to cover the tested behavior, or (b) the scenario itself encodes an obsolete expectation and must be updated in this change to reflect the new architecture (whichever is correct, decision recorded in `verify.md` per-scenario). This criterion explicitly absorbs prior v1.1.0-deferred work (warm-resume cache, tool round-trip, abort+steer+supersede machinery, first-turn flake) into v1.0.0 scope.
 
 ## Manual Adjustments
 

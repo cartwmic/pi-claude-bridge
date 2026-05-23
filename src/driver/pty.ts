@@ -632,11 +632,13 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 		},
 	);
 
-	// Start transcript tailer.
+	// Start transcript tailer. On warm-resume the JSONL already contains the
+	// prior conversation; start from EOF so we only emit NEW events (D22+D24).
 	const tailer = new TranscriptTailer({
 		transcriptPath,
 		settleMs: opts.settleMs ?? 250,
 		creationTimeoutMs: opts.transcriptCreationTimeoutMs,
+		startFromEOF: !!opts.resumeSessionId,
 	});
 
 	const handle = new DriverHandleImpl(sessionId, transcriptPath, router, proc, tailer, opts);

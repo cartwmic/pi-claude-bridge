@@ -62,6 +62,12 @@ export interface TranscriptTailerOptions {
 	pollIntervalMs?: number;
 	/** Max time to wait for file to appear before erroring. Default 30000ms. */
 	creationTimeoutMs?: number;
+	/** D22 warm-resume: skip pre-existing transcript content. When true, on
+	 * file open the read offset is initialized to the current file size, so
+	 * only NEW lines appended after this point fire events. Required when
+	 * spawning `claude --resume <sid>` because the transcript JSONL already
+	 * contains the prior conversation; replaying it would double-emit. */
+	startFromEOF?: boolean;
 	// Injectables for tests
 	now?: () => number;
 	setTimer?: (cb: () => void, ms: number) => unknown;
@@ -109,6 +115,7 @@ export class TranscriptTailer extends EventEmitter {
 	private readonly settleMs: number;
 	private readonly pollIntervalMs: number;
 	private readonly creationTimeoutMs: number;
+	private readonly startFromEOF: boolean;
 	private readonly setTimerFn: NonNullable<TranscriptTailerOptions["setTimer"]>;
 	private readonly clearTimerFn: NonNullable<TranscriptTailerOptions["clearTimer"]>;
 	private terminalStopHookSummarySeen = false;
@@ -123,6 +130,7 @@ export class TranscriptTailer extends EventEmitter {
 		// D27: Opus with large pi-typed-as-user-message context can take >30s
 	// before flushing its first transcript line. Default bumped to 90s.
 	this.creationTimeoutMs = opts.creationTimeoutMs ?? 90_000;
+		this.startFromEOF = opts.startFromEOF ?? false;
 		this.setTimerFn = opts.setTimer ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
 		this.clearTimerFn = opts.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
 	}
@@ -228,6 +236,15 @@ export class TranscriptTailer extends EventEmitter {
 		} catch (err) {
 			this.emitError(`failed to open transcript: ${(err as Error).message}`);
 			return;
+		}
+		// D22 warm-resume: skip prior conversation by seeking to current EOF.
+		if (this.startFromEOF) {
+			try {
+				const st = statSync(this.opts.transcriptPath);
+				this.readOffset = st.size;
+			} catch {
+				// Ignore; readOffset stays at 0.
+			}
 		}
 		// Establish a watcher on the file itself for incremental reads.
 		try {

@@ -201,6 +201,13 @@ interface ActiveSession {
 	// only after a tool-use transcript event + tool-call-parked event are
 	// paired via FIFO (see correlateParked).
 	pendingEntries: Map<string, PendingEntry>;
+	// Race buffer: pi delivers a tool_result for a toolUseId BEFORE the
+	// matching parked entry has arrived from CC's MCP shim. The transcript
+	// tool-use event fires (and pi runs the tool) faster than CC's MCP
+	// dispatch round-trips through the shim. Store the result here; when
+	// correlateParked() pairs the toolUseId with a parked entry, deliver
+	// the stored result immediately.
+	pendingEarlyResults: Map<string, { content: ToolResultContent; isError: boolean }>;
 	// FIFO queues for tool-use ↔ parked-entry correlation. Tool-use transcript
 	// events carry the Anthropic toolUseId (what pi sees); tool-call-parked
 	// events carry CC's MCP request id (router-generated). They arrive in the
@@ -222,13 +229,44 @@ function correlateParked(session: ActiveSession): void {
 	while (session.pendingToolUseIds.length > 0 && session.pendingParkedEntries.length > 0) {
 		const toolUseId = session.pendingToolUseIds.shift()!;
 		const entry = session.pendingParkedEntries.shift()!;
-		session.pendingEntries.set(toolUseId, entry);
 		const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
+		// Check if pi already delivered a result for this toolUseId (race:
+		// transcript event fired faster than CC's MCP dispatch).
+		const early = session.pendingEarlyResults.get(toolUseId);
+		if (early) {
+			session.pendingEarlyResults.delete(toolUseId);
+			writeBridgeLogLine(
+				`mcp handler: ${shortName} [${toolUseId}] — early result, returning`,
+			);
+			try {
+				entry.deliverResult(early.content, early.isError);
+			} catch {}
+			writeBridgeLogLine(
+				`tool-result delivery: ${shortName} [${toolUseId}]${early.isError ? " (isError)" : ""} (early)`,
+			);
+			continue;
+		}
+		session.pendingEntries.set(toolUseId, entry);
 		writeBridgeLogLine(`mcp handler: ${shortName} [${toolUseId}] — awaiting pi`);
 	}
 }
 
 let activeSession: ActiveSession | null = null;
+
+// D22 warm-resume cache. After a turn completes successfully (Stop hook +
+// settle), we cache the CC session_id + cwd. The next fresh user turn
+// (same cwd, no divergence) spawns with `--resume <sid>` so CC's MCP shim
+// reads the existing JSONL and the model has full context cache. Cleared
+// on abort, error, or supersede (any path that breaks transcript coherence).
+let cachedSessionId: string | null = null;
+let cachedSessionCwd: string | null = null;
+
+function clearWarmResumeCache(reason: string): void {
+	if (cachedSessionId === null) return;
+	writeBridgeLogLine(`clearSession: dropping cached sid=${cachedSessionId.slice(0, 8)} (${reason})`);
+	cachedSessionId = null;
+	cachedSessionCwd = null;
+}
 
 // --- Per-turn stream helpers (operate on `activeSession`) ---------------
 
@@ -293,21 +331,24 @@ export function streamClaudeViaPty(
 		resetTurnState(session, stream, model.id);
 
 		// Deliver each result to its parked entry. CC will resume generating.
+		// If the parked entry hasn't arrived yet (race: pi acted on the
+		// transcript tool-use event before CC's MCP dispatch round-tripped),
+		// store in pendingEarlyResults; correlateParked() will deliver it
+		// as soon as the parked entry shows up.
 		for (const r of trailing) {
+			const content: ToolResultContent = [{ type: "text" as const, text: r.content || "" }];
 			const entry = session.pendingEntries.get(r.id);
 			if (!entry) {
+				session.pendingEarlyResults.set(r.id, { content, isError: r.isError });
 				writeBridgeLogLine(
-					`streamSimple: orphan tool-result id=${r.id} (no parked entry; ignoring)`,
+					`streamSimple: tool-result stashed (early) id=${r.id} (awaiting parked entry)`,
 				);
 				continue;
 			}
 			session.pendingEntries.delete(r.id);
 			const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
 			try {
-				entry.deliverResult(
-					[{ type: "text" as const, text: r.content || "" }],
-					r.isError,
-				);
+				entry.deliverResult(content, r.isError);
 				writeBridgeLogLine(
 					`tool-result delivery: ${shortName} [${r.id}]${r.isError ? " (isError)" : ""}`,
 				);
@@ -347,6 +388,9 @@ export function streamClaudeViaPty(
 		writeBridgeLogLine(
 			`streamSimple: superseding active frame (pendingEntries=${totalPending}), interrupting`,
 		);
+		// Supersede breaks transcript coherence (the in-flight turn never
+		// completed cleanly); drop warm-resume cache so next turn cold-starts.
+		clearWarmResumeCache("supersede");
 		// Drain BOTH correlated and uncorrelated parked entries so CC's MCP
 		// shim unblocks. Uncorrelated entries have no toolUseId yet (no
 		// matching tool-use transcript event) — synthesize one for the log.
@@ -402,7 +446,23 @@ function startFreshTurn(
 	extras: StreamPtyExtras,
 	stream: AssistantMessageEventStream,
 ): void {
-	const { prompt, imagesDropped } = buildPromptText(context.messages);
+	// D22 warm-resume eligibility: cached sid + same cwd + no model change.
+	// On warm-resume CC reads the existing JSONL; we only send the LAST
+	// user message (CC has prior turns already). On cold-start we send the
+	// full conversation-history-embedded prompt.
+	const warmResume =
+		cachedSessionId !== null &&
+		cachedSessionCwd === extras.cwd;
+
+	const { prompt, imagesDropped } = warmResume
+		? (() => {
+			const last = context.messages[context.messages.length - 1];
+			if (last?.role === "user") {
+				return { prompt: flattenMessageText(last.content), imagesDropped: 0 };
+			}
+			return buildPromptText(context.messages);
+		})()
+		: buildPromptText(context.messages);
 	if (imagesDropped > 0) {
 		process.stderr.write(
 			`pi-claude-bridge: stripped ${imagesDropped} image block(s) from main-provider prompt (v1 limitation)\n`,
@@ -415,16 +475,19 @@ function startFreshTurn(
 			writeBridgeLogLine(
 				`streamSimple: PTY spawn model=${model.id} promptLen=${prompt.length} sysLen=${extras.systemPrompt.length} tools=${tools.length}`,
 			);
-			writeBridgeLogLine(`streamSimple: fresh query resume=no model=${model.id}`);
+			writeBridgeLogLine(
+				`streamSimple: fresh query resume=${warmResume ? cachedSessionId!.slice(0, 8) : "no"} model=${model.id}`,
+			);
 			const handle = await spawnDriver({
 				shimPath: resolveShimPath(),
 				model: model.id,
 				prompt,
-				systemPrompt: extras.systemPrompt,
+				systemPrompt: warmResume ? "" : extras.systemPrompt,
 				cwd: extras.cwd,
 				mode: "main",
 				tools,
 				signal: options?.signal as AbortSignal | undefined,
+				...(warmResume && cachedSessionId ? { resumeSessionId: cachedSessionId } : {}),
 			});
 
 			writeBridgeLogLine(
@@ -438,6 +501,7 @@ function startFreshTurn(
 				modelId: model.id,
 				cwd: extras.cwd,
 				pendingEntries: new Map(),
+				pendingEarlyResults: new Map(),
 				pendingToolUseIds: [],
 				pendingParkedEntries: [],
 				currentStream: stream,
@@ -634,12 +698,25 @@ function startFreshTurn(
 							session.out.stopReason = "stop";
 							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						}
+						// D22: aborted turns break transcript coherence; drop cache.
+						clearWarmResumeCache("abort");
 					} else if (d.reason === "error") {
 						if (!session.ended) {
 							session.out.stopReason = "error";
 							session.out.errorMessage = d.errorMessage;
 							endWith(session, { type: "error", reason: "error", error: session.out });
 						}
+						clearWarmResumeCache("error");
+					} else if (d.reason === "stop-settled") {
+						// D22 warm-resume cache: the JSONL now contains the full
+						// turn (user prompt + assistant response + any tool
+						// round-trips). Cache this CC session_id so the next
+						// fresh user turn can spawn with --resume.
+						cachedSessionId = handle.sessionId;
+						cachedSessionCwd = session.cwd;
+						writeBridgeLogLine(
+							`warm-resume: cached sid=${handle.sessionId.slice(0, 8)} cwd=${session.cwd}`,
+						);
 					}
 					// stop-settled is handled via transcript "done" above.
 					activeSession = null;
@@ -665,4 +742,6 @@ function startFreshTurn(
 // Test-only hook: reset module state between integration test runs.
 export function __resetActiveSessionForTests(): void {
 	activeSession = null;
+	cachedSessionId = null;
+	cachedSessionCwd = null;
 }

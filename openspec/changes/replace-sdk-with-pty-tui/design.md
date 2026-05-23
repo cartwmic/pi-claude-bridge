@@ -52,7 +52,7 @@ claude
   --permission-mode bypassPermissions      # no interactive permission dialogs
   --session-id <pre-generated-uuid>        # see D18 — deterministic transcript path discovery
   [--resume <session-id>]                  # warm resume (uses cached id; ignores --session-id)
-  <pi user prompt as positional argument>  # see D13
+  # NB: NO positional prompt — see D26; prompt is typed into the TUI post-SessionStart
 ```
 
 No SDK runtime dependency post-refactor.
@@ -199,7 +199,7 @@ models.ts           # model registry (unchanged)
 
 **Choice:** Register exactly two hooks inline via `--settings`:
 
-- `SessionStart` — confirms the model run has begun. Cross-checks `transcript_path` against the bridge's deterministically-computed path (per D18) if the payload happens to carry it. The prompt is delivered via positional CLI argument (D13), NOT via this hook.
+- `SessionStart` — confirms the model run has begun AND triggers the typed-prompt-injection sequence (per D26). Cross-checks `transcript_path` against the bridge's deterministically-computed path (per D18) if the payload happens to carry it. After this hook resolves, the driver waits for Ink quiescence then types the prompt + debounced `\r` into the PTY input.
 - `Stop` — finalize turn, trigger the bounded post-Stop settle window (D17), capture cached session id.
 
 **Dropped:**
@@ -278,7 +278,7 @@ Each block separated by a blank line. If `ctx.systemPrompt` is empty, the assemb
 **Ordering:**
 1. Bridge computes warm-resume transcript path.
 2. Bridge calls `fs.statSync(path).size` (or polls if file briefly missing); records `baselineOffset`.
-3. Bridge spawns PTY with `--resume <cached-id>` + positional prompt.
+3. Bridge spawns PTY with `--resume <cached-id>` (no positional prompt); types the new user message into the TUI input post-`SessionStart` per D26.
 4. Transcript tailer attaches its `fs.watch` and reads from `baselineOffset`.
 
 **Integration test:** T1.19 (added) covers warm-resume with immediate assistant output; asserts no lines are dropped.
@@ -399,23 +399,21 @@ Each line is `JSON.stringify(msg) + "\n"`. Partial lines buffered. Correlation i
 
 **4-point test:** multiple-approaches? yes. lasting? yes. disagreement? minor. future-constraint? yes. → **ADR candidate Y** (3 of 4).
 
-### D13: Prompt injection — CLI positional argument for v1
+### D13: Prompt injection — CLI positional argument for v1 (SUPERSEDED by D26)
 
-**Choice (added in Round-1 adversarial revision):** Pi user prompts are delivered to `claude` via the documented `[prompt]` positional CLI argument on every spawn (both cold-start and warm-resume). This works for text content. Image content is NOT supported in v1 (`claude` interactive mode has no documented programmatic mechanism to inline images alongside a text prompt; `--file` is for file uploads with their own IDs and predates image multimodality on the interactive path).
+**Status (2026-05-22):** SUPERSEDED. D26 reverses this choice; the bridge types the prompt into the TUI input post-`SessionStart` rather than passing it as a positional CLI argument. Reason: the positional form triggers `claude`'s internal headless-auto-submit code path whose request shape is rejected by Anthropic's OAuth interactive-mode tier cap (`API Error: 400 "out of extra usage"`) when combined with a substantive `--system-prompt`. Empirically reproduced 2026-05-22 against a Max-plan OAuth account; bisect localised the trigger to total system-prompt size ≥~2KB regardless of model. The reference implementation `smithersai/claude-p` (Drop-in `claude -p` replacement that drives the interactive TUI) adopts the same typed-injection approach and was the source of the working pattern. Original D13 text retained below for traceability; D26 is the authoritative rule.
 
-**Behavior contract:**
-- Cold-start (no cached session id): full pi history is flattened via the existing `buildColdStartPrompt(context.messages)` conversion (text-only; image blocks dropped with a warn log). This matches today's bridge behavior — the SDK era also serializes cold-start history to a single string via the same helper. NOT a regression.
+**Original (now-superseded) choice:** Pi user prompts are delivered to `claude` via the documented `[prompt]` positional CLI argument on every spawn (both cold-start and warm-resume). This works for text content. Image content is NOT supported in v1 (`claude` interactive mode has no documented programmatic mechanism to inline images alongside a text prompt; `--file` is for file uploads with their own IDs and predates image multimodality on the interactive path).
+
+**Original behavior contract (now-superseded):**
+- Cold-start (no cached session id): full pi history is flattened via the existing `buildColdStartPrompt(context.messages)` conversion (text-only; image blocks dropped with a warn log).
 - Warm-resume (cached session id valid): the positional arg is the new user message only; prior history lives in the resumed transcript on disk that `claude --resume` reads.
-- Image-bearing main-provider turn (cold or warm): the bridge logs a warn-level entry, strips the image blocks from the positional arg, and proceeds with text-only content. Documented as a v1 limitation; pi callers receive `usage` and `cost` as normal.
+- Image-bearing main-provider turn (cold or warm): the bridge logs a warn-level entry, strips the image blocks from the positional arg, and proceeds with text-only content.
 - Image-bearing capture call: rejected pre-spawn with `stopReason: "error"` and `errorMessage` naming the v1 limitation (constitution VII).
 
-**Alternatives considered**
-- **Type the prompt into the PTY stdin after `SessionStart`.** Fragile (bracketed-paste-mode escaping, multi-line edge cases, TUI re-renders). Rejected in favor of the CLI positional path which `claude` is documented to accept.
-- **Use the `SessionStart` hook's `hookSpecificOutput.additionalContext` to inject the prompt.** Wrong semantic surface (it's the system context, not a user message); violates constitution V on the capture path.
-
-**Rationale:** CLI positional is the documented, image-or-no-image-equivalent surface that pi callers have always passed prompts through (via `buildColdStartPrompt`). Image support is genuinely missing from interactive `claude` today, so v1 mirrors that limitation rather than papering over it.
-
-**4-point test:** multiple-approaches? yes. lasting? yes (defines the input shape). disagreement? minor. future-constraint? yes. → **ADR candidate Y** (3 of 4).
+**Original alternatives considered (still informative):**
+- **Type the prompt into the PTY stdin after `SessionStart`.** Originally rejected as fragile (bracketed-paste-mode escaping, multi-line edge cases, TUI re-renders). D26 reverses this rejection: the fragility concerns are real but tractable (debounced two-write sequence + ink quiescence detector), and the alternative (positional) is BLOCKED by OAuth tier policy.
+- **Use the `SessionStart` hook's `hookSpecificOutput.additionalContext` to inject the prompt.** Wrong semantic surface (it's the system context, not a user message); violates constitution V on the capture path. STILL REJECTED under D26.
 
 ### D14: Packaging — build to `dist/` for publishable artifacts
 
@@ -491,6 +489,57 @@ The current bridge (index.ts:1008-1016, 1260-1336) deliberately keeps aborted fr
 
 **4-point test:** multiple-approaches? yes. lasting? yes. disagreement? yes. future-constraint? yes. → **ADR candidate Y** (4 of 4).
 
+### D26: Prompt injection — typed input post-`SessionStart` (added 2026-05-22 after scenario validation)
+
+**Choice:** The bridge does NOT pass the pi user prompt as a positional CLI argument. Instead, after the `SessionStart` hook fires (D9) and after the PTY output stream has been silent for an implementation-defined quiescence window (default 80ms; ceiling 2000ms), the driver writes the prompt bytes to the PTY input, waits an implementation-defined inter-write debounce (default 120ms; defeats Ink's bracketed-paste burst-merging that otherwise lands `\r` in the input buffer), then writes a single `\r` to trigger submit. SUPERSEDES D13.
+
+**Why (root cause, empirically discovered 2026-05-22):** Passing the pi user prompt as the trailing positional argument triggers an internal headless-auto-submit code path in `claude` whose request shape is rejected by Anthropic's OAuth interactive-mode tier cap (`API Error: 400 "out of extra usage"`). The error message is misleading — it does NOT mean the user's credit is exhausted; it means the request was rejected by the OAuth interactive-mode policy. Reproducible regardless of model (haiku-4-5 / sonnet-4-6 / opus-4-7), regardless of OAuth account balance, and on every fresh OAuth session. Bisection localised the trigger to total system-prompt size ≥~2KB; pi's default sysprompt is ~41KB so every bridge spawn hits it. The SAME args invoked via `claude -p --system-prompt-file <file> 'say AAA'` succeed (different code path, different tier policy); the SAME args invoked via interactive PTY WITHOUT a positional prompt (then typed in post-`SessionStart`) also succeed.
+
+**Reference:** `smithersai/claude-p` (https://github.com/smithersai/claude-p) is a third-party drop-in `claude -p` replacement that drives the interactive TUI via the same typed-injection pattern. Their SPEC.md documents the same approach: launch with `--settings` registering `SessionStart` + `Stop` hooks, wait for `SessionStart` payload, type prompt + Enter into the PTY. Adopting their pattern resolves the OAuth tier-cap issue without further bridge architecture changes.
+
+**Behavior contract:**
+- The driver tracks `lastOutputAtMs` on every `proc.onData` chunk.
+- On `SessionStart` hook event, the driver enters an Ink-quiescence wait: poll every 15ms; stop when `now - lastOutputAtMs > 80ms` OR when 2000ms elapsed from the start of the wait.
+- After quiescence, the driver calls `proc.write(prompt)` once with the full prompt bytes (cold-start: flattened pi history per `buildColdStartPrompt`; warm-resume: new user message only).
+- After 120ms `setTimeout`, the driver calls `proc.write("\r")` to trigger Ink's submit.
+- Cold-start vs warm-resume only changes WHAT is typed, NOT the typing mechanism (same SessionStart-quiescence-type-debounce-enter sequence).
+- Image content (main-provider): stripped from the typed prompt with a warn log (same v1 limitation as D13 documented).
+- Image content (capture): rejected pre-spawn with `stopReason: "error"` (same as D13).
+
+**Timing values (defaults, all overridable):**
+- `inkQuiescenceMs = 80` — PTY output silent threshold for ready-to-type signal
+- `inkMaxWaitMs = 2000` — ceiling on quiescence wait; type-anyway after this
+- `inkEnterDebounceMs = 120` — gap between prompt write and Enter write to defeat Ink burst-merge
+- `sessionStartWaitMs = 15000` — hard cap on waiting for `SessionStart` after spawn; error if exceeded
+
+Values taken from the `smithersai/claude-p` reference, empirically verified against `claude 2.1.114` in repro `_qf.mjs` (SessionStart@620ms, quiescence-met@620ms, typed@743ms, response received).
+
+**Interaction with D25 (workspace-trust scanner):**
+- Workspace-trust dialog fires BEFORE `SessionStart` (the hook can't register until trust is accepted). So D25 scanner answers the dialog first, then `SessionStart` fires, then D26 quiescence-then-type runs. No race; ordering is sequential by construction.
+
+**Interaction with capture path:**
+- Capture mode also uses interactive PTY (D5) so the typed-injection sequence applies identically. The capture system prompt + sole-tool MCP surface still drive the model toward the forced-tool-call termination per D16; only the prompt-delivery mechanism changes.
+
+**Failure modes (per constitution VII):**
+- `SessionStart` does not fire within `sessionStartWaitMs`: driver pushes `error` event with message naming the timeout, kills PTY.
+- Quiescence ceiling (`inkMaxWaitMs`) reached without silence: driver types anyway and logs warn.
+- `proc.write` throws (PTY already exited): driver pushes `error` event referencing the PTY exit.
+
+**Test surface (Phase 5, new):**
+- T5.4 (unit): `InkQuiescenceTracker` reports quiescent after configured silence; reports ceiling-hit at cap.
+- T5.5 (unit): typed-injection sequence produces ordered `proc.write(prompt)` then `proc.write("\r")` with the debounce delay between.
+- T5.6 (integration): cold-start S0 scenario reaches model response with non-trivial sysprompt (validates the OAuth tier-cap workaround end-to-end).
+
+**Alternatives considered (and rejected):**
+- **Force `ANTHROPIC_API_KEY` instead of OAuth.** Sidesteps tier cap but burdens every user with a separate API-key billing relationship; loses Max-plan included usage. Rejected as user-hostile.
+- **Pivot to `claude -p --output-format stream-json` headless mode.** Sidesteps tier cap (different code path) but defeats the entire design premise of this change (move OFF `claude -p` to interactive TUI). Rejected as scope-incompatible.
+- **`--bare` flag.** Disables hooks (and disables OAuth in favor of `ANTHROPIC_API_KEY`-only); breaks the SessionStart/Stop architecture. Rejected.
+- **Env vars `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` / `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.** Empirically did NOT fix the tier-cap rejection (the tier cap is sized on total request input, not specifically on auto-loaded CLAUDE.md content). Rejected.
+
+**Rationale:** the typed-injection approach is the only known workaround that preserves both the interactive-TUI architecture (D1-D25) AND the OAuth Max-plan economic model that pi users rely on. The added latency is ~200ms per turn (SessionStart-wait + quiescence-wait + debounce) which is below the existing PTY-boot latency budget. The reference implementation (`smithersai/claude-p`) ships this pattern in production.
+
+**4-point test:** multiple-approaches? yes (positional vs typed). lasting? yes (input shape contract). disagreement? minor (D13 dissent acknowledged, now superseded). future-constraint? yes (locks in the SessionStart-driven type sequence). → **ADR candidate Y** (4 of 4).
+
 ## Risks / Trade-offs
 
 | # | Risk | Likelihood | Severity | Mitigation |
@@ -507,7 +556,8 @@ The current bridge (index.ts:1008-1016, 1260-1336) deliberately keeps aborted fr
 | R10 | MCP shim's unix-socket path collides under concurrent capture calls | Low | Medium | Generate unique socket path per shim using `randomBytes`; document in design and test the concurrency case (clarify C9). |
 | ~~R11~~ | ~~`node-pty` alone insufficient for `claude` interactive boot~~ — **RESOLVED Phase 0 T0.6 / T0.14: node-pty alone suffices. `claude` emits XTVERSION/DA/iTerm2-progress queries; none require synthetic responses for boot to proceed. Drop this risk.** |  |  |  |
 | R12 | Hooks are subprocesses; per-event fork/exec latency on per-turn hooks | Low | Low | Post-Round-3 the bridge registers only TWO per-session hooks (`SessionStart`, `Stop`) — two subprocess invocations per turn, ~50–100ms each cold-start of a Node script. The high-frequency `PreToolUse` hook was dropped (per D11); `SessionEnd` was also dropped as redundant with PTY-exit + D17. Phase 4 benchmark T4.7 measures actual cold-start cost. |
-| R15 | Cold-start positional argument exceeds OS argv size limit (~256 KB macOS, ~2 MB Linux) on long-history turns (Round-2 B.P1#2) | Low (most turns) / Medium (after long sessions + restart) | High | **Round-5 A.P1#2 insight**: `claude --help` shows `--system-prompt[-file]` and `--append-system-prompt[-file]`, implying `--system-prompt-file <path>` and `--append-system-prompt-file <path>` exist. These read prompt content FROM A FILE, escaping argv entirely. Phase 0 T0.11 verifies the flags exist + work in interactive mode. If verified: on argv-overflow, the bridge writes cold-start history to a per-PTY temp file in `os.tmpdir()` (permissible per constitution III — not under `~/.claude/`) and passes `--system-prompt-file <tempfile>` instead of `--system-prompt <inline>`. The positional argument carries only the new user message. File is cleaned up on PTY exit. If `--system-prompt-file` does not exist or is `--print`-only, fall back to surfacing `stopReason: "error"` (v1 hard limit; CHANGELOG documents). |
+| R15 | ~~Cold-start positional argument exceeds OS argv size limit~~ — **OBSOLETED by D26 (2026-05-22)**: bridge no longer passes prompt as positional; typed-injection has no argv ceiling. Only `--system-prompt-file` (already adopted at >50KB heuristic per D7-final) remains relevant for argv-size concerns, and that is system-prompt-only. |
+| R26 | Anthropic OAuth interactive-mode tier cap rejects substantive positional-prompt invocations with `API Error: 400 "out of extra usage"` (discovered 2026-05-22, verify-phase) | High (any OAuth Max account with sysprompt ≥~2KB) | Critical | **MITIGATED by D26**: bridge types the prompt into the TUI input post-`SessionStart` instead of passing it as positional. Verified empirically that typed-injection produces the same request shape as a real user typing into the TUI and is NOT subject to the tier cap. Reference implementation `smithersai/claude-p` uses the same approach. |
 | R16 | Model-asks-itself "what tools do you have?" as a verification mechanism is non-deterministic (Round-2 A.P2#3) | High | Medium | Integration tests T1.15/T1.16 use deterministic MCP `tools/list` introspection (against the shim's advertised set) instead of model self-report. Spike T0.7 uses the same deterministic introspection. |
 | R17 | Model ignores capture-mode's "end your turn now" English instruction (Round-2 A.P3#3) | Low (modern instruction-following models) | Low (D16's repeated-call -32603 limits damage) | Phase 4 benchmark T4.8 measures capture-mode termination latency distribution across N runs; if median diverges materially from "end_turn after first call", evaluate setting `max_tokens` via inline `--settings` for capture turns. |
 | R18 | Trust-dialog scanner brittle to `claude` TUI redesigns (D25) — Anthropic shipping an Ink redesign changing the trust dialog wording/layout would stop detection; every fresh-trust spawn would hang until the documented timeout | Medium | High | Pin tested `claude` version range (T4.7); CI tests T4.9/T4.10/T4.11 exercise scanner against pinned binary; runtime warn on version skew; scanner failure surfaces as `stopReason: "error"` per constitution VII rather than silent hang. |
@@ -575,7 +625,7 @@ ALL Phase 0 OQs RESOLVED 2026-05-21. See `.spike-notes/_phase0-summary.md`.
 
 - **OQ1 (D7):** ✓ RESOLVED — `--system-prompt` works in interactive mode; sentinel verified verbatim; CLAUDE.md does NOT leak (T0.1 + T0.8).
 - **OQ7 (transcript_path):** ✓ RESOLVED per D18 + T0.12 — deterministic path `~/.claude/projects/<realpath-encoded-cwd>/<uuid>.jsonl` confirmed. `SessionStart` payload DOES include `transcript_path` in interactive mode (bonus cross-check).
-- **OQ8 (cold-start prompt size):** ✓ RESOLVED — argv ceiling ~256 KB on macOS; `--system-prompt-file <path>` is the file-form escape hatch (works in both `--print` and interactive modes, sentinel verified). Bridge will switch to file-form above 50 KB heuristic.
+- **OQ8 (cold-start prompt size):** ✓ RESOLVED (revised 2026-05-22 by D26) — argv ceiling is now MOOT for the prompt because typed-injection (D26) bypasses argv entirely. `--system-prompt-file <path>` remains the file-form escape hatch for the SYSTEM prompt above the 50 KB heuristic per D7-final. Cold-start pi history (which under D13 contributed to argv pressure) is now typed into the TUI input after `SessionStart` per D26 — no argv constraint.
 - **OQ9 (--json-schema):** ✓ RESOLVED — flag exists; works under `--print`; interactive availability unverified but non-blocking (D5 remains forced-MCP-tool-call for v1).
 - **OQ2 (fs.watch reliability):** ✓ RESOLVED — `fs.watch(parent, {recursive:true})` fires ≥5× per turn, first event @ ~400ms (T0.4).
 - **OQ3 (thinking blocks):** ✓ RESOLVED — `assistant.message.content` blocks include `{type:"thinking", thinking, signature}` when `--effort high` (or higher) is set (T0.2).

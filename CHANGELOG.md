@@ -12,6 +12,8 @@ This release replaces the `@anthropic-ai/claude-agent-sdk` dependency with a `no
 - **Runtime dependency on `claude` binary.** v1.0.0 requires `claude` on `$PATH` at first turn (tested-against range: `claude 2.1.x`). Bridge load no longer imports the SDK; missing-binary surfaces as a per-turn error rather than a load-time crash.
 - **Streaming granularity change.** Token-level streaming is replaced with per-content-block streaming sourced from `claude`'s transcript JSONL tail. Users will see text appear in sentence-ish chunks rather than per-token; the final assembled message is identical.
 - **`@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/sdk` dependencies dropped.**
+- **D26 typed-injection (added 2026-05-22 post-scenario-validation):** the pi user prompt is NOT passed as a positional CLI argument to `claude`. Instead, after `SessionStart` hook fires and Ink quiescence is detected (~80ms silent on PTY output), the bridge writes the prompt bytes to the PTY input, waits 120ms (defeats Ink's bracketed-paste burst-merging), then writes `\r` to trigger submit. Reason: positional-prompt invocations triggered `claude`'s internal headless-auto-submit code path whose request shape is rejected by Anthropic's OAuth interactive-mode tier cap (`API Error: 400 "out of extra usage"`) for substantive system prompts. Reference implementation: [`smithersai/claude-p`](https://github.com/smithersai/claude-p). Added latency: ~200ms per turn. SUPERSEDES original D13 in `openspec/changes/replace-sdk-with-pty-tui/design.md`.
+- **`--system-prompt-file` is now always used** (regardless of size). Previous 50KB heuristic dropped — typed-injection removed argv pressure, and file form keeps the request shape closer to what a real interactive user generates.
 
 **Added:**
 

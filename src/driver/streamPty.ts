@@ -239,6 +239,9 @@ export function streamClaudeViaPty(
 			});
 
 			writeBridgeLogLine(`streamSimple: spawned session=${handle.sessionId.slice(0, 8)} transcriptPath=${handle.transcriptPath}`);
+			handle.on("hook", (e: { event: string; payload: Record<string, unknown> }) => {
+				writeBridgeLogLine(`streamSimple: hook event=${e.event} session=${handle.sessionId.slice(0, 8)}`);
+			});
 			handle.on("transcript", (e: TranscriptEvent) => {
 				if (ended) return;
 				switch (e.kind) {

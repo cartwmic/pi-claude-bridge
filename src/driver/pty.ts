@@ -34,6 +34,96 @@ import { generateSocketPath } from "../mcp/ipc.js";
 // TrustDialogScanner (D25)
 // =============================================================================
 
+// =============================================================================
+// InkQuiescenceTracker (D26)
+// =============================================================================
+//
+// Used by the typed-injection sequence to wait for the `claude` Ink TUI to
+// finish its initial render (and any subsequent burst of redraws) before we
+// type the prompt into the PTY input. Ink applies bracketed-paste /
+// burst-input heuristics that can swallow our `\r` if it arrives in the same
+// output burst as the prompt bytes — the quiescence wait + later debounce
+// together defeat that.
+//
+// Track `lastOutputAtMs` updated on every `proc.onData` call. `waitForQuiescent`
+// polls every `pollMs` and returns when `now - lastOutputAtMs >= silentMs` OR
+// when `ceilingMs` elapses. Returns the wait outcome so callers can log
+// ceiling-hits as a warn-level event.
+
+export const INK_QUIESCENCE_DEFAULT_SILENT_MS = 80;
+export const INK_QUIESCENCE_DEFAULT_CEILING_MS = 2000;
+export const INK_QUIESCENCE_DEFAULT_POLL_MS = 15;
+export const INK_ENTER_DEBOUNCE_DEFAULT_MS = 120;
+export const SESSION_START_WAIT_DEFAULT_MS = 15000;
+
+export interface InkQuiescenceTrackerOptions {
+	silentMs?: number;
+	ceilingMs?: number;
+	pollMs?: number;
+	/** Injectable clock for unit tests. Defaults to `Date.now`. */
+	now?: () => number;
+	/** Injectable scheduler for unit tests. Defaults to `setTimeout`. */
+	sleep?: (ms: number) => Promise<void>;
+}
+
+export type InkQuiescenceOutcome = "quiescent" | "ceiling-hit";
+
+export class InkQuiescenceTracker {
+	private lastOutputAtMs = 0;
+	private readonly silentMs: number;
+	private readonly ceilingMs: number;
+	private readonly pollMs: number;
+	private readonly now: () => number;
+	private readonly sleep: (ms: number) => Promise<void>;
+
+	constructor(opts: InkQuiescenceTrackerOptions = {}) {
+		this.silentMs = opts.silentMs ?? INK_QUIESCENCE_DEFAULT_SILENT_MS;
+		this.ceilingMs = opts.ceilingMs ?? INK_QUIESCENCE_DEFAULT_CEILING_MS;
+		this.pollMs = opts.pollMs ?? INK_QUIESCENCE_DEFAULT_POLL_MS;
+		this.now = opts.now ?? (() => Date.now());
+		this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+	}
+
+	/** Call from `proc.onData` on every output chunk. */
+	noteOutput(): void {
+		this.lastOutputAtMs = this.now();
+	}
+
+	/** Resolve when PTY has been silent for `silentMs` OR after `ceilingMs`. */
+	async waitForQuiescent(): Promise<InkQuiescenceOutcome> {
+		const waitStart = this.now();
+		while (true) {
+			const now = this.now();
+			if (now - waitStart >= this.ceilingMs) return "ceiling-hit";
+			if (this.lastOutputAtMs !== 0 && now - this.lastOutputAtMs >= this.silentMs) {
+				return "quiescent";
+			}
+			await this.sleep(this.pollMs);
+		}
+	}
+}
+
+/**
+ * Type a prompt into a PTY input stream using the D26 two-write debounced
+ * sequence. Defeats Ink's bracketed-paste burst-merging that otherwise
+ * lands `\r` in the input buffer instead of triggering submit.
+ *
+ * Sequence:
+ *   1. `proc.write(prompt)`
+ *   2. await `debounceMs` (default 120ms)
+ *   3. `proc.write("\r")`
+ */
+export async function typePromptWithDebounce(
+	proc: { write: (s: string) => void },
+	prompt: string,
+	debounceMs: number = INK_ENTER_DEBOUNCE_DEFAULT_MS,
+	sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+	proc.write(prompt);
+	await sleep(debounceMs);
+	proc.write("\r");
+}
+
 export const TRUST_DIALOG_TRIGGERS: readonly string[] = Object.freeze([
 	"Quick safety check",
 	"Accessing workspace:",
@@ -242,7 +332,8 @@ export interface SpawnDriverOptions {
 	shimPath: string;
 	/** Resolved model id (CLI value). */
 	model: string;
-	/** User prompt — text only (positional CLI arg). */
+	/** User prompt — text only. Delivered via typed-input post-`SessionStart`
+	 * per D26 (NOT as a positional CLI arg). */
 	prompt: string;
 	/** System prompt content. */
 	systemPrompt: string;
@@ -270,6 +361,14 @@ export interface SpawnDriverOptions {
 	autoAnswerTrustDialog?: boolean;
 	/** Override the env passed to the spawned binary. Default process.env. */
 	env?: NodeJS.ProcessEnv;
+	/** D26: Ink quiescence silent window before typing. Default 80ms. */
+	inkQuiescenceMs?: number;
+	/** D26: Ink quiescence ceiling — type-anyway after this. Default 2000ms. */
+	inkMaxWaitMs?: number;
+	/** D26: Inter-write debounce between prompt bytes and `\r`. Default 120ms. */
+	inkEnterDebounceMs?: number;
+	/** D26: How long to wait for `SessionStart` hook before erroring. Default 15000ms. */
+	sessionStartWaitMs?: number;
 }
 
 /**
@@ -448,14 +547,16 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 		args.push("--session-id", sessionId);
 	}
 	args.push("--model", opts.model);
-	// --system-prompt: if large, write to file and use --system-prompt-file (T0.11)
-	if (opts.systemPrompt.length > 50_000) {
-		const spPath = join(toolsFileDir, "sysprompt.txt");
-		writeFileSync(spPath, opts.systemPrompt);
-		args.push("--system-prompt-file", spPath);
-	} else {
-		args.push("--system-prompt", opts.systemPrompt);
-	}
+	// --system-prompt: ALWAYS use --system-prompt-file regardless of size (D26-extension,
+	// 2026-05-22). Inline --system-prompt + typed-injection combined was empirically still
+	// triggering Anthropic OAuth interactive-mode tier cap (`API Error: 400 "out of extra
+	// usage"`) for pi's ~41kB sysprompt; switching to file form resolves it. The original
+	// 50KB threshold from T0.11 (escape argv ceiling) is now obsolete — typed-injection
+	// removed argv pressure already; file form is preferred unconditionally to keep the
+	// request shape closest to what a real interactive user generates.
+	const spPath = join(toolsFileDir, "sysprompt.txt");
+	writeFileSync(spPath, opts.systemPrompt);
+	args.push("--system-prompt-file", spPath);
 	args.push("--mcp-config", mcpConfig);
 	args.push("--strict-mcp-config");
 	args.push("--setting-sources", "");
@@ -474,8 +575,13 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	if (opts.mode === "capture") {
 		args.push("--disable-slash-commands");
 	}
-	// Positional prompt
-	args.push(opts.prompt);
+	// NB (D26, 2026-05-22): the pi user prompt is NOT passed as a positional
+	// CLI argument. The positional form triggers `claude`'s internal
+	// headless-auto-submit code path whose request shape is rejected by
+	// Anthropic's OAuth interactive-mode tier cap (`API Error: 400`
+	// "out of extra usage"). The prompt is typed into the TUI input post-
+	// `SessionStart` per the InkQuiescenceTracker + typePromptWithDebounce
+	// sequence below. Reference: smithersai/claude-p. See design.md D26.
 
 	// Spawn PTY.
 	const ptySpawn = await loadPtySpawn();
@@ -526,9 +632,17 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 		scanner.start();
 	}
 
-	// PTY data → scanner
+	// Ink quiescence tracker (D26) — fed by every PTY output chunk; consulted
+	// by the typed-injection sequence to know when Ink has stopped redrawing.
+	const quiescence = new InkQuiescenceTracker({
+		silentMs: opts.inkQuiescenceMs,
+		ceilingMs: opts.inkMaxWaitMs,
+	});
+
+	// PTY data → scanner + quiescence tracker
 	proc.onData((data) => {
 		if (scanner) scanner.feed(data);
+		quiescence.noteOutput();
 	});
 	proc.onExit((e) => {
 		handle.markPtyExit(e.exitCode, e.signal);
@@ -566,15 +680,51 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	router.on("captureStash", (args) => {
 		handle.emitTyped("captured-args", args);
 	});
+	// Typed-injection state (D26)
+	let sessionStartFired = false;
+	let promptTyped = false;
 	router.on("hookEvent", (e: { event: string; payload: Record<string, unknown>; resolve: (stdout: string) => void }) => {
 		handle.emitTyped("hook", { event: e.event as "SessionStart" | "Stop", payload: e.payload });
 		// Send Stop → trigger transcript settle.
 		if (e.event === "Stop") {
 			tailer.stopSettle();
 		}
+		// SessionStart → trigger typed-prompt injection (D26).
+		if (e.event === "SessionStart" && !sessionStartFired && !promptTyped) {
+			sessionStartFired = true;
+			void (async () => {
+				try {
+					await quiescence.waitForQuiescent();
+					if (handle.isAborted) return;
+					await typePromptWithDebounce(
+						proc,
+						opts.prompt,
+						opts.inkEnterDebounceMs ?? INK_ENTER_DEBOUNCE_DEFAULT_MS,
+					);
+					promptTyped = true;
+				} catch (err) {
+					handle.markErrored(
+						`typed-injection failed: ${(err as Error)?.message ?? String(err)}`,
+					);
+				}
+			})();
+		}
 		// Respond {} to all hooks; claude expects a JSON object on stdout.
 		e.resolve("{}");
 	});
+
+	// SessionStart timeout failsafe (D26). If the hook doesn't fire within
+	// `sessionStartWaitMs` of spawn, declare it a hard error; the prompt is
+	// undeliverable without it.
+	const sessionStartTimeoutMs = opts.sessionStartWaitMs ?? SESSION_START_WAIT_DEFAULT_MS;
+	setTimeout(() => {
+		if (sessionStartFired) return;
+		if (handle.isAborted) return;
+		try { proc.kill("SIGKILL"); } catch {}
+		handle.markErrored(
+			`SessionStart hook did not fire within ${sessionStartTimeoutMs}ms; prompt cannot be delivered (D26)`,
+		);
+	}, sessionStartTimeoutMs);
 
 	// Plumb pi AbortSignal
 	if (opts.signal) {

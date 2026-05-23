@@ -30,7 +30,7 @@ Regex: `/WHEN\s+[^.]*\b(error|fail|invalid|reject|deny|unauthor)/i`
 |---|---|---|---|
 | claude-tui-driver.pty-spawn-with-model-selection | D1 (Replace SDK), D2 (node-pty), D8 (Module structure: `src/driver/pty.ts`) | covered | — |
 | claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration | D11 (Defense-in-depth, 4 layers) | covered | — |
-| claude-tui-driver.prompt-injection-via-cli-positional-argument (renamed in Round-2) | D13 (CLI positional arg + size-overflow fallback), D9 (Hook set — does NOT inject prompt) | covered | — |
+| claude-tui-driver.prompt-injection-via-typed-input-post-sessionstart (renamed 2026-05-22, D26 supersedes D13) | D26 (typed-injection post-SessionStart + Ink quiescence + Enter debounce), D9 (Hook set — SessionStart now triggers prompt injection) | covered | — |
 | claude-tui-driver.cached-driver-session-is-a-hint-only | D1 implicitly preserves today's semantics; no new design section explicitly addresses cache invariants | partial | minor |
 | claude-tui-driver.abort-propagates-to-the-pty | D10 (SIGINT + grace) | covered | — |
 | claude-tui-driver.driver-never-writes-to-user-global-claude-config | Constitution III citation in Context; D1 + D3 + D9 all use inline flags only | covered | — |
@@ -189,3 +189,9 @@ All Phase 0 spikes complete. Risk table updates from empirical evidence:
 - **R18 / R19 / R20 / R21** (added Round 4-5 + 2026-05-21): all empirically addressed in Phase 0 (D25 trust scanner verified passing; node-pty postinstall +x scripted in T1.2a; skill_listing attachment confirmed present but mitigated via `--disable-slash-commands` for capture mode; transcript realpath encoding empirically verified in T0.14).
 
 All Phase 0 OQs from `design.md` are resolved (see Open Questions section). Phase 1 unblocked.
+
+## Post-Phase-4 scenario validation findings (2026-05-22)
+
+- **R26 (OAuth interactive-mode tier cap) — DISCOVERED + MITIGATED by D26.** Scenario S0 against real `claude` binary failed with `API Error: 400 "out of extra usage"` regardless of model, despite OAuth Max-plan account having available quota and `claude -p` succeeding with the same args. Bisect localised the trigger to interactive-mode invocations with positional prompt AND substantive `--system-prompt` (≥~2KB total triggers it; pi sysprompt is ~41KB so 100% of bridge spawns hit). Reference implementation `smithersai/claude-p` uses typed-injection (no positional prompt; type into TUI input post-`SessionStart`); adopted as D26. Verified: same args without positional + with typed-injection succeed. Phase 5 (added) implements the refactor.
+- **R26-derived openspec changes:** D13 SUPERSEDED by D26; `claude-tui-driver.prompt-injection-via-cli-positional-argument` renamed to `.prompt-injection-via-typed-input-post-sessionstart`; scenarios for typed-injection added to spec.md; new tasks 5.1–5.10; new plan Phase 5.
+- **Adversarial review post-mortem:** None of the 5 review rounds (`smith/codex` + `claude-bridge/opus`) flagged the OAuth interactive-mode tier-cap risk for positional prompts. The failure mode is not documented anywhere in `claude --help`, `claude.ai/settings/usage`, or Anthropic public docs; only discovered by running the actual scenario suite end-to-end against the real `claude` binary on a real OAuth account. Verifies the `pi-tui-scenario-tests` skill description ("unit tests can't catch silent corruption of the user-facing experience") — exactly this class.

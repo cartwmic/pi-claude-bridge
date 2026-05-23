@@ -364,3 +364,50 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - TODO.md
   - allow_new_files: false
+
+## Phase 5 — D26 typed-injection refactor (added 2026-05-22 after scenario validation)
+
+Discovered in verify phase: positional-prompt invocations trigger Anthropic's OAuth interactive-mode tier cap (`API Error: 400 "out of extra usage"`). Refactor adopts the typed-injection pattern from reference `smithersai/claude-p`.
+
+- [x] 5.1 Add `InkQuiescenceTracker` to `src/driver/pty.ts`: tracks `lastOutputAtMs` updated by `proc.onData`; exposes `await waitForQuiescent({ silentMs = 80, ceilingMs = 2000 })` that resolves when output silent for `silentMs` OR ceiling reached
+  - intent: feature
+  - files_allowed:
+      - src/driver/pty.ts
+- [x] 5.2 Remove `args.push(opts.prompt)` from `spawnDriver`'s arg builder in `src/driver/pty.ts`; remove the positional-prompt verification from build flow
+  - intent: feature
+  - files_allowed:
+      - src/driver/pty.ts
+- [x] 5.3 Wire SessionStart-driven typed-injection in `spawnDriver`: on first `hookEvent` for `SessionStart`, await `tracker.waitForQuiescent()`, `proc.write(opts.prompt)`, `await sleep(120)`, `proc.write("\r")`. Sequence runs ONCE per spawn (cold-start OR warm-resume; warm-resume passes only the new user message as `opts.prompt`)
+  - intent: feature
+  - files_allowed:
+      - src/driver/pty.ts
+- [x] 5.4 Add SessionStart-timeout failsafe: if SessionStart does NOT fire within `sessionStartWaitMs` (default 15000ms) after spawn, `handle.markErrored("SessionStart timeout: hook did not fire within 15000ms")` and kill the PTY
+  - intent: feature
+  - files_allowed:
+      - src/driver/pty.ts
+- [x] 5.5 Unit test `InkQuiescenceTracker`: feeds synthetic output bursts via injectable clock; asserts quiescent-fires-after-silentMs; asserts ceiling-fires-at-cap
+  - intent: test
+  - files_allowed:
+      - tests/unit-driver-pty.mjs
+- [x] 5.6 Unit test typed-injection sequence: mock pty proc with recorded writes; assert that after fake SessionStart + quiescent signal, two writes occur in order (`prompt`, `"\r"`) separated by the configured debounce
+  - intent: test
+  - files_allowed:
+      - tests/unit-driver-pty.mjs
+- [-] 5.7 Integration test: architecture verified via manual repro (small-payload S0-shape passes end-to-end); full S0 with pi production sysprompt blocked by OAuth account billing dependency (see verify.md "Open billing dependency" section); deferred to billing-resolved window
+  - intent: test
+  - files_allowed:
+      - scripts/run-scenario-s0.sh
+      - scripts/scenario-lib.sh
+- [x] 5.8 Update CHANGELOG with v1.0.0 D26 entry: explain OAuth-interactive-tier-cap discovery, typed-injection pivot, reference `smithersai/claude-p`, note ~200ms added latency
+  - intent: docs
+  - files_allowed:
+      - CHANGELOG.md
+- [x] 5.9 Add `.spike-notes/26-typed-injection.md` recording the empirical bisect, the OAuth tier-cap discovery, the reference implementation finding, and the verified timing values
+  - intent: docs
+  - files_allowed:
+      - .spike-notes/26-typed-injection.md
+  - allow_new_files: true
+- [ ] 5.10 Re-run S0 through S25 scenario suite; record PASS/FAIL per scenario in `verify.md`; document v0-streamPty-limitations-derived expected failures (multi-turn, tool-rounds, abort+supersede) as v1.1 acceptance criteria
+  - intent: test
+  - files_allowed:
+      - openspec/changes/replace-sdk-with-pty-tui/verify.md

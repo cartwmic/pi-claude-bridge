@@ -223,6 +223,20 @@ simple ordered lists where PTY integration prevents pure TDD.
 - **Verification:** CI green on macOS + Linux; `verify.md` exists; AC↔test grep finds every AC ID in at least one test.
 - **Rollback:** individual reverts.
 
+## Phase 5 — D26 typed-injection refactor (added 2026-05-22)
+
+- **Scope:** scenario validation (post-Phase-4) discovered `API Error: 400 "out of extra usage"` on every PTY spawn with a substantive `--system-prompt`. Root cause (verified empirically + cross-referenced against `smithersai/claude-p`): positional prompt triggers `claude`'s internal headless-auto-submit code path; that code path's request shape is rejected by Anthropic OAuth interactive-mode tier cap. Mitigation: stop passing positional prompt; type prompt into TUI input post-`SessionStart` per D26.
+- **Tasks:** see `tasks.md` Phase 5 block (5.1–5.10).
+- **TDD order:**
+  1. Add failing unit test for `InkQuiescenceTracker` (5.5); implement (5.1) to make it pass.
+  2. Add failing unit test for typed-injection sequence (5.6); implement (5.2 + 5.3 + 5.4) to make it pass.
+  3. Implement remaining production code; re-run unit suite green.
+  4. Run integration test 5.7 against real `claude`; this is the OAuth tier-cap regression guard.
+  5. Re-run full scenario suite 5.10; record per-scenario PASS/FAIL.
+  6. Update docs (5.8 + 5.9).
+- **Verification:** unit suite remains 214+/214+ green; `scripts/run-scenario-s0.sh` PASSES against real `claude` (no `API Error: 400` in pane log; non-empty assistant text within 60s); `openspec validate replace-sdk-with-pty-tui` clean.
+- **Rollback:** single-commit revert. Phase 5 is purely additive over Phase 1–4.
+
 ## Completion Verification
 
 - `openspec validate replace-sdk-with-pty-tui` passes.

@@ -8,7 +8,7 @@ contract between pi turns and `claude` invocations.
 
 ### Requirement: PTY spawn with model selection
 
-WHEN the bridge starts a fresh turn for a model registered under provider `claude-bridge`, THE driver SHALL spawn the `claude` binary inside a pseudoterminal session whose CLI arguments include the resolved model id, `--system-prompt <text>` carrying the system prompt for this path (verbatim on the capture path; pi-combined on the main-provider path), `--mcp-config <inline-json>` exposing only `mcp__custom-tools__*`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--session-id <pre-generated-uuid>`, `--settings <inline-json>` registering the bridge's hook handlers (`SessionStart` and `Stop` only), and the pi user prompt as the trailing positional argument.
+WHEN the bridge starts a fresh turn for a model registered under provider `claude-bridge`, THE driver SHALL spawn the `claude` binary inside a pseudoterminal session whose CLI arguments include the resolved model id, `--system-prompt <text>` (or `--system-prompt-file <path>` per the size heuristic in design D7) carrying the system prompt for this path (verbatim on the capture path; pi-combined on the main-provider path), `--mcp-config <inline-json>` exposing only `mcp__custom-tools__*`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--session-id <pre-generated-uuid>`, and `--settings <inline-json>` registering the bridge's hook handlers (`SessionStart` and `Stop` only). THE driver SHALL NOT include the pi user prompt as a positional CLI argument; the prompt is delivered by typing into the TUI input post-`SessionStart` per the "Prompt injection via typed input post-SessionStart" requirement (design D26).
 
 #### Scenario: Fresh turn spawns one PTY with bridged tool surface
 - **WHEN** `streamSimple` enters a fresh-turn path for model `claude-sonnet-4-6`
@@ -21,7 +21,7 @@ WHEN the bridge starts a fresh turn for a model registered under provider `claud
 - **AND** the spawned arguments include `--session-id <uuid>` with a pre-generated UUID the bridge will use to compute the transcript path deterministically (via `~/.claude/projects/<encoded-realpath-cwd>/<uuid>.jsonl` where the cwd is passed through `fs.realpathSync` before `/` → `-` encoding; see design D18)
 - **AND** the spawned arguments include `--settings` carrying inline hook handlers for `SessionStart` and `Stop` only (NOT `PreToolUse` — dropped per design D9/D11)
 - **AND** the spawned arguments include the disallowed-tool surface enforcing constitution principle IV
-- **AND** the pi user prompt is delivered as the trailing positional CLI argument (text content only; image content is handled per the "Image content handling in v1" requirement)
+- **AND** the spawned arguments DO NOT include the pi user prompt as a positional argument; the prompt is delivered post-spawn via typed input (see "Prompt injection via typed input post-SessionStart")
 
 #### Scenario: Transcript path is computed deterministically from the pre-generated UUID (with realpath cwd)
 - **WHEN** the driver generates a UUID `<uuid>` and spawns with `--session-id <uuid>` in lexical cwd `/var/folders/.../tmp-x` (macOS) whose `fs.realpathSync` returns `/private/var/folders/.../tmp-x`
@@ -48,23 +48,40 @@ THE driver SHALL configure every spawned `claude` invocation such that all nativ
 - **THEN** the resulting settings forbid at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `ToolSearch`, `AskUserQuestion`, `ScheduleWakeup`, `TaskOutput`, `TaskStop`, `BashOutput`, `Monitor`, and `Mcp`
 - **AND** the allow set, if expressed, includes only `mcp__custom-tools__*`
 
-### Requirement: Prompt injection via CLI positional argument
+### Requirement: Prompt injection via typed input post-SessionStart
 
-WHEN a fresh PTY is spawned for a pi user turn, THE driver SHALL deliver the pi user prompt to `claude` via the documented `[prompt]` positional CLI argument (text content) and SHALL NOT type the prompt into the PTY's stdin in interactive mode. On cold-start (no cached driver session id), the positional argument carries the flattened pi history per the bridge's existing `buildColdStartPrompt` conversion contract. On warm-resume (cached driver session id valid), the positional argument carries only the new user message. THE driver SHALL NOT write the prompt to any persistent location outside the PTY's own transcript.
+WHEN a fresh PTY is spawned for a pi user turn, THE driver SHALL deliver the pi user prompt to `claude` by typing it into the TUI input field after the `SessionStart` hook fires and after the PTY output stream has been silent for an implementation-defined quiescence window (default 80ms; ceiling 2000ms). THE driver SHALL NOT pass the prompt as a positional CLI argument. THE driver SHALL write the prompt bytes followed by a separate `\r` keystroke (with an implementation-defined inter-write debounce, default 120ms, to evade Ink's bracketed-paste burst-merging that otherwise lands `\r` in the input buffer instead of triggering submit).
 
-IF the assembled positional argument exceeds an implementation-defined size threshold (the OS argv ceiling minus a safety margin; default 200 KB), THE driver SHALL fall back to an interactive-mode-compatible bounded mechanism that Phase 0 spike T0.11 identifies (candidates: composing extra history into `--system-prompt` if size allows; splitting the prompt across `--add-dir <context-file>` references; or another path; `--input-format` is `--print`-only per `claude --help` and is NOT a viable fallback). IF Phase 0 T0.11 identifies no viable fallback, the driver SHALL push an `error` event whose `errorMessage` references the prompt-size overflow and document this v1 limitation in CHANGELOG.
+On cold-start (no cached driver session id), the typed prompt carries the flattened pi history per the bridge's existing `buildColdStartPrompt` conversion contract. On warm-resume (cached driver session id valid), the typed prompt carries only the new user message. THE driver SHALL NOT write the prompt to any persistent location outside the PTY's own transcript.
 
-#### Scenario: Cold-start replay
+**Rationale (D26):** the positional `[prompt]` form on a fresh `claude` invocation triggers an internal headless-auto-submit code path whose request shape is rejected by Anthropic's OAuth interactive-mode tier cap (`API Error: 400 "out of extra usage"`) when combined with a substantive `--system-prompt` (empirically reproducible at total system-prompt size ≥~2KB on the user's Max plan; reference: `smithersai/claude-p` adopts the same typed-injection approach). Typed input matches the request shape of a real user typing into the TUI and is accepted normally.
+
+IF the `SessionStart` hook does not fire within an implementation-defined window (default 15s), THE driver SHALL push an `error` event whose `errorMessage` references the `SessionStart` timeout and SHALL terminate the PTY. IF the quiescence window's ceiling elapses without the PTY going silent, THE driver SHALL type the prompt anyway and log a warn-level entry naming the ceiling.
+
+#### Scenario: Cold-start replay via typed input
 - **WHEN** the driver starts a turn with no cached driver session id
-- **THEN** the spawned `claude` receives the full pi history flattened to text per the bridge's existing conversion contract as the positional CLI argument
-- **AND** the prompt arrives at `claude` startup, not via a subsequent hook callback
+- **THEN** the spawned `claude` is launched with no positional prompt argument
+- **AND** after the `SessionStart` hook fires and the PTY output stream has been silent for the quiescence window, the driver writes the full pi history flattened per the bridge's conversion contract to the PTY input
+- **AND** after the inter-write debounce, the driver writes `\r` to trigger submit
+- **AND** the prompt arrives at `claude` post-render, NOT via positional CLI
 
-#### Scenario: Warm-resume injection
+#### Scenario: Warm-resume injection via typed input
 - **WHEN** the driver starts a turn with a cached driver session id matching the current pi cwd and message-hash chain
-- **THEN** the PTY is spawned with `--resume <cached-session-id>` (without `--session-id`; the resumed id is the authority)
-- **AND** the positional argument contains only the new user message
+- **THEN** the PTY is spawned with `--resume <cached-session-id>` (without `--session-id`; the resumed id is the authority) and no positional prompt
+- **AND** after `SessionStart` + quiescence, the driver types only the new user message into the TUI input followed by the debounced `\r`
 - **AND** no historical pi messages are re-sent
 - **AND** the transcript tailer computes the path as `~/.claude/projects/<encoded-cwd>/<cached-session-id>.jsonl` (the same formula as fresh spawns, per design D22) and opens the existing file tailing from end-of-file
+
+#### Scenario: SessionStart hook fails to fire within window
+- **IF** the `SessionStart` hook does not fire within the SessionStart-wait window (default 15s) after PTY spawn
+- **THEN** the driver pushes an `error` event whose `errorMessage` names `SessionStart` timeout
+- **AND** the PTY is killed
+- **AND** no prompt is typed
+
+#### Scenario: Quiescence ceiling reached without silence
+- **IF** the PTY output stream remains continuously active and never goes silent for the quiescence window before the ceiling elapses
+- **THEN** the driver types the prompt anyway after the ceiling
+- **AND** a warn-level log entry records the ceiling-hit
 
 ### Requirement: Cached driver session is a hint only
 
@@ -139,11 +156,11 @@ IF the spawned `claude` process exits before the `Stop` hook fires, OR IF the PT
 
 ### Requirement: Image content handling in v1
 
-IF a pi turn's `Context.messages` contains image content blocks intended for the main-provider path, THEN the driver SHALL strip the image blocks from the positional CLI argument, SHALL emit a `warn`-level log entry naming the dropped block count, AND SHALL proceed with text-only content. IF a capture-shape `complete()` call's prompt contains image content blocks, THEN the driver SHALL reject the call pre-spawn with `stopReason: "error"` and an `errorMessage` naming the v1 limitation (interactive `claude` has no documented programmatic mechanism for inline image injection).
+IF a pi turn's `Context.messages` contains image content blocks intended for the main-provider path, THEN the driver SHALL strip the image blocks from the typed prompt, SHALL emit a `warn`-level log entry naming the dropped block count, AND SHALL proceed with text-only content. IF a capture-shape `complete()` call's prompt contains image content blocks, THEN the driver SHALL reject the call pre-spawn with `stopReason: "error"` and an `errorMessage` naming the v1 limitation (interactive `claude` has no documented programmatic mechanism for inline image injection).
 
 #### Scenario: Main-provider turn with image content
 - **WHEN** `complete()` is invoked on the main-provider path with `context.messages` containing an image block
-- **THEN** the bridge strips the image block from the positional argument before spawning `claude`
+- **THEN** the bridge strips the image block from the typed prompt before spawning `claude`
 - **AND** a warn-level log entry records the dropped block count
 - **AND** the turn proceeds with text-only content
 
@@ -208,7 +225,7 @@ WHEN pi signals abort while a turn is mid-tool-round (an MCP tool call is parked
 |---|---|---|---|---|---|
 | claude-tui-driver.pty-spawn-with-model-selection | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.native-tool-emission-is-blocked-at-driver-configuration | [ ] | [ ] | [ ] | [ ] | [ ] |
-| claude-tui-driver.prompt-injection-via-cli-positional-argument | [ ] | [ ] | [ ] | [ ] | [ ] |
+| claude-tui-driver.prompt-injection-via-typed-input-post-sessionstart | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.cached-driver-session-is-a-hint-only | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.abort-propagates-to-the-pty | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-tui-driver.driver-never-writes-to-user-global-claude-config | [ ] | [ ] | [ ] | [ ] | [ ] |

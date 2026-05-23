@@ -82,8 +82,11 @@ describe("spawnDriver — CLI argument assembly", () => {
 		assert.ok(args.includes("--settings"));
 		assert.ok(args.includes("--model"));
 		assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-4-6");
-		// Positional prompt is last
-		assert.equal(args[args.length - 1], "hi");
+		// D26: prompt is NOT passed as a positional arg — it is typed into the
+		// TUI input post-`SessionStart`. Asserting absence guards the regression.
+		assert.ok(!args.includes("hi"), "prompt must NOT appear as positional argv (D26)");
+		// Last arg should be a flag-pair value, never the prompt body.
+		assert.notEqual(args[args.length - 1], "hi");
 		await h.router.close();
 	});
 
@@ -310,6 +313,132 @@ describe("spawnDriver — unexpected PTY exit error path", () => {
 		await new Promise((r) => setTimeout(r, 700));
 		assert.equal(dones[0].reason, "error");
 		assert.match(dones[0].errorMessage, /exitCode=1/);
+		await h.router.close();
+	});
+});
+
+// ===========================================================================
+// D26: InkQuiescenceTracker + typed-injection sequence (T5.5 + T5.6)
+// ===========================================================================
+
+import { InkQuiescenceTracker, typePromptWithDebounce } from "../src/driver/pty.js";
+
+describe("InkQuiescenceTracker (D26)", () => {
+	it("resolves 'quiescent' after silentMs has elapsed since last output", async () => {
+		let clock = 1000;
+		const sleeps = [];
+		const tracker = new InkQuiescenceTracker({
+			silentMs: 80,
+			ceilingMs: 2000,
+			pollMs: 15,
+			now: () => clock,
+			sleep: async (ms) => { sleeps.push(ms); clock += ms; },
+		});
+		// Simulate a burst of output ending at t=1000
+		tracker.noteOutput();
+		const outcome = await tracker.waitForQuiescent();
+		assert.equal(outcome, "quiescent");
+		// First poll: clock advances by 15ms (1015) — diff=15 < 80, keep waiting.
+		// Continues until clock - lastOutput >= 80, i.e. after ~6 polls (90ms).
+		assert.ok(sleeps.length >= 5, `expected >=5 polls, got ${sleeps.length}`);
+	});
+
+	it("resolves 'ceiling-hit' if output never stops within ceilingMs", async () => {
+		let clock = 0;
+		const tracker = new InkQuiescenceTracker({
+			silentMs: 80,
+			ceilingMs: 200,
+			pollMs: 15,
+			now: () => clock,
+			sleep: async (ms) => {
+				clock += ms;
+				// Simulate continuous output: every poll, refresh lastOutput.
+				tracker.noteOutput();
+			},
+		});
+		tracker.noteOutput();
+		const outcome = await tracker.waitForQuiescent();
+		assert.equal(outcome, "ceiling-hit");
+	});
+
+	it("treats lastOutputAtMs==0 as 'no output yet' (does not insta-resolve)", async () => {
+		let clock = 0;
+		const sleeps = [];
+		const tracker = new InkQuiescenceTracker({
+			silentMs: 80,
+			ceilingMs: 200,
+			pollMs: 15,
+			now: () => clock,
+			sleep: async (ms) => { sleeps.push(ms); clock += ms; },
+		});
+		// Never call noteOutput.
+		const outcome = await tracker.waitForQuiescent();
+		// Should hit ceiling, not "quiescent at t=0".
+		assert.equal(outcome, "ceiling-hit");
+	});
+});
+
+describe("typePromptWithDebounce (D26)", () => {
+	it("writes prompt, awaits debounce, then writes Enter", async () => {
+		const writes = [];
+		const sleepCalls = [];
+		const proc = { write: (s) => writes.push({ s, t: Date.now() }) };
+		const fakeSleep = async (ms) => { sleepCalls.push(ms); };
+		await typePromptWithDebounce(proc, "hello world", 120, fakeSleep);
+		assert.equal(writes.length, 2);
+		assert.equal(writes[0].s, "hello world");
+		assert.equal(writes[1].s, "\r");
+		assert.deepEqual(sleepCalls, [120]);
+	});
+
+	it("uses default 120ms debounce when not specified", async () => {
+		const writes = [];
+		const sleepCalls = [];
+		await typePromptWithDebounce(
+			{ write: (s) => writes.push(s) },
+			"x",
+			undefined,
+			async (ms) => { sleepCalls.push(ms); },
+		);
+		assert.deepEqual(sleepCalls, [120]);
+		assert.deepEqual(writes, ["x", "\r"]);
+	});
+
+	it("writes order is strictly prompt before Enter (no interleaving)", async () => {
+		const order = [];
+		const proc = { write: (s) => order.push(s) };
+		await typePromptWithDebounce(proc, "abc", 5, async (ms) => {
+			// During the debounce window, no writes should have happened beyond
+			// the first.
+			assert.deepEqual(order, ["abc"]);
+		});
+		assert.deepEqual(order, ["abc", "\r"]);
+	});
+});
+
+describe("spawnDriver — typed-injection on SessionStart (D26)", () => {
+	before(() => installMockPty());
+	after(() => clearMockProcs());
+
+	it("does NOT type the prompt before SessionStart hook fires", async () => {
+		clearMockProcs();
+		const cwd = makeTempCwd();
+		const h = await spawnDriver({
+			shimPath: "/abs/shim.js",
+			model: "claude-sonnet-4-6",
+			prompt: "hello-D26",
+			systemPrompt: "x",
+			cwd,
+			mode: "main",
+			tools: [],
+			autoAnswerTrustDialog: false,
+			sessionStartWaitMs: 60_000, // don't trip the failsafe during test
+		});
+		// Give the spawn a moment to settle.
+		await new Promise((r) => setTimeout(r, 50));
+		const writes = mockProcs[0].writes;
+		const wroteHello = writes.some((w) => typeof w === "string" && w.includes("hello-D26"));
+		assert.ok(!wroteHello, "prompt must not be typed before SessionStart");
 		await h.router.close();
 	});
 });

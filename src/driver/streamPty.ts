@@ -306,6 +306,37 @@ function correlateParked(session: ActiveSession): void {
 
 let activeSession: ActiveSession | null = null;
 
+// 7.2 history-divergence detection. Each completed turn snapshots a hash
+// of pi's message history. The next fresh turn compares: if any common-
+// prefix position differs OR current is shorter than prior, pi has
+// /forked, /compacted, /tree-navigated, /reloaded, etc. — the SDK's
+// JSONL transcript no longer matches and we MUST cold-start to avoid
+// the model reading stale content.
+let lastSentMessageHashes: string[] | null = null;
+
+function hashMessage(m: any): string {
+	const c = typeof m.content === "string" ? m.content : flattenMessageText(m.content);
+	const head = c.slice(0, 96);
+	const tail = c.slice(-32);
+	return `${m.role}:${c.length}:${head}|${tail}`;
+}
+
+function computeMessageHashes(messages: Context["messages"]): string[] {
+	return messages.map(hashMessage);
+}
+
+function detectHistoryDivergence(
+	prior: string[] | null,
+	current: string[],
+): boolean {
+	if (!prior || prior.length === 0) return false;
+	const commonLen = Math.min(prior.length, current.length);
+	for (let i = 0; i < commonLen; i++) {
+		if (prior[i] !== current[i]) return true;
+	}
+	return current.length < prior.length;
+}
+
 // D22 warm-resume cache. After a turn completes successfully (Stop hook +
 // settle), we cache the CC session_id + cwd. The next fresh user turn
 // (same cwd, no divergence) spawns with `--resume <sid>` so CC's MCP shim
@@ -319,6 +350,7 @@ function clearWarmResumeCache(reason: string): void {
 	writeBridgeLogLine(`clearSession: dropping cached sid=${cachedSessionId.slice(0, 8)} (${reason})`);
 	cachedSessionId = null;
 	cachedSessionCwd = null;
+	lastSentMessageHashes = null;
 }
 
 // --- Per-turn stream helpers (operate on `activeSession`) ---------------
@@ -537,6 +569,20 @@ function startFreshTurn(
 	extras: StreamPtyExtras,
 	stream: AssistantMessageEventStream,
 ): void {
+	// 7.2 history-divergence check: pi has /fork-ed, /compact-ed,
+	// /tree-navigated, /reload-ed, or /new-ed if any prior-position
+	// content changed or history shrank. Drop cache + cold-start so the
+	// model doesn't see stale content from the previous SDK session.
+	const newHashes = computeMessageHashes(context.messages);
+	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
+	if (diverged) {
+		writeBridgeLogLine(
+			`clearSession: history divergence detected (priorLen=${lastSentMessageHashes?.length ?? 0} newLen=${newHashes.length}); cold-starting`,
+		);
+		clearWarmResumeCache("divergence");
+	}
+	lastSentMessageHashes = newHashes;
+
 	// D22 warm-resume eligibility: cached sid + same cwd + no model change.
 	// On warm-resume CC reads the existing JSONL; we only send the LAST
 	// user message (CC has prior turns already). On cold-start we send the
@@ -880,4 +926,5 @@ export function __resetActiveSessionForTests(): void {
 	activeSession = null;
 	cachedSessionId = null;
 	cachedSessionCwd = null;
+	lastSentMessageHashes = null;
 }

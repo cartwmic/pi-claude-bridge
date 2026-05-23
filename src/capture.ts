@@ -15,9 +15,17 @@
 //   - ctx.systemPrompt forwarded VERBATIM (constitution V).
 
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { appendFileSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+function writeCaptureLog(msg: string): void {
+	const path = process.env.CLAUDE_BRIDGE_DEBUG_PATH;
+	if (!path) return;
+	try {
+		appendFileSync(path, JSON.stringify({ level: 30, time: new Date().toISOString(), msg }) + "\n");
+	} catch {}
+}
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
@@ -119,6 +127,7 @@ export function runCaptureQueryPty(
 	(async () => {
 		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "pi-bridge-capture-")));
 		const captureName = `mcp__custom-tools__${opts.captureTool.name}`;
+		writeCaptureLog(`runCaptureQuery: start tool=${opts.captureTool.name} cwd=${cwd}`);
 		try {
 			const handle = await spawnDriver({
 				shimPath: resolveShimPath(),
@@ -148,6 +157,7 @@ export function runCaptureQueryPty(
 
 			const done = await handle.done;
 			if (done.reason === "aborted") {
+				writeCaptureLog(`runCaptureQuery: done reason=aborted tool=${opts.captureTool.name}`);
 				if (ended) return;
 				ended = true;
 				ensureStarted();
@@ -156,12 +166,14 @@ export function runCaptureQueryPty(
 				return;
 			}
 			if (done.reason === "error") {
+				writeCaptureLog(`runCaptureQuery: done reason=error msg=${done.errorMessage}`);
 				endError(`capture path driver error: ${done.errorMessage}`);
 				return;
 			}
 			// done === stop-settled: harvest capturedArgs
 			const captured = handle.router.capturedArgs;
 			if (captured === undefined) {
+				writeCaptureLog(`runCaptureQuery: done reason=no-capture tool=${opts.captureTool.name}`);
 				endError(`output-capture: model emitted no valid call to capture tool '${opts.captureTool.name}'`);
 				return;
 			}
@@ -173,12 +185,14 @@ export function runCaptureQueryPty(
 				name: opts.captureTool.name,
 				arguments: captured as Record<string, unknown>,
 			} as any];
+			writeCaptureLog(`runCaptureQuery: done reason=stop-settled tool=${opts.captureTool.name} argsLen=${JSON.stringify(captured).length}`);
 			if (ended) return;
 			ended = true;
 			ensureStarted();
 			stream.push({ type: "done", reason: "toolUse", message: out } as any);
 			stream.end();
 		} catch (err) {
+			writeCaptureLog(`runCaptureQuery: done reason=spawn-error msg=${(err as Error).message}`);
 			endError(`capture path spawn error: ${(err as Error).message}`);
 		}
 	})();

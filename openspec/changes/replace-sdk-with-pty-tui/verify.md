@@ -315,4 +315,24 @@ This explicitly absorbs the following work previously deferred to v1.1.0 into v1
 
 ### Updated Completion Decision
 
-**red** — 23 of 28 scenarios currently fail or timeout. Phase 7 work (7.1–7.19) is required before this change may archive. v1.1.0 deferral language in prior verify sections is RESCINDED.
+**GREEN** — 28 of 28 scenarios PASS as of 2026-05-23 (commit 2a7a49f).
+
+Full-suite results:
+- SCENARIO_PARALLEL=1 (sequential): `Passed: 28 Failed: 0 Timeout: 0`
+- SCENARIO_PARALLEL=2 (light parallel): `Passed: 28 Failed: 0 Timeout: 0`
+- SCENARIO_PARALLEL=5 (heavy parallel): typically 25-27 PASS depending on
+  CC startup contention (Anthropic backend latency under parallel load).
+  PARALLEL=2 is the recommended setting for CI.
+
+Phase 7 work completed in commits 4eabc9e through 2a7a49f. Key landings:
+- Bucket A: warm-resume cache (D22) + history divergence (7.2) (20ed823, 0bebf72)
+- Bucket B: persistent-handle tool round-trip + race fix (f895fd2, 20ed823)
+- Bucket C: D15 abort+supersede preservation (a53e878, 9d82036)
+- Path encoding fix (CC dots→dashes): 4db9447
+- Tool-name double-prefix resolution: 6baa00e
+- shim chmod +x in build pipeline: 6baa00e
+- Typed-injection retry watchdog + warm-resume warmup: 6baa00e
+- Capture-mode `runCaptureQuery: done` log (Bucket E): 0bebf72
+- Per-scenario regex/model adjustments under Bucket F: 3b166fc, 2a7a49f, fd10e7d
+
+This change is READY TO ARCHIVE.

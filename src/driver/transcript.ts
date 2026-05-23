@@ -120,7 +120,9 @@ export class TranscriptTailer extends EventEmitter {
 		super();
 		this.settleMs = opts.settleMs ?? 250;
 		this.pollIntervalMs = opts.pollIntervalMs ?? 100;
-		this.creationTimeoutMs = opts.creationTimeoutMs ?? 30_000;
+		// D27: Opus with large pi-typed-as-user-message context can take >30s
+	// before flushing its first transcript line. Default bumped to 90s.
+	this.creationTimeoutMs = opts.creationTimeoutMs ?? 90_000;
 		this.setTimerFn = opts.setTimer ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
 		this.clearTimerFn = opts.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
 	}

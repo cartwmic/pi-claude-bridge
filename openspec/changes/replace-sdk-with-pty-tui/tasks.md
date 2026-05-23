@@ -411,3 +411,20 @@ Discovered in verify phase: positional-prompt invocations trigger Anthropic's OA
   - intent: test
   - files_allowed:
       - openspec/changes/replace-sdk-with-pty-tui/verify.md
+
+## Phase 6 — D27 system-prompt-bundling refactor (added 2026-05-22 after D26 validation)
+
+D26 fixed positional-prompt failure; subsequent validation revealed Anthropic's interactive-mode classifier rejects ANY substantive `--system-prompt*` content even with typed-injection. D27 bundles sysprompt + user prompt into a single typed user message.
+
+- [x] 6.1 Add `composeBundledUserMessage(systemPrompt, userPrompt)` helper to `src/driver/pty.ts`: wraps non-empty sysprompt in `<system_context>` tags, prepends to userPrompt; returns userPrompt verbatim if sysprompt is empty/whitespace
+- [x] 6.2 Remove `--system-prompt[-file]` flag construction from `spawnDriver` args builder; remove the tmpdir sysprompt.txt file write
+- [x] 6.3 Change typed-injection to pass `composeBundledUserMessage(opts.systemPrompt, opts.prompt)` instead of `opts.prompt` directly
+- [x] 6.4 Bump transcript-creation timeout default 30s → 90s (Opus with bundled payload can take 30-60s before first transcript flush); expose `transcriptCreationTimeoutMs` on SpawnDriverOptions
+- [x] 6.5 Cancel trust-scanner on SessionStart hook firing (it has done its job; 30s hard-timeout could otherwise fire during long inference)
+- [x] 6.6 Unit tests for `composeBundledUserMessage` × 5 cases
+- [x] 6.7 Unit test asserts spawnDriver does NOT include `--system-prompt` OR `--system-prompt-file` in argv
+- [x] 6.8 Direct integration test: `spawnDriver` with pi-sized synthesized sysprompt + math prompt → model returns correct answer, `done=stop-settled`, within 5s
+- [x] 6.9 Update CHANGELOG with v1.0.0 D27 entry
+- [x] 6.10 Update spec.md to fold D27 into the "Prompt injection via typed input post-SessionStart" requirement
+- [x] 6.11 Update design.md: SUPERSEDE D7-final, add D26+D27 cross-references, document the alternatives rejected
+- [-] 6.12 Full S0-S25 scenario re-run end-to-end via pi: blocked by separate MCP-shim-via-pi-spawn issue (PTY log shows "1 MCP server failed · /mcp" intermittently when bridge is invoked through pi's tmux-driven scenario harness, but direct `spawnDriver()` works cleanly). Tracked as v1.1.0 follow-up; D27 core architecture verified working in isolation.

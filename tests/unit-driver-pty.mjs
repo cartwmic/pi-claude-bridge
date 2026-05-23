@@ -114,7 +114,7 @@ describe("spawnDriver — CLI argument assembly", () => {
 		await h.router.close();
 	});
 
-	it("switches to --system-prompt-file for large prompts (>50KB)", async () => {
+	it("D27: does NOT pass --system-prompt or --system-prompt-file at all (content goes in typed user message instead)", async () => {
 		clearMockProcs();
 		const cwd = makeTempCwd();
 		const big = "x".repeat(60_000);
@@ -129,8 +129,8 @@ describe("spawnDriver — CLI argument assembly", () => {
 			autoAnswerTrustDialog: false,
 		});
 		const args = mockProcs[0].spawnArgs;
-		assert.ok(args.includes("--system-prompt-file"));
-		assert.ok(!args.includes("--system-prompt"));
+		assert.ok(!args.includes("--system-prompt"), "--system-prompt must not be in argv (D27)");
+		assert.ok(!args.includes("--system-prompt-file"), "--system-prompt-file must not be in argv (D27)");
 		await h.router.close();
 	});
 
@@ -440,5 +440,38 @@ describe("spawnDriver — typed-injection on SessionStart (D26)", () => {
 		const wroteHello = writes.some((w) => typeof w === "string" && w.includes("hello-D26"));
 		assert.ok(!wroteHello, "prompt must not be typed before SessionStart");
 		await h.router.close();
+	});
+});
+
+// ===========================================================================
+// D27: composeBundledUserMessage (system prompt + user prompt → single typed message)
+// ===========================================================================
+
+import { composeBundledUserMessage } from "../src/driver/pty.js";
+
+describe("composeBundledUserMessage (D27)", () => {
+	it("wraps non-empty systemPrompt in <system_context> tags before userPrompt", () => {
+		const out = composeBundledUserMessage("You are pi.", "What is 2+2?");
+		assert.equal(out, "<system_context>\nYou are pi.\n</system_context>\n\nWhat is 2+2?");
+	});
+
+	it("returns userPrompt verbatim when systemPrompt is empty", () => {
+		assert.equal(composeBundledUserMessage("", "hi"), "hi");
+	});
+
+	it("returns userPrompt verbatim when systemPrompt is whitespace only", () => {
+		assert.equal(composeBundledUserMessage("   \n\t  ", "hi"), "hi");
+	});
+
+	it("preserves the exact systemPrompt content byte-for-byte (constitution V on capture path)", () => {
+		const sp = "You are a verbatim system.\nLine 2.\n\tIndented.";
+		const out = composeBundledUserMessage(sp, "ok");
+		assert.ok(out.includes(sp), "system prompt must appear verbatim inside the wrapper");
+	});
+
+	it("preserves the exact userPrompt content byte-for-byte", () => {
+		const up = "do thing\nwith newline\nand more";
+		const out = composeBundledUserMessage("sp", up);
+		assert.ok(out.endsWith(up), "user prompt must be the trailing segment");
 	});
 });

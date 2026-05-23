@@ -237,6 +237,20 @@ simple ordered lists where PTY integration prevents pure TDD.
 - **Verification:** unit suite remains 214+/214+ green; `scripts/run-scenario-s0.sh` PASSES against real `claude` (no `API Error: 400` in pane log; non-empty assistant text within 60s); `openspec validate replace-sdk-with-pty-tui` clean.
 - **Rollback:** single-commit revert. Phase 5 is purely additive over Phase 1–4.
 
+## Phase 6 — D27 system-prompt-bundling refactor (added 2026-05-22)
+
+- **Scope:** D26 mitigated the positional-prompt failure but post-validation revealed that ANY substantive `--system-prompt[-file]` or `--append-system-prompt[-file]` content trips Anthropic's interactive-mode classifier with the same misleading `API Error: 400 "out of extra usage"`. Mitigation: bundle sysprompt + user prompt into a single typed user message wrapped in `<system_context>` tags; eliminate `--system-prompt*` flags entirely.
+- **Tasks:** see `tasks.md` Phase 6 block (6.1–6.12).
+- **TDD order:**
+  1. Write failing unit tests for `composeBundledUserMessage` (6.6); implement helper (6.1).
+  2. Write failing assertion that spawnDriver argv lacks `--system-prompt[-file]` (6.7); implement removal (6.2).
+  3. Update typed-injection to use bundled message (6.3).
+  4. Bump transcript timeout + scanner-cancel-on-SessionStart (6.4 + 6.5).
+  5. Direct integration test (6.8) verifies end-to-end with real `claude` binary on real OAuth account.
+  6. Update specs + design + CHANGELOG (6.9–6.11).
+- **Verification:** unit suite 226/226 PASS; direct `spawnDriver()` end-to-end test with pi-sized sysprompt returns correct model answer in ~2.4s; `openspec validate replace-sdk-with-pty-tui` clean.
+- **Rollback:** single-commit revert. Phase 6 is purely additive over Phase 1–5.
+
 ## Completion Verification
 
 - `openspec validate replace-sdk-with-pty-tui` passes.

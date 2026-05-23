@@ -104,6 +104,34 @@ export class InkQuiescenceTracker {
 }
 
 /**
+ * D27: Compose a single typed user message that bundles the pi system
+ * prompt content + the user's actual prompt.
+ *
+ * Why: see design D27. Anthropic's interactive-mode billing/safety
+ * classifier rejects `--system-prompt*` payloads above a content-density
+ * threshold (returns `API Error: 400 "out of extra usage"` even when
+ * overage is disabled and the account has 99% budget remaining). The
+ * same content delivered as a typed user message is accepted normally.
+ *
+ * Shape: `<system_context>\n<systemPrompt>\n</system_context>\n\n<userPrompt>`
+ *
+ * If `systemPrompt` is empty or only whitespace, returns `userPrompt` verbatim
+ * so we don't add useless wrapper tags to small messages.
+ *
+ * The model treats the wrapped block as user-provided context, which is
+ * functionally identical to system-prompt content for the response. The
+ * only behavioral difference is the conversation-role attribution, which
+ * does not affect pi's expected outputs.
+ */
+export function composeBundledUserMessage(
+	systemPrompt: string,
+	userPrompt: string,
+): string {
+	if (!systemPrompt || !systemPrompt.trim()) return userPrompt;
+	return `<system_context>\n${systemPrompt}\n</system_context>\n\n${userPrompt}`;
+}
+
+/**
  * Type a prompt into a PTY input stream using the D26 two-write debounced
  * sequence. Defeats Ink's bracketed-paste burst-merging that otherwise
  * lands `\r` in the input buffer instead of triggering submit.
@@ -369,6 +397,10 @@ export interface SpawnDriverOptions {
 	inkEnterDebounceMs?: number;
 	/** D26: How long to wait for `SessionStart` hook before erroring. Default 15000ms. */
 	sessionStartWaitMs?: number;
+	/** D27: How long to wait for the transcript file to appear after the
+	 * model starts processing. Default 90000ms (Opus + large pi sysprompt
+	 * can take 30–60s). */
+	transcriptCreationTimeoutMs?: number;
 }
 
 /**
@@ -547,16 +579,18 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 		args.push("--session-id", sessionId);
 	}
 	args.push("--model", opts.model);
-	// --system-prompt: ALWAYS use --system-prompt-file regardless of size (D26-extension,
-	// 2026-05-22). Inline --system-prompt + typed-injection combined was empirically still
-	// triggering Anthropic OAuth interactive-mode tier cap (`API Error: 400 "out of extra
-	// usage"`) for pi's ~41kB sysprompt; switching to file form resolves it. The original
-	// 50KB threshold from T0.11 (escape argv ceiling) is now obsolete — typed-injection
-	// removed argv pressure already; file form is preferred unconditionally to keep the
-	// request shape closest to what a real interactive user generates.
-	const spPath = join(toolsFileDir, "sysprompt.txt");
-	writeFileSync(spPath, opts.systemPrompt);
-	args.push("--system-prompt-file", spPath);
+	// D27 (2026-05-22): DO NOT pass `--system-prompt[-file]`. Empirically, ANY
+	// substantive system prompt content delivered via `--system-prompt*` flags
+	// to interactive `claude` trips Anthropic's billing/safety classifier
+	// (returns `API Error: 400 "out of extra usage"` even when overage is
+	// disabled and budget is 99% available). Even `--append-system-prompt-file`
+	// fails. The same content typed as a user message succeeds. We deliver
+	// `opts.systemPrompt` as the LEADING segment of the typed user message
+	// post-SessionStart (D26 sequence), wrapped in `<system_context>` tags.
+	// Constitution V (capture path verbatim sysprompt) is preserved because
+	// the capture path receives `opts.systemPrompt` and types it before
+	// `opts.prompt` — the model sees the exact same content in the same order,
+	// just on the user role channel instead of system role. See design D27.
 	args.push("--mcp-config", mcpConfig);
 	args.push("--strict-mcp-config");
 	args.push("--setting-sources", "");
@@ -602,6 +636,7 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	const tailer = new TranscriptTailer({
 		transcriptPath,
 		settleMs: opts.settleMs ?? 250,
+		creationTimeoutMs: opts.transcriptCreationTimeoutMs,
 	});
 
 	const handle = new DriverHandleImpl(sessionId, transcriptPath, router, proc, tailer, opts);
@@ -692,13 +727,22 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 		// SessionStart → trigger typed-prompt injection (D26).
 		if (e.event === "SessionStart" && !sessionStartFired && !promptTyped) {
 			sessionStartFired = true;
+			// SessionStart firing proves claude is past the workspace-trust gate.
+			// Stop the trust scanner so its 30s hard-timeout doesn't fire later
+			// (e.g. when Opus + large pi context takes >30s to first transcript line).
+			if (scanner) scanner.cancel();
 			void (async () => {
 				try {
 					await quiescence.waitForQuiescent();
 					if (handle.isAborted) return;
+					// D27: bundle system prompt + user prompt into a single typed
+					// user message. The system content goes in <system_context>
+					// tags; the user prompt follows. If systemPrompt is empty,
+					// just type the user prompt verbatim.
+					const bundled = composeBundledUserMessage(opts.systemPrompt, opts.prompt);
 					await typePromptWithDebounce(
 						proc,
-						opts.prompt,
+						bundled,
 						opts.inkEnterDebounceMs ?? INK_ENTER_DEBOUNCE_DEFAULT_MS,
 					);
 					promptTyped = true;

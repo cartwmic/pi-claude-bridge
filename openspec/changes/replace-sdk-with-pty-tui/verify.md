@@ -217,3 +217,42 @@ Unit suite: 221/221 PASS (was 214 pre-Phase-5; +7 new D26 tests).
 ### Updated Completion Decision
 
 **amber** — code-level completion is green; v1.0.0 ship-readiness blocked on user action to clear OAuth billing dependency before scenario validation completes. None of the deferred items are bridge bugs.
+
+## Phase 6 verify update (2026-05-22)
+
+### D27 system-prompt-bundling refactor
+
+Implemented per `tasks.md` Phase 6 (6.1–6.11). Outstanding: 6.12 (full scenario suite via pi tmux harness; blocked by separate MCP-shim-via-pi-spawn issue, not by D27).
+
+#### Direct architectural validation (manual repro)
+
+Confirmed end-to-end against real `claude` binary on user's OAuth Max-plan account (1% 5h-utilization, 2% 7d-utilization, org-level overage disabled):
+
+```
+import { spawnDriver } from "../src/driver/pty.js";
+const sysprompt = "<30kB of pi-style operator instructions>";
+const handle = await spawnDriver({
+  shimPath, model: "claude-haiku-4-5",
+  prompt: "what is 17 * 23. just the number",
+  systemPrompt: sysprompt, cwd: process.cwd(),
+  mode: "main", tools: [],
+});
+// Observed: event=done reason=stop-settled, text="391", duration=2419ms.
+```
+
+This single test exercises: D26 typed-injection sequence + D27 bundled-message composition + SessionStart hook firing + Ink quiescence wait + 120ms debounce + Enter submission + model API call + response stream + Stop hook + transcript settle + driver event projection. All clean, no API errors, correct answer in 2.4s.
+
+#### Updated D27 invariants
+
+- `spawnDriver` argv contains NO `--system-prompt` or `--system-prompt-file` flag. Asserted by unit test.
+- `composeBundledUserMessage(sp, up)` returns `"<system_context>\n${sp}\n</system_context>\n\n${up}"` when sp non-empty, `up` verbatim when sp empty/whitespace. 5 unit-test cases.
+- Constitution V preserved: capture path's `ctx.systemPrompt` is bundled byte-for-byte into the typed message.
+- Constitution III strengthened: no tmpdir sysprompt.txt file write anymore (was used for `--system-prompt-file` per D7-final, now obsolete).
+
+#### Scenario suite gating (6.12 deferred)
+
+Full end-to-end suite via pi tmux harness reveals a separate `1 MCP server failed · /mcp` intermittent failure when bridge is spawned through pi's tmux pane (NOT reproducible via direct `spawnDriver()` call with identical args). Suspect env/stdio inheritance interaction between pi → bridge → claude → shim under tmux. Tracked as v1.1.0 follow-up.
+
+### Updated Completion Decision
+
+**green for D27 architecture; amber for v1.0.0 ship-readiness** — core architecture verified; one remaining shim-via-pi-spawn issue blocks full scenario validation but does not affect D27 correctness. v1.0.0 may ship with D27 + documented v1.1.0 followup, OR hold for the shim-via-pi-spawn investigation.

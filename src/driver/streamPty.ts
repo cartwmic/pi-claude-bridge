@@ -472,11 +472,16 @@ export function streamClaudeViaPty(
 		const stale = activeSession;
 		const totalPending = stale.pendingEntries.size + stale.pendingParkedEntries.length;
 		writeBridgeLogLine(
-			`streamSimple: superseding active frame (pendingEntries=${totalPending}), interrupting`,
+			`streamSimple: superseding active frame (pendingEntries=${totalPending}, wasAborted=${stale.wasAborted}), interrupting`,
 		);
-		// Supersede breaks transcript coherence (the in-flight turn never
-		// completed cleanly); drop warm-resume cache so next turn cold-starts.
-		clearWarmResumeCache("supersede");
+		// Supersede after a normal mid-turn handover (no abort) means the
+		// in-flight turn never completed cleanly — drop warm-resume cache.
+		// Supersede AFTER an abort (D15 path) preserves the cache that was
+		// populated by the abort handler: CC's JSONL contains the partial
+		// turn up to abort, and warm-resume from this sid is correct.
+		if (!stale.wasAborted) {
+			clearWarmResumeCache("supersede");
+		}
 		// Drain BOTH correlated and uncorrelated parked entries so CC's MCP
 		// shim unblocks. Uncorrelated entries have no toolUseId yet (no
 		// matching tool-use transcript event) — synthesize one for the log.

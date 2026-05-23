@@ -128,8 +128,10 @@ export class TranscriptTailer extends EventEmitter {
 		this.settleMs = opts.settleMs ?? 250;
 		this.pollIntervalMs = opts.pollIntervalMs ?? 100;
 		// D27: Opus with large pi-typed-as-user-message context can take >30s
-	// before flushing its first transcript line. Default bumped to 90s.
-	this.creationTimeoutMs = opts.creationTimeoutMs ?? 90_000;
+	// before flushing its first transcript line. Empirically some haiku
+	// turns also take 60–90s; first-turn-after-pi-boot is worst case. Default
+	// bumped to 150s to absorb variance without false-positive timeouts.
+	this.creationTimeoutMs = opts.creationTimeoutMs ?? 150_000;
 		this.startFromEOF = opts.startFromEOF ?? false;
 		this.setTimerFn = opts.setTimer ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
 		this.clearTimerFn = opts.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));

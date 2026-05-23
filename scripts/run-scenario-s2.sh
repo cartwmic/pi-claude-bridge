@@ -23,7 +23,7 @@ scn_wait_for "(\.ts|index|convert|models)" 60 || scn_fail "Turn 2 — no file re
 echo "==== S2 results ===="
 
 # Architectural: at least 2 tool calls in T1 (ls + read at minimum)
-tool_invocations=$(grep -cE "mcp handler:" "$BRIDGE_LOG" || echo 0)
+tool_invocations=$(scn_grep_count "mcp handler:" "$BRIDGE_LOG")
 echo "  total mcp handler invocations: $tool_invocations"
 if (( tool_invocations >= 2 )); then
 	scn_pass "tool loop ran to completion (>=2 tool calls)"

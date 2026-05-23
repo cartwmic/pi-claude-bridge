@@ -23,7 +23,7 @@ scn_wait_for "(bridge|Claude|provider|extension|tool)" 60 || scn_fail "Turn 2 â€
 echo "==== S6 results ===="
 
 # At least one read tool invocation
-read_calls=$(grep -cE "mcp handler: read " "$BRIDGE_LOG" || echo 0)
+read_calls=$(scn_grep_count "mcp handler: read " "$BRIDGE_LOG")
 echo "  read invocations: $read_calls"
 if (( read_calls >= 1 )); then
 	scn_pass "at least one read tool invocation observed"
@@ -32,7 +32,7 @@ else
 fi
 
 # Cache: T2 should be warm-resume
-warm_resumes=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" || echo 0)
+warm_resumes=$(scn_grep_count "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG")
 if (( warm_resumes >= 1 )); then
 	scn_pass "T2 used warm resume (cache hit path)"
 else

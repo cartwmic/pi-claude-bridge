@@ -58,7 +58,7 @@ done
 echo "==== S14 results ===="
 
 # Subagent tool was invoked
-subagent_calls=$(grep -ciE "mcp handler: subagent " "$BRIDGE_LOG" || echo 0)
+subagent_calls=$(scn_grep_count "mcp handler: subagent " "$BRIDGE_LOG")
 echo "  subagent invocations: $subagent_calls"
 
 # Multiple distinct CC session_ids (parent + child each get one)

@@ -23,7 +23,7 @@ scn_wait_for "(30|thirty|second)" 60 || scn_fail "Turn 2 — no duration mention
 echo "==== S3 results ===="
 
 # Tool: bash invocation
-bash_calls=$(grep -cE "mcp handler: bash " "$BRIDGE_LOG" || echo 0)
+bash_calls=$(scn_grep_count "mcp handler: bash " "$BRIDGE_LOG")
 echo "  bash invocations: $bash_calls"
 if (( bash_calls >= 1 )); then
 	scn_pass ">=1 bash tool invocation"

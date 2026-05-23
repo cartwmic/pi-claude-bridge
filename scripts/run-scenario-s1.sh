@@ -32,7 +32,7 @@ else
 fi
 
 # Tool count: T1 should have 1 read tool. T2 should NOT re-call read (cached result).
-read_calls=$(grep -cE "mcp handler: read " "$BRIDGE_LOG" || echo 0)
+read_calls=$(scn_grep_count "mcp handler: read " "$BRIDGE_LOG")
 echo "  read tool invocations: $read_calls"
 if [[ "$read_calls" -le "1" ]]; then
 	scn_pass "tool result reused (no re-call on Turn 2)"

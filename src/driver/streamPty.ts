@@ -227,6 +227,11 @@ export function streamClaudeViaPty(
 		try {
 			const tools = toolsToRouterDefs(extras.tools);
 			writeBridgeLogLine(`streamSimple: PTY spawn model=${model.id} promptLen=${prompt.length} sysLen=${extras.systemPrompt.length} tools=${tools.length}`);
+			// Scenario-lib compat: emit "fresh query" log line with resume= field.
+			// v0 streamPty cold-starts every turn (warm-resume is v1.1.0 work), so
+			// the resume value is always "no". When warm-resume lands, switch to
+			// the cached session id.
+			writeBridgeLogLine(`streamSimple: fresh query resume=no model=${model.id}`);
 			const handle = await spawnDriver({
 				shimPath: resolveShimPath(),
 				model: model.id,
@@ -356,6 +361,12 @@ export function streamClaudeViaPty(
 			});
 
 			handle.on("tool-call-parked", (entry) => {
+				// Scenario-lib compat: emit "mcp handler: <tool> [<id>] — awaiting pi"
+				// log line so scenario-lib's tool-handler counters work the same
+				// as on the SDK path. SDK path used the SHORT tool name (no
+				// `mcp__custom-tools__` prefix); strip for compat.
+				const shortName = entry.name.replace(/^mcp__custom-tools__/, "");
+				writeBridgeLogLine(`mcp handler: ${shortName} [${entry.id}] — awaiting pi`);
 				// v0: we don't await pi's eventual tool_result delivery here
 				// (no stack/frame integration yet). The transcript path's
 				// tool-use block has already emitted `done(toolUse)`. To
@@ -367,6 +378,7 @@ export function streamClaudeViaPty(
 						[{ type: "text", text: "[pi: tool execution deferred; see follow-up message]" }],
 						false,
 					);
+					writeBridgeLogLine(`tool-result delivery: ${shortName} [${entry.id}]`);
 				} catch {}
 			});
 
@@ -376,6 +388,8 @@ export function streamClaudeViaPty(
 				// fires on the PTY path. (Originally an SDK-path signal.)
 				writeBridgeLogLine(`streamSimple: caching session=${handle.sessionId.slice(0, 8)} done=${d.reason}`);
 				if (d.reason === "aborted") {
+					// Scenario-lib compat: SDK-era abort signal.
+					writeBridgeLogLine(`onAbort: session=${handle.sessionId.slice(0, 8)}`);
 					out.stopReason = "stop";
 					endWith({ type: "error", reason: "aborted", error: out });
 				} else if (d.reason === "error") {
@@ -384,6 +398,15 @@ export function streamClaudeViaPty(
 					endWith({ type: "error", reason: "error", error: out });
 				}
 				// stop-settled is handled via transcript "done" event above.
+			});
+
+			// Scenario-lib compat: emit per-turn usage line when transcript reports usage.
+			handle.on("transcript", (e: TranscriptEvent) => {
+				if (e.kind !== "usage") return;
+				const u = e.usage;
+				writeBridgeLogLine(
+					`usage: cacheRead=${u.cacheRead} cacheWrite=${u.cacheWrite} input=${u.input} output=${u.output}`,
+				);
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

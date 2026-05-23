@@ -32,7 +32,7 @@ trap 'scn_pi_stop' EXIT
 sleep 3
 
 # Snapshot bridge usage lines BEFORE subagent dispatch
-pre_usage=$(grep -cE "\"msg\":\"usage:" "$BRIDGE_LOG" 2>/dev/null || echo 0)
+pre_usage=$(scn_grep_count "\"msg\":\"usage:" "$BRIDGE_LOG")
 
 scn_send "Use the subagent tool to dispatch a worker on the openai-codex/gpt-5.4-mini model to write a one-paragraph summary of what convert.ts does in this repo. Tell it to write the summary to /tmp/s15-summary.txt and return the first sentence."
 
@@ -42,7 +42,7 @@ scn_wait_for "(summary|sentence|convert)" 240 || scn_fail "Subagent — no resul
 # Bridge is called for parent's turn (initial call + tool-result delivery turn).
 # Other usage lines during subagent execution would indicate the bridge was
 # also invoked for the child turn.
-post_usage=$(grep -cE "\"msg\":\"usage:" "$BRIDGE_LOG" 2>/dev/null || echo 0)
+post_usage=$(scn_grep_count "\"msg\":\"usage:" "$BRIDGE_LOG")
 echo "  bridge usage lines during scenario: $((post_usage - pre_usage))"
 
 scn_send "What was the first sentence the subagent returned, and which model wrote it?"

@@ -63,8 +63,8 @@ scn_wait_for "(pi-claude-bridge|137)" 60 || scn_fail "Resume — no recall"
 echo "==== S10 results ===="
 
 # Architectural: bridge restarted, so we expect at least one cold-start
-cold=$(grep -cE "streamSimple: fresh query.*resume=no" "$BRIDGE_LOG" || echo 0)
-warm=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" || echo 0)
+cold=$(scn_grep_count "streamSimple: fresh query.*resume=no" "$BRIDGE_LOG")
+warm=$(scn_grep_count "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG")
 echo "  cold-starts: $cold  warm-resumes: $warm"
 if (( cold >= 2 )); then
 	scn_pass "expected cold-resume after restart (>=2 cold-starts in run)"
@@ -73,8 +73,8 @@ else
 fi
 
 # Coherence: package name AND favorite number both recalled
-mentions_pkg=$(grep -cE "pi-claude-bridge" "$PANE_LOG" || echo 0)
-mentions_num=$(grep -cE "137" "$PANE_LOG" || echo 0)
+mentions_pkg=$(scn_grep_count "pi-claude-bridge" "$PANE_LOG")
+mentions_num=$(scn_grep_count "137" "$PANE_LOG")
 echo "  mentions: pkg=$mentions_pkg num=$mentions_num"
 if (( mentions_pkg >= 1 && mentions_num >= 1 )); then
 	scn_pass "coherence: both pre-restart facts recalled"

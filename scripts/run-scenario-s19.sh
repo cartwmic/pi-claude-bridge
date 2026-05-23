@@ -35,7 +35,11 @@ rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX"
 echo "S19-SEED-CONTENT-XK7" > "$SANDBOX/known.txt"
 
-SESSION_DIR_NAME="--$(echo "$SANDBOX" | sed 's|^/||; s|/|-|g')--"
+# Realpath SANDBOX: pi resolves cwd to physical path (follows symlinks)
+# when encoding the session-dir name. Our REPO_DIR might come in via a
+# /Users/... symlink; pi sees /Volumes/... and writes the session there.
+SANDBOX_REALPATH="$(cd "$SANDBOX" && pwd -P)"
+SESSION_DIR_NAME="--$(echo "$SANDBOX_REALPATH" | sed 's|^/||; s|/|-|g')--"
 PI_SESSION_DIR="$HOME/.pi/agent/sessions/$SESSION_DIR_NAME"
 rm -rf "$PI_SESSION_DIR" 2>/dev/null || true
 

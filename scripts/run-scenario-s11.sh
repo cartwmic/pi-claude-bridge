@@ -12,7 +12,7 @@ trap 'scn_pi_stop' EXIT
 
 scn_pi_start
 
-scn_send "Read both package.json and convert.ts in parallel and tell me one fact about each. Use the read tool for both, in the same response."
+scn_send "Make TWO parallel read tool calls in your VERY NEXT response — one for package.json, one for convert.ts. You must invoke the read tool exactly twice in the same assistant message, before producing any text. After both reads complete, tell me one fact about each file."
 scn_wait_for "(package|convert|TypeScript|json)" 90 || scn_fail "Turn 1 — no facts"
 
 echo "==== S11 results ===="

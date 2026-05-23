@@ -859,20 +859,14 @@ function startFreshTurn(
 							session.out.stopReason = "stop";
 							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						}
-						// D15: PRESERVE warm-resume cache across abort + DON'T null
-						// activeSession immediately. The next pi event (toolResult
-						// or fresh turn) decides:
-						//   - toolResult → Case 1 delivers into now-aborted entry,
-						//     router stashes via pendingResults.
-						//   - fresh turn → Case 3 supersedes (drains synthetically).
-						//   - timeout → passive cleanup after 5s.
-						// Cache eligibility: only preserve when the abort happened
-						// at a CLEAN boundary (no in-flight tool calls). If pending
-						// resolvers exist, the JSONL has a dangling tool_use without
-						// matching tool_result; CC's --resume refuses to load such
-						// transcripts and exits with code 1. Drop the cache in that
-						// case so next turn cold-starts.
-						if (!awaitingPi) {
+						// D15: PRESERVE warm-resume cache across abort when the turn
+						// was at a clean boundary (no pending tool calls AND model
+						// had emitted some content). Empirically CC's --resume can
+						// load a SIGINT-truncated JSONL ONLY if the model wrote at
+						// least one complete assistant content block; bail-out before
+						// any model output leaves the JSONL too thin for --resume.
+						const hadContent = session.totalContentIndex > 0;
+						if (!awaitingPi && hadContent) {
 							cachedSessionId = handle.sessionId;
 							cachedSessionCwd = session.cwd;
 							writeBridgeLogLine(
@@ -880,9 +874,9 @@ function startFreshTurn(
 							);
 						} else {
 							writeBridgeLogLine(
-								`warm-resume: skipping cache after abort (pendingResolvers=${session.pendingEntries.size}; dangling tool_use would break --resume)`,
+								`warm-resume: skipping cache after abort (pendingResolvers=${session.pendingEntries.size}, hadContent=${hadContent})`,
 							);
-							clearWarmResumeCache("abort-with-pending");
+							clearWarmResumeCache("abort-thin-jsonl");
 						}
 						session.wasAborted = true;
 						// Passive cleanup if no pi event lands within 5s.

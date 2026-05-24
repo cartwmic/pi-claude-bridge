@@ -36,28 +36,38 @@ File a small change `normalize-output-capture-spec-post-sdk-removal`:
   implements (e.g. capture path tarball verification gate, etc.)
 - Sync into main `openspec/specs/output-capture/spec.md` cleanly.
 
-## ADR promotion candidates (deferred)
+## ADR promotion (completed 2026-05-24)
 
-Design.md contains 26 decisions (D1–D27, D7 superseded). Per the
-opsx-superpowers archive HARD-GATE 3, the following pass the 4-point
-test and should be promoted to `<repo>/adr/ADR-NNNN-*.md` in a
-follow-up:
+Per opsx-superpowers archive HARD-GATE 3, decisions passing the
+4-point rubric (≥3/4) were promoted to `adr/ADR-NNNN-*.md`. Initial
+estimate was 13; full audit of pre-scored 4-point tests in design.md
+found 16 qualifying decisions:
 
-- D1  PTY-driven `claude` invocation (over SDK)
-- D2  node-pty as PTY library
-- D3  MCP stdio transport via shim subprocess
-- D5  Capture mode as forced MCP tool-call (tool-as-output)
-- D9  Hook set: SessionStart + Stop only
-- D11 4-layer defense against disallowed tools
-- D15 Abort lifecycle — PTY torn down, router-state preserved
-- D17 Bounded post-Stop transcript settle window
-- D18 Deterministic transcript path via pre-generated --session-id
-- D22 Warm-resume cache (sid + cwd, drop on history divergence)
-- D25 Workspace trust-dialog handling
-- D26 Prompt injection via typed input post-SessionStart
-- D27 System prompt bundled into typed user message
+| ADR | Source decision | 4-point score |
+|---|---|---|
+| ADR-0001 | D1 PTY-driver over SDK | 4/4 |
+| ADR-0002 | D2 node-pty as PTY library | 3/4 |
+| ADR-0003 | D3 MCP stdio transport | 4/4 |
+| ADR-0004 | D4 Per-block transcript JSONL streaming | 4/4 |
+| ADR-0005 | D5 Capture mode as forced MCP tool-call | 4/4 |
+| ADR-0006 | D7-final `--system-prompt` flag (Superseded by ADR-0016) | 3/4 |
+| ADR-0007 | D12 Hook IPC channel via shim relay | 3/4 |
+| ADR-0008 | D14 Packaging — build to dist/ | 3/4 |
+| ADR-0009 | D15 Abort lifecycle | 4/4 |
+| ADR-0010 | D16 Capture-mode MCP completion semantics | 4/4 |
+| ADR-0011 | D18 Deterministic transcript path | 4/4 |
+| ADR-0012 | D19 Shim path resolution | 3/4 |
+| ADR-0013 | D21 Capture-mode authoritative result source | 3/4 |
+| ADR-0014 | D25 Workspace trust-dialog handling | 4/4 |
+| ADR-0015 | D26 Typed prompt injection | 4/4 |
+| ADR-0016 | D27 System prompt bundled into typed message | 4/4 |
 
-(13 candidates. Run promotion separately to avoid blocking archive.)
+Design decisions NOT promoted (scoring ≤2/4 or borderline 3/4 deemed
+not worth a standalone ADR by the change author): D6, D8, D9, D10,
+D11, D17, D20, D22, D23, D24. Their content remains in the archived
+`design.md` for historical reference.
+
+Index: `<repo>/adr/README.md`.
 
 ## Retrospective (deferred)
 

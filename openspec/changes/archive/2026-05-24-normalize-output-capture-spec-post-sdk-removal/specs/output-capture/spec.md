@@ -1,15 +1,55 @@
-# output-capture Specification
+# Capability: output-capture (delta)
 
-## Purpose
-TBD - created by archiving change bridge-output-capture-via-output-format. Update Purpose after archive.
-## Requirements
-### Requirement: `piApiRef === null` fallback
-When the bridge module is loaded outside an active pi extension runtime (no `piApiRef`, or `piApiRef.getActiveTools()` throws), the classifier SHALL treat the active-tool set as empty. With an empty active-tool set, every entry in `ctx.tools` is classified as a capture tool, and the strict call-shape rules apply. This guarantees the capture path is the only path reachable when pi is not bound, rather than silently routing to MCP for tools pi cannot execute.
+External call-shape (`piAi.complete` with `ctx.tools = [captureTool]`) is
+unchanged. The mechanism for enforcing schema-constrained structured output
+shifts from the SDK's `outputFormat` option to a forced MCP tool-call on the
+new PTY-driven inference path. v1 limitations from the original spec are
+preserved verbatim. Requirements expressed in terms of SDK internals
+(`outputFormat`, `result.structured_output`, `system:init`, SDK query) are
+re-stated against the new driver. Requirements expressed purely in
+externally-observable behavior are not duplicated here unless mechanism
+wording requires update.
 
-#### Scenario: Bridge loaded with `piApiRef === null`
-- **WHEN** `complete()` is invoked while `piApiRef === null` (e.g. early module-load probe before the default-export setup runs, or a standalone test)
-- **THEN** every tool in `ctx.tools` is classified as a capture tool
-- **AND** call-shape validation applies normally (zero tools → fall through; one object-root tool → capture path; otherwise reject)
+**Capture-path system prompt fidelity (Round-3 reconciliation):** the capture
+path forwards `ctx.systemPrompt` verbatim per constitution V. No
+capture-only system-prompt addendum is appended. Model steering relies on:
+(a) the sole-tool advertisement on the MCP shim (no other tool is callable),
+(b) the deterministic shim response per D16 ("Capture received. End your
+turn now."), and (c) the disallow-set blocking any native-tool alternative.
+If the model emits text alongside the tool call, the text is ignored per
+clarify I3.
+
+## ADDED Requirements
+
+### Requirement: Surface absent capture-tool call as error
+
+IF the capture path's PTY emits a `Stop` hook (turn complete) without the bridge having received any valid IPC-stashed arguments from the shim, THEN the bridge SHALL push an `error` event on the pi-ai stream whose `errorMessage` names the failure cause ("model did not call capture tool" if no stash and no tool-use block in transcript; "arguments failed schema validation" if the shim rejected one or more attempts via MCP error but no valid call followed) and end the stream. The error AssistantMessage SHALL also propagate the transcript's terminal `result` usage / cost where present, so callers can observe retry-cost on failures.
+
+#### Scenario: Model returned text only, never called the capture tool
+
+- **WHEN** the capture path's PTY transcript at `Stop` time contains assistant text blocks but no tool-use block matching the capture tool's name
+- **THEN** the pi-ai stream emits `start` then `error` whose `errorMessage` references "model did not call capture tool"
+- **AND** the AssistantMessage's usage fields are populated from the terminal `result` entry where present
+- **AND** `complete()` resolves with an `AssistantMessage` whose `stopReason === "error"`
+
+#### Scenario: Capture tool called with arguments failing schema validation
+
+- **WHEN** the transcript contains a tool-use block for the capture tool whose arguments fail JSON-schema validation
+- **THEN** the pi-ai stream emits `error` whose `errorMessage` references "arguments failed schema validation" and names at least one failing field path
+- **AND** `complete()` resolves with `stopReason === "error"`
+
+### Requirement: Capture path honors `AbortSignal`
+
+WHEN pi signals abort on the current `AbortSignal` while a capture call is in flight, THE capture path SHALL deliver an interrupt to its PTY (per `claude-tui-driver.abort-propagates-to-the-pty`) and SHALL resolve `complete()` with `stopReason === "aborted"`.
+
+#### Scenario: Abort during capture
+
+- **WHEN** a capture-shape `complete()` is in flight and the caller's `AbortSignal` fires
+- **THEN** the capture path interrupts its PTY
+- **AND** the pi-ai stream pushes a `done` event with `reason: "aborted"`
+- **AND** the resolved AssistantMessage's `stopReason === "aborted"`
+
+## MODIFIED Requirements
 
 ### Requirement: Output-capture classification of `ctx.tools`
 
@@ -135,92 +175,51 @@ WHEN the capture path receives a valid IPC-stashed arguments object from the shi
 - **THEN** the returned `AssistantMessage.content` exposes a `toolCall` block in the same position as direct providers
 - **AND** the caller's existing branching on `model.provider !== "claude-bridge"` (if any) is no longer necessary for capture-shape responses
 
-### Requirement: Image-block warning on capture path
-When `context.messages` contains any image content blocks (in any message position) at the start of a capture call, the bridge SHALL emit a structured WARN-level log line stating that the image blocks are being dropped due to capture-mode text-only replay. The bridge SHALL NOT reject the call; lossy text-only replay proceeds (per the message-history-replay requirement below).
+## REMOVED Requirements
 
-#### Scenario: Image in current user message warns
-- **WHEN** `complete()` is invoked with `ctx.messages = [{ role: "user", content: [{ type: "text", text: "describe this" }, { type: "image", source: {...} }] }]` and a single capture tool
-- **THEN** the bridge emits a structured WARN-level log line referencing the dropped image block count and capture-mode text-only replay
-- **AND** the call proceeds (text-only) and produces a `toolCall` content block per the success path
+### Requirement: Surface terminal `result` lacking `structured_output` as error
+**Reason**: SDK-specific. The PTY path has no SDK `result` event with a
+`structured_output` field; the analogous failure mode is "model did not
+call the capture tool by `Stop` time," which is captured by the new
+`Surface absent capture-tool call as error` requirement (ADDED above).
+**Migration**: Consumers that previously asserted `errorMessage` contains
+"structured_output" SHOULD assert `errorMessage` contains either
+"model did not call capture tool" or "arguments failed schema validation"
+(see new requirement for exact wording).
 
-#### Scenario: Image in history warns
-- **WHEN** `complete()` is invoked with `ctx.messages` containing image blocks in earlier user/assistant/toolResult messages
-- **THEN** the bridge emits the same WARN log
-- **AND** the call proceeds (text-only)
+### Requirement: Surface SDK iterator that closes without `result`
+**Reason**: SDK-specific. The PTY path has no SDK iterator; the analogous
+failure mode (transcript ends before `Stop`) is caught by the new
+`Surface absent capture-tool call as error` requirement plus the
+transcript-stream capability's settle-window contract.
+**Migration**: None required for external consumers; this was a defensive
+spec against a class of SDK-internal failure that has no analog in the
+new driver.
 
-### Requirement: Capture path forwards `systemPrompt` and replays message history (text-only, lossy)
-The capture path SHALL forward `context.systemPrompt` to the PTY driver as the static system prompt (instead of replacing it with the agent-loop path's `"You are a helpful coding assistant."`). The capture path SHALL replay the `context.messages` array as the prompt by calling the existing `buildColdStartPrompt(context.messages)` helper. Replay is **text-only and lossy at every position** (current user message included, not just history): image content blocks are dropped (per `messageContentToText`), assistant tool-call arguments are truncated to 200 chars, and tool-result content is truncated to 500 chars. This is a documented limitation of v1 capture mode; callers that need image fidelity or untruncated tool-call history should not use capture mode for that input. Pi-skills / AGENTS / APPEND_SYSTEM blending logic SHALL NOT be applied on the capture path — those are pi-UI concerns and capture callers are pi-ai consumers.
+### Requirement: Surface synchronous SDK construction failure as error
+**Reason**: SDK-specific. The PTY path constructs the spawn via
+`spawnDriver()` which returns synchronously or throws; the wrapping
+stream emits `error` via the same mechanism as any other capture-path
+failure. No separate "synchronous construction" failure class exists.
+**Migration**: None.
 
-#### Scenario: Caller's system prompt reaches the model
-- **WHEN** `complete()` is invoked with `ctx.systemPrompt = "You are a digest writer. Output ONLY a JSON object matching the schema."` and a single capture tool
-- **THEN** the PTY driver invocation's `systemPrompt` input equals that string verbatim
-- **AND** no pi-UI append blocks (skills, AGENTS, APPEND_SYSTEM) are concatenated to it
+### Requirement: Deep schema clone for `outputFormat`
+**Reason**: SDK-specific. The PTY path passes capture-tool schema to the
+stdio shim via IPC (the `mcp-stdio-shim` capability owns this contract);
+no mutation by the SDK or other consumer is possible because the schema
+is serialized over IPC.
+**Migration**: None for external consumers. The defensive-copy concern
+is subsumed by the IPC serialization boundary.
 
-#### Scenario: Multi-message capture preserves prior turns
-- **WHEN** `complete()` is invoked with `ctx.messages = [user("A"), assistant("B"), user("now produce a digest")]` and a single capture tool
-- **THEN** the PTY driver invocation's prompt contains a representation of all three messages (using `buildColdStartPrompt`)
-- **AND** the synthesized `toolCall.arguments` reflect content informed by the earlier turns
+---
 
-### Requirement: Empty-prompt handling
-The capture path SHALL accept calls where `context.systemPrompt` is non-empty even if `context.messages` produces no text via `buildColdStartPrompt` (matching direct-provider behavior for system-prompt-only calls). The capture path SHALL reject calls where BOTH `context.systemPrompt` is empty/missing AND `context.messages` produces no text, by pushing `start` + `error` whose `errorMessage` cites the empty-prompt condition.
+## Acceptance criterion quality checklist
 
-#### Scenario: System-prompt-only call accepted
-- **WHEN** `complete()` is invoked with `ctx.systemPrompt = "Produce a digest."`, `ctx.messages = []`, and a single object-root capture tool
-- **THEN** the bridge starts the PTY driver invocation with that system prompt
-- **AND** the capture path runs to completion (success or error per other requirements)
-
-#### Scenario: Both empty rejected
-- **WHEN** `complete()` is invoked with `ctx.systemPrompt` empty/missing AND `ctx.messages` producing no text via `buildColdStartPrompt`, plus a single capture tool
-- **THEN** the bridge does not start a PTY driver invocation
-- **AND** the pi-ai stream emits `start` then `error` whose `errorMessage` references the empty-prompt condition
-- **AND** `complete()` resolves with `stopReason === "error"`
-
-### Requirement: Capture path emits no intermediate stream events
-The capture path's pi-ai event stream SHALL emit exactly: one `start` event when the PTY stream opens, then a single terminal `done(toolUse)` or `error` event at finalization. The capture path SHALL NOT push intermediate `text_start`, `text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `toolcall_start`, `toolcall_delta`, or `toolcall_end` events. This preserves pi-ai's block-lifecycle invariant (every `*_delta` paired with a `*_start`/`*_end` indexed against `partial.content`).
-
-#### Scenario: No partial deltas on the capture stream
-- **WHEN** a capture call runs to completion (success or error)
-- **THEN** the pi-ai event stream's emitted events consist of exactly: one `start`, then one terminal `done` or `error`
-- **AND** no `*_delta`, `*_start` (other than the initial stream `start`), or `*_end` events appear
-
-### Requirement: Capture path does not leak resources
-On completion of a capture call (success or error), `runCaptureQueryPty` SHALL drain or interrupt its PTY driver invocation so that no zombie subprocess, MCP handler, or pending resolver remains. The text `[Tool execution interrupted by user before completion]` SHALL NOT appear in bridge logs as a consequence of capture-path completion (that text is reserved for the supersede path on the user-session stack, which the capture path does not touch).
-
-#### Scenario: No drain text in logs after capture completes
-- **WHEN** a capture call completes (success or error)
-- **THEN** the bridge log for that call's lifecycle does not contain `[Tool execution interrupted by user before completion]`
-- **AND** the bridge log does not contain `drainPendingResolversAsAborted` for the capture call
-
-#### Scenario: Capture path PTY session is cleaned up
-- **WHEN** a capture call completes
-- **THEN** the PTY driver invocation for that call is no longer producing messages or holding resources (drained or interrupted)
-- **AND** no entry remains for the capture call in any tracked-frame data structure
-
-### Requirement: Surface absent capture-tool call as error
-
-IF the capture path's PTY emits a `Stop` hook (turn complete) without the bridge having received any valid IPC-stashed arguments from the shim, THEN the bridge SHALL push an `error` event on the pi-ai stream whose `errorMessage` names the failure cause ("model did not call capture tool" if no stash and no tool-use block in transcript; "arguments failed schema validation" if the shim rejected one or more attempts via MCP error but no valid call followed) and end the stream. The error AssistantMessage SHALL also propagate the transcript's terminal `result` usage / cost where present, so callers can observe retry-cost on failures.
-
-#### Scenario: Model returned text only, never called the capture tool
-
-- **WHEN** the capture path's PTY transcript at `Stop` time contains assistant text blocks but no tool-use block matching the capture tool's name
-- **THEN** the pi-ai stream emits `start` then `error` whose `errorMessage` references "model did not call capture tool"
-- **AND** the AssistantMessage's usage fields are populated from the terminal `result` entry where present
-- **AND** `complete()` resolves with an `AssistantMessage` whose `stopReason === "error"`
-
-#### Scenario: Capture tool called with arguments failing schema validation
-
-- **WHEN** the transcript contains a tool-use block for the capture tool whose arguments fail JSON-schema validation
-- **THEN** the pi-ai stream emits `error` whose `errorMessage` references "arguments failed schema validation" and names at least one failing field path
-- **AND** `complete()` resolves with `stopReason === "error"`
-
-### Requirement: Capture path honors `AbortSignal`
-
-WHEN pi signals abort on the current `AbortSignal` while a capture call is in flight, THE capture path SHALL deliver an interrupt to its PTY (per `claude-tui-driver.abort-propagates-to-the-pty`) and SHALL resolve `complete()` with `stopReason === "aborted"`.
-
-#### Scenario: Abort during capture
-
-- **WHEN** a capture-shape `complete()` is in flight and the caller's `AbortSignal` fires
-- **THEN** the capture path interrupts its PTY
-- **AND** the pi-ai stream pushes a `done` event with `reason: "aborted"`
-- **AND** the resolved AssistantMessage's `stopReason === "aborted"`
-
+| AC ID | Testable | Solution-free | Unambiguous | Consistent | Complete |
+|---|---|---|---|---|---|
+| output-capture.output-capture-classification-of-ctx-tools | [ ] | [ ] | [ ] | [ ] | [ ] |
+| output-capture.strict-call-shape-capture-mode-mutually-exclusive-with-executable-tools-root-must-be-object | [ ] | [ ] | [ ] | [ ] | [ ] |
+| output-capture.capture-path-isolation | [ ] | [ ] | [ ] | [ ] | [ ] |
+| output-capture.synthesized-toolcall-content-block-on-success | [ ] | [ ] | [ ] | [ ] | [ ] |
+| output-capture.surface-absent-capture-tool-call-as-error | [ ] | [ ] | [ ] | [ ] | [ ] |
+| output-capture.capture-path-honors-abortsignal | [ ] | [ ] | [ ] | [ ] | [ ] |

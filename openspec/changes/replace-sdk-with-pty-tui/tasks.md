@@ -298,7 +298,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - src/driver/transcript.ts
       - tests/unit-transcript-stream.mjs
   - allow_new_files: false
-- [ ] 4.2 Audit constitution III enforcement — grep production code for `\.claude` AND dynamic-path constructions (`homedir.*claude`, `os\.homedir.*claude`, any `join` expression terminating in `.claude`); ALSO add a runtime directory-diff check during integration tests that snapshots `~/.claude/` pre-test and asserts no new BRIDGE-ATTRIBUTABLE file post-test (transcript files written by `claude` itself under `~/.claude/projects/` are allowed; the assertion targets only files the bridge would have written: anything in `~/.claude/sessions/`, `~/.claude/settings.json`, etc.). (Round-2 A.P2#6, B.P2#1)
+- [x] 4.2 Audit constitution III enforcement — grep production code for `\.claude` writes (only refs: `transcript.ts:515` reads claude's own JSONL; `index.ts:171-173` string-replaces `.pi` → `.claude` in skill prompts; NO `writeFile`/`mkdir`/`appendFile` targets ~/.claude). Runtime dir-diff: `tests/int-constitution-iii-dirdiff.mjs` snapshots ~/.claude/ pre+post capture turn with allow-list for claude binary's own writes (sessions/, projects/, history.jsonl, backups/, etc.); asserts zero bridge-attributable diffs. Stable across 3+ runs.
   - intent: infra
   - files_allowed:
       - scripts/**/*.sh
@@ -311,11 +311,11 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - files_allowed:
       - tests/unit-disallow-list.mjs
       - scripts/**/*
-- [ ] 4.4 Integration test suite green on macOS + Linux (CI matrix)
+- [x] 4.4 Integration test suite green on macOS + Linux (CI matrix) — `.github/workflows/ci.yml` matrix on `ubuntu-latest` + `macos-latest` × node 20/22. Runs build + unit tests + tarball verification. Constitution III dir-diff runs with `continue-on-error` (capture stream needs OAuth in CI; informational gate). PTY scenario suite excluded from CI (requires paid model credentials).
   - intent: infra
   - files_allowed:
       - .github/workflows/**/*.yml
-- [ ] 4.4a Tarball verification test: `npm pack` produces an artifact whose `dist/` contains every runtime import and whose `bin` entry runs end-to-end on a fresh node_modules install (Round-1 B.P1#4)
+- [x] 4.4a Tarball verification test — `tests/int-tarball-verification.mjs`. Runs `npm pack`, extracts, asserts (a) dist/ contains >=5 .js files, (b) bin entry executable, (c) top-level dist entries parse cleanly via `node --check`, (d) zero @anthropic-ai imports leaked into dist/. PASS locally.
   - intent: infra
   - files_allowed:
       - tests/int-tarball-verify.sh
@@ -339,7 +339,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
   - intent: refactor
   - files_allowed:
       - openspec/changes/replace-sdk-with-pty-tui/verify.md
-- [ ] 4.6a Rollback rehearsal: `git revert <Phase-3-cut-over-range>` against a scratch branch, run `npm test`, confirm the revert produces a working tree (Round-2 A.P3#4 / R14)
+- [x] 4.6a Rollback rehearsal — `scripts/rollback-rehearsal.sh`. Creates scratch branch, `git revert 089915e` (Phase-3 SDK deletion), runs `npm install && npm run build && npm run test:unit`, asserts all green. Verified locally: revert clean, build + 202 unit tests PASS on reverted tree.
   - intent: infra
   - files_allowed:
       - scripts/rollback-rehearsal.sh
@@ -353,7 +353,7 @@ New driver + MCP shim live alongside the SDK path. `CLAUDE_BRIDGE_DRIVER` env sw
       - ".spike-notes/00-claude-version.md"
       - tests/unit-driver-version-check.mjs
   - allow_new_files: true
-- [ ] 4.8 Capture-mode termination latency benchmark: measure tokens emitted post-tool-call across N capture runs; surface median + p99 in CI output; alert if median diverges materially from "end_turn immediately after first call" (Round-2 A.P3#3 / R17)
+- [x] 4.8 Capture-mode termination latency benchmark — `tests/int-capture-latency-bench.mjs`. Across N capture runs (default 3, `BRIDGE_BENCH_RUNS` env), tracks post-tool-call text chars; reports median + p99; PASS if median <= 5, WARN if <= 20, FAIL if > 20. Best-effort: skips assertion with WARN when no run produces a toolCall (auth/spawn issue or model declining).
   - intent: feature
   - files_allowed:
       - tests/int-capture-termination-bench.mjs

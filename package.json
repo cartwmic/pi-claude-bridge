@@ -43,8 +43,6 @@
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
-    "@anthropic-ai/sdk": "^0.73.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "change-case": "^5.4.4",
     "node-pty": "^1.0.0",
@@ -58,6 +56,7 @@
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.67.6",
     "@mariozechner/pi-coding-agent": "^0.66.1",
+    "@sinclair/typebox": "^0.34.0",
     "@types/node": "^24.3.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"

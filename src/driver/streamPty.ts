@@ -363,6 +363,21 @@ function clearWarmResumeCache(reason: string): void {
 	lastSentMessageHashes = null;
 }
 
+/** External entry point: drop the warm-resume cache + divergence hashes.
+ *  Called from index.ts on pi lifecycle events (session_start with reason
+ *  new/resume/fork, session_shutdown) as a belt-and-suspenders companion
+ *  to passive history-divergence detection. Safe to call when already cleared. */
+export function clearStreamPtyCache(reason: string): void {
+	clearWarmResumeCache(reason);
+}
+
+/** Test-only: forcibly reset cache to a clean state. */
+export function __resetStreamPtyCacheForTests(): void {
+	cachedSessionId = null;
+	cachedSessionCwd = null;
+	lastSentMessageHashes = null;
+}
+
 // --- Per-turn stream helpers (operate on `activeSession`) ---------------
 
 function ensureStarted(s: ActiveSession): void {

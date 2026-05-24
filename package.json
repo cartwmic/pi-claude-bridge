@@ -2,13 +2,12 @@
   "name": "pi-claude-bridge",
   "version": "0.3.1",
   "private": false,
-  "description": "Pi extension that uses Claude Code (via Agent SDK) as a model provider and adds an AskClaude tool.",
+  "description": "Pi extension that uses Claude Code (via the interactive TUI driven by node-pty) as a model provider.",
   "keywords": [
     "pi-package",
     "pi",
     "extension",
-    "claude-code",
-    "claude-agent-sdk"
+    "claude-code"
   ],
   "author": "Eli Dickinson",
   "license": "MIT",
@@ -23,22 +22,30 @@
     "index.ts",
     "convert.ts",
     "models.ts",
+    "src/**/*.ts",
+    "dist/**",
     "README.md",
     "LICENSE",
     "claude-bridge1.png",
     "claude-bridge2.png"
   ],
+  "bin": {
+    "pi-claude-bridge-shim": "dist/mcp/shim.js"
+  },
   "scripts": {
-    "test:unit": "node --import tsx --test tests/unit-*.mjs",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/mcp/shim.js",
+    "prepublishOnly": "npm run build",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
+    "test:unit": "node --import tsx --test --test-force-exit tests/unit-*.mjs",
     "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
-    "@anthropic-ai/sdk": "^0.73.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "change-case": "^5.4.4",
+    "node-pty": "^1.0.0",
     "pino": "^10.3.1",
     "rotating-file-stream": "^3.2.9"
   },
@@ -49,6 +56,7 @@
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.67.6",
     "@mariozechner/pi-coding-agent": "^0.66.1",
+    "@sinclair/typebox": "^0.34.0",
     "@types/node": "^24.3.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"

@@ -2,11 +2,17 @@
 // Extracted so they can be tested without pulling in the full extension runtime.
 
 import type { Message as PiMessage } from "@mariozechner/pi-ai";
-import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { pascalCase } from "change-case";
 
-// Use Anthropic SDK's MessageParam directly — same shape as cc-session-io's Message.
-type SessionMessage = MessageParam;
+// Local structural type for Anthropic-format messages. Was `MessageParam`
+// from `@anthropic-ai/sdk/resources` pre-v1.0.0; replaced with a structural
+// shape after Phase 3 SDK-deletion (task 3.3) so the bridge no longer depends
+// on @anthropic-ai/sdk at all. Loosened to `any` content because the SDK
+// types here were always treated as duck-typed records by downstream code.
+type SessionMessage = {
+	role: "user" | "assistant";
+	content: string | Array<Record<string, any>>;
+};
 
 export const PROVIDER_ID = "claude-bridge";
 

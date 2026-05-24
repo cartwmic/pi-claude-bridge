@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      # Tarball + dir-diff integration tests don't require live `claude`
+      # auth (they only spawn it briefly; capture-stream fails gracefully).
+      # PTY-driven scenario tests (scripts/run-scenario-*) are NOT run in
+      # CI because they need OAuth credentials for the upstream Claude
+      # API. Run them locally / in a dedicated paid-CI job.
+      - name: Integration — tarball verification
+        run: node --import tsx --test --test-force-exit tests/int-tarball-verification.mjs
+
+      - name: Integration — Constitution III dir-diff
+        run: node --import tsx --test --test-force-exit tests/int-constitution-iii-dirdiff.mjs
+        continue-on-error: true  # capture stream needs `claude` auth; informational only in CI

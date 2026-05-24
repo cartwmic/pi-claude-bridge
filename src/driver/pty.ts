@@ -387,6 +387,9 @@ export interface SpawnDriverOptions {
 	/** Optional: warm-resume session id (D22). When present, --resume is used
 	 *  instead of --session-id, and transcript path uses this id. */
 	resumeSessionId?: string;
+	/** Optional: CC `--effort` flag value (low|medium|high|xhigh|max).
+	 *  Mapped from pi `options.reasoning` by the caller. */
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
 	/** Optional pi AbortSignal. */
 	signal?: AbortSignal;
 	/** PTY dimensions. Default 100x30. */
@@ -596,6 +599,14 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 		args.push("--session-id", sessionId);
 	}
 	args.push("--model", opts.model);
+	// Reasoning → effort mapping (ported from SDK path REASONING_TO_EFFORT).
+	// CC's `--effort <low|medium|high|xhigh|max>` controls thinking budget;
+	// without it, default is the lowest tier and models don't engage deep
+	// reasoning. Pi's `reasoning` option (minimal/low/medium/high/xhigh)
+	// translates 1:1 (minimal→low).
+	if (opts.effort) {
+		args.push("--effort", opts.effort);
+	}
 	// D27 (2026-05-22): DO NOT pass `--system-prompt[-file]`. Empirically, ANY
 	// substantive system prompt content delivered via `--system-prompt*` flags
 	// to interactive `claude` trips Anthropic's billing/safety classifier

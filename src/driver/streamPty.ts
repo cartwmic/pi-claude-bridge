@@ -304,6 +304,16 @@ function correlateParked(session: ActiveSession): void {
 	}
 }
 
+// Pi reasoning levels → CC effort flag values. Mirrors SDK path's
+// REASONING_TO_EFFORT (index.ts).
+const REASONING_TO_EFFORT: Record<string, "low" | "medium" | "high" | "xhigh" | "max"> = {
+	minimal: "low",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "max",
+};
+
 let activeSession: ActiveSession | null = null;
 
 // 7.2 history-divergence detection. Each completed turn snapshots a hash
@@ -618,6 +628,8 @@ function startFreshTurn(
 			writeBridgeLogLine(
 				`streamSimple: fresh query resume=${warmResume ? cachedSessionId!.slice(0, 8) : "no"} model=${model.id}`,
 			);
+			const reasoning = (options as { reasoning?: string } | undefined)?.reasoning;
+			const effort = reasoning ? REASONING_TO_EFFORT[reasoning] : undefined;
 			const handle = await spawnDriver({
 				shimPath: resolveShimPath(),
 				model: model.id,
@@ -627,6 +639,7 @@ function startFreshTurn(
 				mode: "main",
 				tools,
 				signal: options?.signal as AbortSignal | undefined,
+				...(effort ? { effort } : {}),
 				...(warmResume && cachedSessionId ? { resumeSessionId: cachedSessionId } : {}),
 			});
 

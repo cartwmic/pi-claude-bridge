@@ -53,7 +53,16 @@ import type { TranscriptEvent } from "./transcript.js";
 
 const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before completion]";
 
+/** Per-turn CC `usage` events report cumulative prompt-side snapshots
+ *  (input + cacheRead + cacheWrite) for each assistant entry, NOT deltas —
+ *  summing them N-fold inflates the value over a multi-roundtrip turn.
+ *  Track the latest snapshot across turns so newTurnOutput can seed pi's
+ *  footer without snapping to zero between turns. Cleared whenever the
+ *  warm-resume cache is cleared (any path that breaks transcript coherence). */
+let lastUsageSnapshot: { input: number; cacheRead: number; cacheWrite: number } | null = null;
+
 function newTurnOutput(modelId: string): AssistantMessage {
+	const seed = lastUsageSnapshot ?? { input: 0, cacheRead: 0, cacheWrite: 0 };
 	return {
 		role: "assistant",
 		content: [],
@@ -61,11 +70,11 @@ function newTurnOutput(modelId: string): AssistantMessage {
 		provider: "claude-bridge" as any,
 		model: modelId,
 		usage: {
-			input: 0,
+			input: seed.input,
 			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
+			cacheRead: seed.cacheRead,
+			cacheWrite: seed.cacheWrite,
+			totalTokens: seed.input + seed.cacheRead + seed.cacheWrite,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
@@ -363,6 +372,7 @@ function clearWarmResumeCache(reason: string): void {
 	cachedSessionId = null;
 	cachedSessionCwd = null;
 	lastSentMessageHashes = null;
+	lastUsageSnapshot = null;
 }
 
 /** External entry point: drop the warm-resume cache + divergence hashes.
@@ -378,6 +388,7 @@ export function __resetStreamPtyCacheForTests(): void {
 	cachedSessionId = null;
 	cachedSessionCwd = null;
 	lastSentMessageHashes = null;
+	lastUsageSnapshot = null;
 }
 
 // --- Per-turn stream helpers (operate on `activeSession`) ---------------
@@ -801,11 +812,24 @@ function startFreshTurn(
 						return;
 					}
 					case "usage": {
-						session.out.usage.input += e.usage.input;
+						// CC emits cumulative prompt-side snapshots per assistant
+						// entry — last-wins for input/cacheRead/cacheWrite avoids
+						// N-fold inflation over multi-roundtrip turns. Output is
+						// a per-call delta, so sum it.
+						session.out.usage.input = e.usage.input;
 						session.out.usage.output += e.usage.output;
-						session.out.usage.cacheRead += e.usage.cacheRead;
-						session.out.usage.cacheWrite += e.usage.cacheWrite;
-						session.out.usage.totalTokens = session.out.usage.input + session.out.usage.output;
+						session.out.usage.cacheRead = e.usage.cacheRead;
+						session.out.usage.cacheWrite = e.usage.cacheWrite;
+						session.out.usage.totalTokens =
+							session.out.usage.input +
+							session.out.usage.output +
+							session.out.usage.cacheRead +
+							session.out.usage.cacheWrite;
+						lastUsageSnapshot = {
+							input: e.usage.input,
+							cacheRead: e.usage.cacheRead,
+							cacheWrite: e.usage.cacheWrite,
+						};
 						writeBridgeLogLine(
 							`usage: cacheRead=${e.usage.cacheRead} cacheWrite=${e.usage.cacheWrite} input=${e.usage.input} output=${e.usage.output}`,
 						);
@@ -831,7 +855,7 @@ function startFreshTurn(
 							session.textContentIndex = -1;
 						}
 						if (e.reason === "aborted") {
-							session.out.stopReason = "stop";
+							session.out.stopReason = "aborted";
 							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						} else {
 							session.out.stopReason = "stop";
@@ -886,7 +910,7 @@ function startFreshTurn(
 							);
 						}
 						if (!session.ended) {
-							session.out.stopReason = "stop";
+							session.out.stopReason = "aborted";
 							endWith(session, { type: "error", reason: "aborted", error: session.out });
 						}
 						// D15: PRESERVE warm-resume cache across abort when the turn

@@ -15,7 +15,7 @@ import { spawnDriver } from "../src/driver/pty.js";
 // trigger the dialog; tested manually.
 const cwd = realpathSync(process.cwd());
 const req = createRequire(import.meta.url);
-const shimPath = req.resolve("../dist/mcp/shim.js");
+const shimPath = req.resolve("../shim.js");
 
 const h = await spawnDriver({
 	shimPath, model: "claude-sonnet-4-6",

@@ -18,7 +18,7 @@ import { createRequire } from "node:module";
 import { spawnDriver } from "../src/driver/pty.js";
 
 const req = createRequire(import.meta.url);
-const shimPath = req.resolve("../dist/mcp/shim.js");
+const shimPath = req.resolve("../shim.js");
 const cwd = realpathSync(mkdtempSync(join(tmpdir(), "int-warm-")));
 
 console.log("Turn 1 — fresh");

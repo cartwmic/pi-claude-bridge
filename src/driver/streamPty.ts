@@ -198,7 +198,9 @@ function resolvePiToolName(emittedName: string, nameMap: Map<string, string>): s
 
 function resolveShimPath(): string {
 	const hereUrl = import.meta.url;
-	return new URL("../../dist/mcp/shim.js", hereUrl).pathname;
+	// Use package-root launcher, not dist/, so git-installed pi packages work
+	// without a post-clone build. shim.js loads src/mcp/shim.ts via jiti.
+	return new URL("../../shim.js", hereUrl).pathname;
 }
 
 // --- Trailing tool-result extraction ------------------------------------

@@ -76,8 +76,8 @@ function buildCaptureColdStartPrompt(messages: Context["messages"]): { prompt: s
 }
 
 function resolveShimPath(): string {
-	// src/capture.ts → ../dist/mcp/shim.js. See streamPty.ts comment.
-	return new URL("../dist/mcp/shim.js", import.meta.url).pathname;
+	// Package-root launcher keeps capture path runnable from git installs too.
+	return new URL("../shim.js", import.meta.url).pathname;
 }
 
 export interface CaptureRunOptions {

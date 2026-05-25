@@ -367,7 +367,7 @@ async function loadPtySpawn(): Promise<PtySpawnFn> {
 export interface SpawnDriverOptions {
 	/** Path to the `claude` binary. Default: looked up via PATH. */
 	claudeBin?: string;
-	/** Path to the shim JS file. Default: resolved via require.resolve. */
+	/** Path to standalone shim entrypoint. Default: package-root shim.js launcher. */
 	shimPath: string;
 	/** Resolved model id (CLI value). */
 	model: string;

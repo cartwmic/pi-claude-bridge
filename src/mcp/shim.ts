@@ -22,6 +22,7 @@
 
 import { readFileSync } from "node:fs";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -362,7 +363,7 @@ function lightValidateAgainstSchema(args: unknown, schema: unknown): { ok: true 
 
 // --- Entry point ---------------------------------------------------------
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 	if (args.mode === "hook") {
 		await runHookMode(args);
@@ -371,9 +372,9 @@ async function main(): Promise<void> {
 	await runMcpMode(args);
 }
 
-// Only run when invoked directly (not when imported as a module by tests).
-// ESM: import.meta.url === pathToFileURL(process.argv[1]).href when direct.
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("/shim.js") || process.argv[1]?.endsWith("/shim.ts")) {
+// Only run when invoked directly (not when imported through shim.js/tests).
+const invokedPath = process.argv[1];
+if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
 	main().catch((err) => {
 		process.stderr.write(`shim fatal: ${(err as Error).stack || err}\n`);
 		process.exit(1);

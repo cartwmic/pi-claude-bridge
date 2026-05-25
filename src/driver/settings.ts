@@ -59,7 +59,7 @@ export interface HookEntry {
 /**
  * Settings builder options.
  *
- * `shimPath` — absolute path to the built `pi-claude-bridge-shim` binary.
+ * `shimPath` — absolute path to the standalone `pi-claude-bridge-shim` entrypoint.
  * `socketPath` — per-PTY unix socket path the shim connects to.
  * `events` — which hook events to register. v1 = SessionStart + Stop only
  *   (D9; PreToolUse + SessionEnd dropped). Configurable for tests.
@@ -136,7 +136,7 @@ function shellQuote(s: string): string {
 // ---------------------------------------------------------------------------
 
 export interface McpConfigBuilderOptions {
-	/** Absolute path to the built `pi-claude-bridge-shim` binary. */
+	/** Absolute path to the standalone `pi-claude-bridge-shim` entrypoint. */
 	shimPath: string;
 	/** Per-PTY unix socket path. */
 	socketPath: string;

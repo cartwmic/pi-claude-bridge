@@ -391,7 +391,7 @@ describe("typePromptWithDebounce (D26)", () => {
 		assert.deepEqual(sleepCalls, [120]);
 	});
 
-	it("uses default 120ms debounce when not specified", async () => {
+	it("uses default 500ms debounce when not specified", async () => {
 		const writes = [];
 		const sleepCalls = [];
 		await typePromptWithDebounce(
@@ -400,7 +400,7 @@ describe("typePromptWithDebounce (D26)", () => {
 			undefined,
 			async (ms) => { sleepCalls.push(ms); },
 		);
-		assert.deepEqual(sleepCalls, [120]);
+		assert.deepEqual(sleepCalls, [500]);
 		assert.deepEqual(writes, ["x", "\r"]);
 	});
 

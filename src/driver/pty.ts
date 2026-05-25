@@ -64,7 +64,7 @@ function diagLog(msg: string): void {
 export const INK_QUIESCENCE_DEFAULT_SILENT_MS = 80;
 export const INK_QUIESCENCE_DEFAULT_CEILING_MS = 2000;
 export const INK_QUIESCENCE_DEFAULT_POLL_MS = 15;
-export const INK_ENTER_DEBOUNCE_DEFAULT_MS = 120;
+export const INK_ENTER_DEBOUNCE_DEFAULT_MS = 500;
 export const SESSION_START_WAIT_DEFAULT_MS = 15000;
 
 export interface InkQuiescenceTrackerOptions {
@@ -149,7 +149,7 @@ export function composeBundledUserMessage(
  *
  * Sequence:
  *   1. `proc.write(prompt)`
- *   2. await `debounceMs` (default 120ms)
+ *   2. await `debounceMs` (default 500ms)
  *   3. `proc.write("\r")`
  */
 export async function typePromptWithDebounce(
@@ -407,7 +407,7 @@ export interface SpawnDriverOptions {
 	inkQuiescenceMs?: number;
 	/** D26: Ink quiescence ceiling — type-anyway after this. Default 2000ms. */
 	inkMaxWaitMs?: number;
-	/** D26: Inter-write debounce between prompt bytes and `\r`. Default 120ms. */
+	/** D26: Inter-write debounce between prompt bytes and `\r`. Default 500ms. */
 	inkEnterDebounceMs?: number;
 	/** D26: How long to wait for `SessionStart` hook before erroring. Default 15000ms. */
 	sessionStartWaitMs?: number;

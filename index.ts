@@ -450,13 +450,19 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event?: any) => {
-		clearStreamPtyCache("session_shutdown");
+		// Do NOT clear the warm-resume cache here. Despite the type doc claiming
+		// session_shutdown fires "on process exit", pi emits it between user
+		// turns (observed in bridge logs: caching session=X followed milliseconds
+		// later by session_shutdown dropping X, repeatedly across a single pi
+		// process). Clearing here cold-starts every subsequent turn — pi appears
+		// to "forget" prior context. Genuine process exit drops the module-level
+		// cache for free.
+		//
 		// Pi rebuilds a fresh ModelRegistry on EVERY session change. /reload also
 		// calls resetApiProviders() in pi-ai. The Symbol guard (lives on
 		// globalThis) survives those resets and would skip pi.registerProvider on
 		// the next module init — leaving the new registry without claude-bridge
-		// models. Drop the guard on every shutdown so the next module init
-		// re-registers.
+		// models. Drop the guard so the next module init re-registers.
 		delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
 	});
 

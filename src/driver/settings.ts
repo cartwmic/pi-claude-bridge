@@ -41,9 +41,14 @@ export const DISALLOWED_BUILTIN_TOOLS: readonly string[] = Object.freeze([
 	"ScheduleWakeup", "TaskOutput", "TaskStop", "BashOutput", "Monitor", "Mcp",
 ]);
 
-/** Bridged tool surface — only `mcp__custom-tools__*` is allowed. */
+/** Bridged tool surface — only the `pi-bridge` MCP server (which re-exports
+ *  the `custom-tools` namespace via the shim) is allowed. CC presents tools
+ *  to the model as `mcp__<serverName>__<innerName>`, and our shim advertises
+ *  inner names like `mcp__custom-tools__<tool>`, so the effective surface
+ *  the model sees is `mcp__pi-bridge__mcp__custom-tools__*`. The whitelist
+ *  must match THAT — not the inner namespace alone. */
 export const ALLOWED_TOOL_GLOBS: readonly string[] = Object.freeze([
-	"mcp__custom-tools__*",
+	"mcp__pi-bridge__*",
 ]);
 
 export interface HookCommand {

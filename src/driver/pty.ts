@@ -20,7 +20,7 @@ import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { stripAnsi } from "./ansi.js";
-import { buildSettingsJson, buildMcpConfigJson } from "./settings.js";
+import { buildSettingsJson, buildMcpConfigJson, buildAllowedToolsArg } from "./settings.js";
 import { TranscriptTailer, computeTranscriptPath, type TranscriptEvent } from "./transcript.js";
 import {
 	Router,
@@ -623,17 +623,21 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	args.push("--strict-mcp-config");
 	args.push("--setting-sources", "");
 	args.push("--permission-mode", "bypassPermissions");
-	args.push("--dangerously-skip-permissions");
 	args.push("--settings", settings);
-	// NOTE on --allowedTools: claude's commander parser declares it as
-	// variadic (`<tools...>`), which consumes ALL subsequent positional
-	// arguments — including our positional PROMPT. Dropping it is safe:
-	// the bridged surface is already isolated by `--strict-mcp-config`
-	// (no user MCP servers), `--setting-sources ""` (no user/project/local
-	// settings), and the inline `permissions.deny` set in --settings (all
-	// native built-ins blocked). The `mcp__custom-tools__*` namespace is
-	// already the only callable surface.
-	// Capture mode: also disable slash commands (F4 mitigation).
+	// --allowedTools: variadic in commander, but since D26 the user prompt is
+	// typed into the TUI (NOT passed as a positional arg). Putting an `--option`
+	// after it terminates the variadic, so `--allowedTools <glob> --<next-flag>`
+	// is safe. The deny list in --settings alone is NOT sufficient because the
+	// model can still emit tool_use blocks for built-ins; --allowedTools is the
+	// authoritative whitelist (matches the pre-PTY SDK contract).
+	args.push("--allowedTools", buildAllowedToolsArg());
+	// Neither mode uses --dangerously-skip-permissions: that flag bypasses the
+	// deny list AND the allowedTools whitelist, which would let the model run
+	// arbitrary built-ins (Bash/Read/etc.) on the user's machine. The SDK
+	// capture path set `allowDangerouslySkipPermissions: true` to satisfy a
+	// headless-mode requirement that doesn't apply to PTY-driven capture —
+	// bypassPermissions + allowedTools is sufficient here.
+	// Capture mode additionally disables slash commands (F4 mitigation).
 	if (opts.mode === "capture") {
 		args.push("--disable-slash-commands");
 	}

@@ -31,12 +31,12 @@ describe("DISALLOWED_BUILTIN_TOOLS (constitution IV)", () => {
 });
 
 describe("ALLOWED_TOOL_GLOBS", () => {
-	it("allows only mcp__custom-tools__* surface", () => {
-		assert.deepEqual([...ALLOWED_TOOL_GLOBS], ["mcp__custom-tools__*"]);
+	it("allows only mcp__pi-bridge__* surface", () => {
+		assert.deepEqual([...ALLOWED_TOOL_GLOBS], ["mcp__pi-bridge__*"]);
 	});
 
 	it("buildAllowedToolsArg returns a comma-joined string", () => {
-		assert.equal(buildAllowedToolsArg(), "mcp__custom-tools__*");
+		assert.equal(buildAllowedToolsArg(), "mcp__pi-bridge__*");
 	});
 });
 

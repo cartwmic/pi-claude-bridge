@@ -58,7 +58,7 @@ describe("spawnDriver — CLI argument assembly", () => {
 	before(() => installMockPty());
 	after(() => clearMockProcs());
 
-	it("passes --session-id, --mcp-config, --settings, --setting-sources \"\", --strict-mcp-config, --permission-mode, --dangerously-skip-permissions", async () => {
+	it("passes --session-id, --mcp-config, --settings, --setting-sources \"\", --strict-mcp-config, --permission-mode, --allowedTools (main mode does NOT use --dangerously-skip-permissions)", async () => {
 		clearMockProcs();
 		const cwd = makeTempCwd();
 		const h = await spawnDriver({
@@ -77,7 +77,11 @@ describe("spawnDriver — CLI argument assembly", () => {
 		assert.ok(args.includes("--setting-sources"));
 		assert.equal(args[args.indexOf("--setting-sources") + 1], "");
 		assert.ok(args.includes("--permission-mode"));
-		assert.ok(args.includes("--dangerously-skip-permissions"));
+		assert.ok(args.includes("--allowedTools"));
+		assert.equal(args[args.indexOf("--allowedTools") + 1], "mcp__pi-bridge__*");
+		// Main mode must NOT use --dangerously-skip-permissions — it short-circuits
+		// the deny list and lets built-in tools leak past the allowedTools whitelist.
+		assert.ok(!args.includes("--dangerously-skip-permissions"));
 		assert.ok(args.includes("--mcp-config"));
 		assert.ok(args.includes("--settings"));
 		assert.ok(args.includes("--model"));
@@ -134,7 +138,7 @@ describe("spawnDriver — CLI argument assembly", () => {
 		await h.router.close();
 	});
 
-	it("capture mode adds --disable-slash-commands (F4 mitigation)", async () => {
+	it("capture mode adds --disable-slash-commands (F4 mitigation) and does NOT use --dangerously-skip-permissions", async () => {
 		clearMockProcs();
 		const cwd = makeTempCwd();
 		const h = await spawnDriver({
@@ -150,6 +154,10 @@ describe("spawnDriver — CLI argument assembly", () => {
 		});
 		const args = mockProcs[0].spawnArgs;
 		assert.ok(args.includes("--disable-slash-commands"));
+		// Capture mode must NOT use --dangerously-skip-permissions: it bypasses
+		// the deny list AND the allowedTools whitelist, which would let the
+		// model execute arbitrary built-ins on the user's machine.
+		assert.ok(!args.includes("--dangerously-skip-permissions"));
 		await h.router.close();
 	});
 

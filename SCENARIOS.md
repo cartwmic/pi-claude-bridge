@@ -700,6 +700,52 @@ models, and `findInitialModel` falls through to `defaultModelPerProvider`.
 `Symbol.for("claude-bridge:active")` so the next module init re-registers
 the provider into pi's freshly-built `ModelRegistry`.
 
+### S28 — Built-in tools blocked on cold start; bridged tools work
+
+**Goal:** verify `--tools ""` is passed on cold start, preventing Claude from
+accessing any built-in tools (Agent, Bash, Read, TaskCreate, etc.). Claude
+must use only the bridged MCP tool surface.
+
+**Regression class:** if `--tools ""` is removed from the CLI args or not
+passed on cold start, built-in tools silently become available and Claude may
+use them — bypassing pi's tool-execution pipeline entirely.
+
+**Steps:**
+1. Ask Claude to create a marker file, then read it back (requires bridged write + read).
+2. Assert bridge log shows `mcp handler:` entries for the bridged tools.
+3. Ask Claude to use Agent/TaskCreate to spawn a subagent.
+4. Assert Claude acknowledges Agent is unavailable and completes work directly.
+
+**Pass:**
+- Mechanical:
+  - Bridge log contains `mcp handler: read` and `mcp handler: write` (or `bash`).
+  - No `mcp handler: Agent` or `mcp handler: Task` entries anywhere.
+  - At least 2 total bridged tool invocations.
+- **Coherence:** model acknowledges Agent/Task unavailable or works around it
+  (must NOT say "I'll use Agent" or "subagent launched").
+
+### S29 — Built-in tools blocked on warm-resume
+
+**Goal:** verify `--tools ""` is also passed on `--resume` (warm-resume path).
+Without it, a resumed session silently gets ALL built-in tools back — confirmed
+empirically on CC v2.1.150.
+
+**Regression class:** if `--resume` doesn't carry `--tools ""`, the second
+and subsequent turns in a session have full built-in tool access even though
+the first turn was properly restricted.
+
+**Steps:**
+1. Establish a session with a bridged tool turn.
+2. On Turn 2 (warm-resume), ask Claude to use Agent/TaskCreate to spawn a subagent.
+3. Assert Claude acknowledges Agent is unavailable and uses bridged tools instead.
+
+**Pass:**
+- Mechanical:
+  - Bridged tools invoked on both Turn 1 and Turn 2.
+  - No `mcp handler: Agent` or `mcp handler: Task` entries in entire session.
+  - Single CC session_id (warm-resume reused cache) or at most 2.
+- **Coherence:** model acknowledges Agent/Task unavailable or works around.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per
@@ -727,6 +773,8 @@ turn. Expected shapes — deviations are regressions:
 | S16a /fork | turns before fork: creation→read; first turn after fork: **creation** (expected); subsequent: read |
 | S16b /tree to old branch | turns on original branch: creation→read; first turn after navigate: **creation** (expected); subsequent: read |
 | S17 /compact | turns before compact: creation→read; pi's summarization call: read (uses existing cache); first turn after compact: **creation** (expected); subsequent: read |
+| S28 cold-start tool block | T1: creation; T2: read |
+| S29 warm-resume tool block | T1: creation; T2: read |
 
 A scenario's cache profile is recorded in `SCENARIO_RESULTS.md` as part of
 the result entry. Mismatches block the scenario from passing even if

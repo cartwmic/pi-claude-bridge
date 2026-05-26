@@ -77,9 +77,13 @@ clarified to add exemption (b); no principle reversed).
 ### IV. Native Claude tools are disallowed
 The inference driver MUST be configured such that all native built-in
 tools (Read, Write, Edit, Bash, Glob, Grep, Agent, WebFetch,
-WebSearch, TodoWrite, plan-mode tools, deferred-task tools, etc.) are
-blocked at emission. Only pi-bridged tools, exposed via the bridge's
-MCP surface, are callable.
+WebSearch, TodoWrite, plan-mode tools, deferred-task tools,
+TaskCreate, TaskGet, TaskList, TaskUpdate, etc.) are
+blocked at emission. The authoritative mechanism is `--tools ""`
+(disables ALL native tools in Claude Code) combined with
+`--allowedTools "mcp__pi-bridge__*"` (whitelists only the bridged MCP
+surface). The settings-based `permissions.deny` list is defense-in-depth.
+Only pi-bridged tools, exposed via the bridge's MCP surface, are callable.
 
 **Rationale:** pi is the user-facing tool authority. Native tools
 bypass pi's permission model, UX, and audit trail. The "Maintenance"

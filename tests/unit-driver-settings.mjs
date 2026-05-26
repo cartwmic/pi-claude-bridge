@@ -18,7 +18,8 @@ describe("DISALLOWED_BUILTIN_TOOLS (constitution IV)", () => {
 			"WebFetch", "WebSearch", "TodoWrite",
 			"EnterPlanMode", "ExitPlanMode",
 			"Skill", "ToolSearch", "AskUserQuestion",
-			"ScheduleWakeup", "TaskOutput", "TaskStop", "BashOutput", "Monitor", "Mcp",
+			"ScheduleWakeup", "TaskOutput", "TaskStop", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+			"BashOutput", "Monitor", "Mcp",
 		];
 		for (const tool of required) {
 			assert.ok(DISALLOWED_BUILTIN_TOOLS.includes(tool), `missing required tool: ${tool}`);

@@ -624,12 +624,12 @@ export async function spawnDriver(opts: SpawnDriverOptions): Promise<DriverHandl
 	args.push("--setting-sources", "");
 	args.push("--permission-mode", "bypassPermissions");
 	args.push("--settings", settings);
-	// --allowedTools: variadic in commander, but since D26 the user prompt is
-	// typed into the TUI (NOT passed as a positional arg). Putting an `--option`
-	// after it terminates the variadic, so `--allowedTools <glob> --<next-flag>`
-	// is safe. The deny list in --settings alone is NOT sufficient because the
-	// model can still emit tool_use blocks for built-ins; --allowedTools is the
-	// authoritative whitelist (matches the pre-PTY SDK contract).
+	// --tools "" disables ALL built-in tools. --allowedTools alone is NOT
+	// sufficient to block built-ins (empirically verified on CC v2.1.150);
+	// the model still emits tool_use blocks for Agent/Bash/Read/etc. even
+	// when --allowedTools only lists mcp__pi-bridge__*. The settings deny
+	// list is defense-in-depth; --tools "" is the authoritative gate.
+	args.push("--tools", "");
 	args.push("--allowedTools", buildAllowedToolsArg());
 	// Neither mode uses --dangerously-skip-permissions: that flag bypasses the
 	// deny list AND the allowedTools whitelist, which would let the model run

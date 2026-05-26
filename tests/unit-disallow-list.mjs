@@ -14,7 +14,8 @@ describe("DISALLOWED_BUILTIN_TOOLS — spec compliance", () => {
 			"WebFetch", "WebSearch", "TodoWrite",
 			"EnterPlanMode", "ExitPlanMode",
 			"Skill", "ToolSearch", "AskUserQuestion",
-			"ScheduleWakeup", "TaskOutput", "TaskStop", "BashOutput", "Monitor", "Mcp",
+			"ScheduleWakeup", "TaskOutput", "TaskStop", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+			"BashOutput", "Monitor", "Mcp",
 		];
 		for (const t of required) {
 			assert.ok(DISALLOWED_BUILTIN_TOOLS.includes(t), `spec-required tool '${t}' missing from DISALLOWED_BUILTIN_TOOLS`);

@@ -37,8 +37,11 @@ export const DISALLOWED_BUILTIN_TOOLS: readonly string[] = Object.freeze([
 	// ToolSearch from its training pattern; the SDK swallowed those silently,
 	// the PTY path will not).
 	"ToolSearch", "Skill", "AskUserQuestion", "PushNotification",
-	// CC background-task / scheduling family (observed leaking on SDK path).
-	"ScheduleWakeup", "TaskOutput", "TaskStop", "BashOutput", "Monitor", "Mcp",
+	// CC task-management family (TaskCreate/TaskGet/TaskList/TaskUpdate added
+	// in CC v2.1.150; observed leaking on warm-resume and when --allowedTools
+	// alone is insufficient to block built-ins).
+	"ScheduleWakeup", "TaskOutput", "TaskStop", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+	"BashOutput", "Monitor", "Mcp",
 ]);
 
 /** Bridged tool surface — only the `pi-bridge` MCP server (which re-exports

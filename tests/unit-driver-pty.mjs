@@ -58,7 +58,7 @@ describe("spawnDriver — CLI argument assembly", () => {
 	before(() => installMockPty());
 	after(() => clearMockProcs());
 
-	it("passes --session-id, --mcp-config, --settings, --setting-sources \"\", --strict-mcp-config, --permission-mode, --allowedTools (main mode does NOT use --dangerously-skip-permissions)", async () => {
+	it("passes --session-id, --mcp-config, --settings, --tools \"\", --setting-sources \"\", --strict-mcp-config, --permission-mode, --allowedTools (main mode does NOT use --dangerously-skip-permissions)", async () => {
 		clearMockProcs();
 		const cwd = makeTempCwd();
 		const h = await spawnDriver({
@@ -77,6 +77,8 @@ describe("spawnDriver — CLI argument assembly", () => {
 		assert.ok(args.includes("--setting-sources"));
 		assert.equal(args[args.indexOf("--setting-sources") + 1], "");
 		assert.ok(args.includes("--permission-mode"));
+		assert.ok(args.includes("--tools"));
+		assert.equal(args[args.indexOf("--tools") + 1], "");
 		assert.ok(args.includes("--allowedTools"));
 		assert.equal(args[args.indexOf("--allowedTools") + 1], "mcp__pi-bridge__*");
 		// Main mode must NOT use --dangerously-skip-permissions — it short-circuits

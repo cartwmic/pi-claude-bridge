@@ -17,7 +17,9 @@ WHEN the bridge starts a fresh turn for a model registered under provider `claud
 - **AND** the spawned arguments DO NOT include `--system-prompt` or `--system-prompt-file` or `--append-system-prompt[-file]` (D27: ANY `--system-prompt*` flag with substantive content trips Anthropic's interactive-mode billing/safety classifier returning `API Error: 400 "out of extra usage"`; the pi system prompt is bundled into the typed user message instead)
 - **AND** the spawned arguments include `--session-id <uuid>` with a pre-generated UUID the bridge will use to compute the transcript path deterministically (via `~/.claude/projects/<encoded-realpath-cwd>/<uuid>.jsonl` where the cwd is passed through `fs.realpathSync` before `/` → `-` encoding; see design D18)
 - **AND** the spawned arguments include `--settings` carrying inline hook handlers for `SessionStart` and `Stop` only (NOT `PreToolUse` — dropped per design D9/D11)
-- **AND** the spawned arguments include the disallowed-tool surface enforcing constitution principle IV
+- **AND** the spawned arguments include `--tools ""` disabling all native built-in tools (the authoritative gate; `--allowedTools` alone is insufficient — empirically verified on CC v2.1.150)
+- **AND** the spawned arguments include `--allowedTools "mcp__pi-bridge__*"` constraining the model to the bridged MCP surface only
+- **AND** the spawned arguments include the disallowed-tool surface enforcing constitution principle IV (defense-in-depth via `--settings` `permissions.deny`)
 - **AND** the spawned arguments DO NOT include the pi user prompt as a positional argument; the prompt is delivered post-spawn via typed input (see "Prompt injection via typed input post-SessionStart")
 
 #### Scenario: Transcript path is computed deterministically from the pre-generated UUID (with realpath cwd)
@@ -38,12 +40,18 @@ WHEN the bridge starts a fresh turn for a model registered under provider `claud
 
 ### Requirement: Native tool emission is blocked at driver configuration
 
-THE driver SHALL configure every spawned `claude` invocation such that all native built-in tools enumerated in the bridge's disallow list are blocked at emission, leaving the bridged MCP namespace (`mcp__custom-tools__*`) as the only callable tool surface.
+THE driver SHALL configure every spawned `claude` invocation, both on cold start (`--session-id`) and warm-resume (`--resume`), such that all native built-in tools enumerated in the bridge's disallow list are blocked at emission. The authoritative mechanism is `--tools ""` which disables ALL native tools at the Claude Code CLI level; `--allowedTools "mcp__pi-bridge__*"` constrains the MCP surface; and the `--settings` `permissions.deny` list provides defense-in-depth. `--allowedTools` alone is NOT sufficient to block native tools (empirically verified on CC v2.1.150). Only the bridged MCP namespace (`mcp__pi-bridge__*`) is callable.
 
 #### Scenario: Disallow list is non-empty and includes documented set
 - **WHEN** the driver builds inline settings for a PTY spawn
-- **THEN** the resulting settings forbid at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `ToolSearch`, `AskUserQuestion`, `ScheduleWakeup`, `TaskOutput`, `TaskStop`, `BashOutput`, `Monitor`, and `Mcp`
-- **AND** the allow set, if expressed, includes only `mcp__custom-tools__*`
+- **THEN** the resulting settings forbid at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `ToolSearch`, `AskUserQuestion`, `ScheduleWakeup`, `TaskOutput`, `TaskStop`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `BashOutput`, `Monitor`, and `Mcp`
+- **AND** the CLI arguments include `--tools ""` as the authoritative native-tool gate
+- **AND** the allow set includes only `mcp__pi-bridge__*`
+
+#### Scenario: Warm-resume preserves tool blocking
+- **WHEN** the driver spawns a warm-resume turn with `--resume <cached-session-id>`
+- **THEN** the spawned `claude` invocation includes `--tools ""` and `--allowedTools "mcp__pi-bridge__*"` (same as cold start)
+- **AND** no native built-in tools are available to the model on the resumed turn
 
 ### Requirement: Prompt injection via typed input post-SessionStart
 
@@ -64,7 +72,7 @@ IF the `SessionStart` hook does not fire within an implementation-defined window
 
 #### Scenario: Warm-resume injection via typed input
 - **WHEN** the driver starts a turn with a cached driver session id matching the current pi cwd and message-hash chain
-- **THEN** the PTY is spawned with `--resume <cached-session-id>` (without `--session-id`; the resumed id is the authority) and no positional prompt
+- **THEN** the PTY is spawned with `--resume <cached-session-id>`, `--tools ""`, and `--allowedTools "mcp__pi-bridge__*"` (without `--session-id`; the resumed id is the authority) and no positional prompt
 - **AND** after `SessionStart` + quiescence, the driver types only the new user message into the TUI input followed by the debounced `\r`
 - **AND** no historical pi messages are re-sent
 - **AND** the transcript tailer computes the path as `~/.claude/projects/<encoded-cwd>/<cached-session-id>.jsonl` (the same formula as fresh spawns, per design D22) and opens the existing file tailing from end-of-file

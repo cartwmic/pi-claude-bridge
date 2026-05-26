@@ -32,6 +32,16 @@
 // strip so visible word boundaries survive.
 const CSI_CUF_RE = /\x1b\[(\d*)C/g;
 
+// CSI CHA (cursor-horizontal-absolute): ESC [ Pn G — move cursor to absolute
+// column. CC v2.1.150's workspace-trust dialog uses CHA between words instead
+// of CUF (or literal spaces): "Accessing\x1b[12Gworkspace:" rather than
+// "Accessing \x1b[1Cworkspace:". Without expansion, stripAnsi collapses the
+// words and the trust-dialog scanner misses the trigger. Replace each CHA
+// with a single space; we can't honor the absolute column without a column
+// tracker, but one space is enough to keep visible words separated for
+// substring matching.
+const CSI_CHA_RE = /\x1b\[\d*G/g;
+
 // CSI: ESC [ <params 0x30-0x3F> <intermediates 0x20-0x2F> <final 0x40-0x7E>
 const CSI_RE = /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g;
 
@@ -71,6 +81,7 @@ export function stripAnsi(input: string): string {
 		.replace(DCS_PM_APC_RE, "")
 		.replace(OSC_RE, "")
 		.replace(CSI_CUF_RE, (_, n) => " ".repeat(Math.max(1, Math.min(parseInt(n, 10) || 1, 256))))
+		.replace(CSI_CHA_RE, " ")
 		.replace(CSI_RE, "")
 		.replace(ESC_CHARSET_RE, "")
 		.replace(ESC_SHORT_RE, "")

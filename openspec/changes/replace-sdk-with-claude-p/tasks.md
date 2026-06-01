@@ -152,6 +152,12 @@ default until Phase 3.
   - files_allowed:
       - tests/int-claude-p-tool-round.sh
       - tests/int-claude-p-tool-round.mjs
+- [ ] 1.12a Scenario S27 (tool-surface isolation, pi-TUI level): drive a turn that tempts native tools; assert via the bridge's `tools/list` introspection + log that the advertised surface is EXACTLY `mcp__custom-tools__*` and that NO native tool was routed/executed (emission-then-dropped is a PASS; `WaitForMcpServers` allowed). Surfaces the G2 guarantee at the acceptance-bar level per constitution IV. (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools; SCENARIOS.md S27)
+  - intent: feature
+  - files_allowed:
+      - scripts/run-scenario-s27.sh
+      - tests/int-claude-p-tool-isolation.mjs
+  - allow_new_files: true
 - [ ] 1.12 Integration test: native-tool block — assert `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""` leave only `mcp__custom-tools__*` callable, via deterministic MCP `tools/list` introspection; assert user-global `permissions.allow` and user-global MCP servers do NOT re-enable anything; assert `WaitForMcpServers` is not surfaced to pi (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools)
   - intent: feature
   - files_allowed:
@@ -281,7 +287,7 @@ default until Phase 3.
 
 ## 4. Phase 4 — Hardening + the scenario gate
 
-- [ ] 4.1 **SCENARIO GATE (completion bar):** run the full pi-TUI scenario suite (`scripts/run-all-scenarios.sh`, S0–S26). EVERY scenario passes (mechanical + coherence + cache-shape) OR carries a documented fundamental architectural exemption recorded in `SCENARIO_RESULTS.md` AND design.md. No silent skips. S5 disposition (from T1.16) is recorded here. This task is NOT done until the suite is green-or-exempted.
+- [ ] 4.1 **SCENARIO GATE (completion bar):** run the full pi-TUI scenario suite (`scripts/run-all-scenarios.sh`, S0–S27). EVERY scenario passes (mechanical + coherence + cache-shape) OR carries a documented fundamental architectural exemption recorded in `SCENARIO_RESULTS.md` AND design.md. No silent skips. S5 disposition (from T1.16) is recorded here. This task is NOT done until the suite is green-or-exempted.
   - intent: feature
   - files_allowed:
       - scripts/**/*

@@ -1,8 +1,9 @@
 # pi-claude-bridge Constitution
 
-**Version:** 1.1.0
+**Version:** 1.2.0
 **Ratified:** 2026-05-20
-**Last updated:** 2026-05-21 (Principle III amended: added the deterministic-path exemption)
+**Last updated:** 2026-05-31 (Principle IV wording reconciled: binding guarantee is non-routing/non-execution, not "blocked at emission")
+**Prior:** 2026-05-21 (Principle III amended: added the deterministic-path exemption — now DEAD under the claude-p driver, which reads no transcript)
 
 ## Core Principles
 
@@ -75,19 +76,36 @@ delivered to it via a hook payload.
 clarified to add exemption (b); no principle reversed).
 
 ### IV. Native Claude tools are disallowed
-The inference driver MUST be configured such that all native built-in
-tools (Read, Write, Edit, Bash, Glob, Grep, Agent, WebFetch,
-WebSearch, TodoWrite, plan-mode tools, deferred-task tools, etc.) are
-blocked at emission. Only pi-bridged tools, exposed via the bridge's
-MCP surface, are callable.
+The inference driver MUST be configured such that no native built-in
+tool (Read, Write, Edit, Bash, Glob, Grep, Agent, WebFetch,
+WebSearch, TodoWrite, plan-mode tools, deferred-task tools, etc.) can
+be **routed, executed, or surfaced to pi**. Only pi-bridged tools,
+exposed via the bridge's MCP surface, are callable.
+
+**Wording clarification (amended 2026-05-31, v1.1.0 → v1.2.0):** the
+binding guarantee is *non-routing / non-execution*, NOT "the model
+never emits a native `tool_use`." Empirically the model emits built-in
+`tool_use` blocks on instinct regardless of configuration (observed in
+the SDK era — "built-in tool_use observed … skipping queue push"), and
+some drivers emit internal housekeeping built-ins every turn (e.g.
+claude-p's `WaitForMcpServers`). Such emissions are permissible PROVIDED
+the bridge drops them — they are never routed to a handler, executed,
+or shown to pi. The prior "blocked at emission" wording was aspirational
+and did not match observed behavior; this amendment corrects it without
+weakening the principle (native tools still must not affect pi's world).
 
 **Rationale:** pi is the user-facing tool authority. Native tools
 bypass pi's permission model, UX, and audit trail. The "Maintenance"
 note in README — auditing new CC built-ins on upgrades — is a
 direct expression of this principle.
-**Enforcement:** every inference driver configuration MUST list
-disallowed tools; CI test asserts the disallow list is non-empty and
-includes the documented set.
+**Enforcement:** every inference driver configuration MUST disallow
+native tools (disallow-list or, preferably, an allowlist of the
+pi-bridged namespace). The binding CI/gate assertion is a **closed-set**
+check — the driver's advertised tool surface is EXACTLY the pi-bridged
+`mcp__custom-tools__*` set — PLUS a **non-execution** check that a
+native-tool emission does not reach a handler. (A bare disallow-list
+enumeration is necessary but not sufficient: it cannot catch a future CC
+built-in not on the list; the closed-set assertion does.)
 
 ### V. System prompt fidelity per path
 The bridge has two prompt-handling paths with different contracts.

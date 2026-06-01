@@ -39,7 +39,7 @@ WHEN the bridge starts a fresh turn for a model registered under provider `claud
 
 ### Requirement: Native tool emission is blocked via `--disallowedTools`
 
-THE driver SHALL configure every claude-p spawn with `--disallowedTools` enumerating the bridge's native-tool disallow list, such that the bridged MCP namespace (`mcp__custom-tools__*`) is the only callable tool surface. Because claude-p reserves `--settings`, the disallow set is expressed via the `--disallowedTools` flag (forwarded to `claude`) rather than inline settings `permissions.deny`.
+THE driver SHALL configure every claude-p spawn with `--disallowedTools` enumerating the bridge's native-tool disallow list, such that the bridged MCP namespace (`mcp__custom-tools__*`) is the only callable tool surface. Because claude-p reserves `--settings`, the disallow set is expressed via the `--disallowedTools` flag (forwarded to `claude`) rather than inline settings `permissions.deny`. Per constitution IV (reconciled 2026-05-31), the binding guarantee is **non-routing/non-execution**, NOT "the model never emits a native `tool_use`": the model may emit a built-in tool_use on instinct, and claude-p may emit housekeeping built-ins (`WaitForMcpServers`) — these MUST be dropped (never routed to a handler, executed, or surfaced to pi), and the advertised surface MUST be exactly the closed `mcp__custom-tools__*` set. Verified by gate G2 and surfaced at the pi-TUI level by scenario S27.
 
 #### Scenario: Disallow list is non-empty and includes documented set
 - **WHEN** the driver builds claude-p arguments for a spawn

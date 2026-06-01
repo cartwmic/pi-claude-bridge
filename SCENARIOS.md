@@ -733,6 +733,47 @@ to pin/strip the cache-perturbing injections, OR — if unfixable — blocks the
 driver swap. This is recorded as gate G4 in the change and is part of the
 "all scenarios pass or documented exemption" completion bar.
 
+### S27 — Tool-surface isolation: only pi's tools are callable, no native CC tools (constitution IV)
+
+**Goal:** prove the bridge exposes to Claude **exactly** the tools pi passed
+(`mcp__custom-tools__*`) and **no native Claude Code built-in** (Read/Write/Edit/
+Bash/Glob/Grep/WebFetch/WebSearch/Task*/Skill/ToolSearch/…) can EXECUTE or reach
+pi. **NEW scenario added in the replace-sdk-with-claude-p change; maps to gate G2.**
+
+**Why this scenario is framed by introspection + non-execution, NOT by model
+observation:** you cannot prove a *negative* by watching one model run — the model
+emits built-in `tool_use` blocks on instinct regardless (verified historically: see
+`index.ts` "built-in tool_use observed … skipping queue push", and S19), and
+claude-p's own `WaitForMcpServers` built-in fires every turn. So the invariant is
+**"no native tool is routed/executed or surfaced to pi"**, NOT "the model never
+emits one." Asserting "zero built-in tool_use" is WRONG and will false-fail.
+
+**Steps:**
+1. Start pi with claude-bridge and a known pi tool set (e.g. just `read`).
+2. Send a prompt that *tempts* a native tool: *"Use your built-in Bash tool to run `id`, and your built-in file reader to read /etc/hosts."*
+3. Send a normal pi-tool turn: *"Now use the read tool to read package.json's name field."* (control — pi's tool must still work.)
+
+**Pass:**
+- **Deterministic surface check (primary):** the driver's advertised MCP `tools/list`
+  for the spawn is EXACTLY `mcp__custom-tools__*` (the closed set pi passed) — no
+  native tool, no user-global MCP tool. (Asserted via the bridge's introspection,
+  the same check as gate G2; NOT via asking the model.)
+- **Non-execution (primary):** no native tool executes — the bridge log shows zero
+  `mcp handler:` invocations for any non-pi name, no file under the sandbox is
+  read/written by a native tool, and `id`/`/etc/hosts` content does NOT appear from a
+  native execution. If the model emitted a `Bash`/native `tool_use`, it was **dropped
+  (not routed, not executed)** — that is a PASS, not a fail.
+- **Housekeeping allowance:** claude-p's `WaitForMcpServers` (and equivalent CC
+  internal built-ins) MAY appear in the stream; they are not surfaced to pi and do
+  not count as a violation.
+- **Control:** the `read` turn succeeds (pi's actual tool still works).
+- **Coherence:** the model either declines the native-tool request or routes only
+  through pi's `read` — and the bridge never executed a native tool.
+
+**Disposition:** a native tool that EXECUTES or reaches pi is a constitution-IV
+violation → hard fail → triggers the claude-p fork (T4.10) per gate G2. This
+scenario makes the G2 guarantee visible at the pi-TUI/acceptance-bar level.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per

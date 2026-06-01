@@ -11,7 +11,7 @@
 
 ## Replan drivers (two hard constraints)
 
-1. **All pi-TUI scenario tests (S0–S26, ~28 scripts) MUST pass**, OR a scenario
+1. **All pi-TUI scenario tests (S0–S27, ~28 scripts) MUST pass**, OR a scenario
    carries a documented fundamental architectural/design exemption. No silent skips.
 2. **No in-house PTY, and the nominal `claude -p` surface is forbidden.** Delegate
    all terminal-driving to **`smithersai/claude-p`** (interactive-TUI wrapper),
@@ -391,7 +391,12 @@ the real scenario (gate G6).
   bridge's; constitution III binds the *bridge process* only, and the task 4.2 audit
   asserts no bridge-process read/write under `~/.claude/`, not claude-p's.
 - **IV (native tools disallowed):** enforced via D28 (`--disallowedTools` + isolation
-  flags + shim rejection). Unchanged intent.
+  flags + shim rejection). **Constitution IV wording reconciled 2026-05-31 (v1.1.0 →
+  v1.2.0):** the binding guarantee is non-routing/non-execution, NOT "blocked at
+  emission" — the model may emit a native `tool_use` (and claude-p emits
+  `WaitForMcpServers`), which the bridge drops without routing/executing. The binding
+  check is the closed-set `tools/list` == `mcp__custom-tools__*` + a non-execution
+  assertion (G2). Surfaced at the pi-TUI/acceptance level by **scenario S27**.
 - **V, VI, VII:** unchanged; the driver swap preserves system-prompt fidelity,
   concurrent-path isolation (independent claude-p subprocesses), and failure-surfacing.
 

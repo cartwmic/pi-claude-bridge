@@ -181,6 +181,13 @@ shim path resolution, IPC wire protocol, capture authoritative-source) stands.
 **Choice:** on pi abort, deliver `SIGINT` to the claude-p subprocess (claude-p
 returns 130 and tears down its own PTY + `claude`); escalate to `SIGKILL` after a
 grace window. No Esc-Esc/PTY-keystroke logic (that was the in-house-PTY path).
+**Orphan risk (from the investigation).** claude-p aborts its own child via
+SIGTERM→SIGKILL WITHOUT a graceful `/exit`, and REPORT.md notes the child `claude`
+PTY process group "survives until its own descendant cleanup" if claude-p is
+SIGKILL'd. So the bridge SHALL signal/kill the claude-p **process group** (not just
+the claude-p pid) and SHALL verify no orphaned `claude`/zmux processes remain after
+abort (the "no orphan subprocesses" cross-cutting invariant; S8 asserts this with `ps`).
+
 **Modifies D10**; **retains D15** verbatim — the bridge-side router state (the
 `pendingResolvers`/`pendingResults` maps) survives so a late pi `tool_result` is
 captured for next-turn replay. Cold-replay (not transcript-resume) reconciles an
@@ -238,9 +245,20 @@ Under claude-p the round-trip is SPLIT across two channels:
 So the router must reconcile {shim request id} ↔ {model `toolu_…` id} ↔ {pi
 `toolResult.id`}. This is the single most load-bearing mechanism of the change.
 
-**Choice (to be proven by G8):** the router parks each shim `tools/call` and
-correlates it to the model `toolu_…` id observed on stdout by matching on tool
-`name` + canonicalized `arguments` (the shim call and the stdout tool_use describe
+**Reframing after the claude-p investigation (de-risks this).** The tool round-trip
+to pi SHOULD be driven by the **MCP shim**, not by parsing stdout: the shim receives
+`tools/call` with `name` + `arguments` synchronously, and the bridge mints its OWN
+pi-facing tool-call id keyed to the parked shim call. pi echoes that id back on its
+`toolResult`, and the bridge resolves the matching parked call — so **the model's
+`toolu_…` id is NOT needed to ROUTE the round-trip**, and stdout buffering cannot
+deadlock it. Cross-channel correlation to the stdout `toolu_…` id is therefore
+**UX-only** (labeling the streamed tool_use display), not load-bearing — G8 is
+downgraded accordingly (still verify parallel-tool routing via the shim, but the
+`toolu_…` reconciliation is no longer a cut-over blocker).
+
+**Choice (UX-correlation, to be confirmed by G8):** the router parks each shim
+`tools/call` and may correlate it to the model `toolu_…` id observed on stdout by
+matching on tool `name` + canonicalized `arguments` (the shim call and the stdout tool_use describe
 the same call), then keys the parked resolver by the recovered `toolu_…` id so pi's
 `toolResult.id` resolves it directly — preserving today's resolution contract.
 **Parallel/identical calls (S11):** when two tool_use blocks in one assistant line
@@ -257,6 +275,35 @@ id directly (to be checked in G8), that id is used and the name+args heuristic i
 unnecessary. **G8 proves this on a 2-parallel-tool fixture before the router is written.**
 
 **4-point test:** multiple-approaches? yes. lasting? yes. disagreement? yes.
+future-constraint? yes. → **ADR candidate Y**.
+
+### D33: claude-p resilience layer (added after the reliability investigation)
+
+**Problem (empirically observed).** claude-p 0.1.0's turn lifecycle is detected via
+`SessionStart`/`Stop` hooks relayed through a FIFO; when a hook event is missed
+(observed intermittently under contention — ~3 failures in ~14 spawns, clustered
+when 3–4 claude-p processes overlapped), claude-p `SessionStartTimeout`/
+`StopTimeout`s and the **entire turn fails with exit 2 and no output**. REPORT.md
+concedes this fragility ("depends on Claude Code's hook system functioning … and
+the relay shell script executing reliably"). For a model provider — every pi turn —
+a raw few-percent fatal-failure rate is unacceptable.
+
+**Choice:** the bridge SHALL wrap each claude-p spawn in a resilience layer:
+- Detect failure = claude-p exits non-zero WITHOUT having emitted a terminal
+  `result` line, OR emits `SessionStartTimeout`/`StopTimeout`, within a bridge-side watchdog.
+- On detection, **bounded-retry by respawning** (fresh `--session-id` on cold,
+  `--resume <cached-id>` on warm — the failed attempt streamed nothing pi consumed).
+  Default ≤2 retries + short backoff; configurable.
+- Only after retries exhaust does the bridge surface `stopReason: "error"` to pi
+  (constitution VII). Each retry logs a structured warn entry.
+- Idempotent w.r.t. pi: nothing is streamed to pi until a spawn reaches first
+  output, so a failed-then-retried spawn does not double-emit.
+
+**Fork direction (T4.10):** the more robust fix is turn-end detection independent of
+the Stop-hook FIFO — derived from the stream `result` the bridge already consumes.
+If retry proves insufficient, the fork hardens or replaces hook detection.
+
+**4-point test:** multiple-approaches? yes. lasting? yes. disagreement? minor.
 future-constraint? yes. → **ADR candidate Y**.
 
 ### D-S5: Mid-stream steer — abort+respawn, exemption if insufficient

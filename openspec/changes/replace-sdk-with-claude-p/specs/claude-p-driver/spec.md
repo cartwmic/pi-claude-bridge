@@ -90,7 +90,7 @@ THE driver SHALL treat the cached driver session id as an in-memory cache hint a
 
 ### Requirement: Abort propagates to the claude-p subprocess
 
-WHEN pi signals abort on the current turn's `AbortSignal`, THE driver SHALL deliver `SIGINT` to the claude-p subprocess (which returns exit code 130 and tears down its own PTY and `claude` child), SHALL prevent further inference progress, and SHALL escalate to `SIGKILL` after an implementation-defined grace window if the subprocess has not exited.
+WHEN pi signals abort on the current turn's `AbortSignal`, THE driver SHALL deliver `SIGINT` to the claude-p **process group** (not just the claude-p pid), SHALL prevent further inference progress, and SHALL escalate to `SIGKILL` after an implementation-defined grace window if the group has not exited. Because claude-p tears down its own child via SIGTERM→SIGKILL without a graceful `/exit` and its child `claude` PTY group may survive a bare claude-p SIGKILL (per claude-p REPORT.md), THE driver SHALL target the process group and SHALL verify (and reap) that no orphaned `claude`/zmux descendant survives the abort (the "no orphan subprocesses" cross-cutting invariant; S8).
 
 #### Scenario: Abort during model output
 - **WHEN** pi aborts mid-turn while the model is streaming text
@@ -110,7 +110,12 @@ THE driver SHALL NOT read or write any path under `~/.claude/` — including `~/
 
 ### Requirement: Unexpected driver exit surfaces as error
 
-IF the claude-p subprocess exits with a non-success code while a turn is in flight and no terminal `result` line has been emitted on its stdout, OR IF claude-p emits an unrecoverable error (including its own `--timeout` expiry, exit code 124), THEN the driver SHALL push an `error` event on the active pi stream whose `errorMessage` names the exit cause (exit code, signal, or claude-p error) and SHALL emit a structured log entry; THE driver SHALL NOT silently retry.
+IF the claude-p subprocess exits with a non-success code while a turn is in flight and no terminal `result` line has been emitted on its stdout, OR IF claude-p emits an unrecoverable error (including its own `--timeout` expiry exit 124, or `SessionStartTimeout`/`StopTimeout`), THEN the driver SHALL — per the resilience layer (design D33) — bounded-retry by respawning (default ≤2 retries, short backoff, each logged at warn) since nothing was streamed to pi yet; and ONLY after retries are exhausted SHALL it push an `error` event on the active pi stream whose `errorMessage` names the exit cause and emit a structured log entry. THE driver SHALL NOT retry SILENTLY (every retry logs) and SHALL NOT retry once pi has already consumed streamed output for the turn.
+
+#### Scenario: Transient claude-p hook-timeout is retried, not surfaced
+- **WHEN** a claude-p spawn exits with `SessionStartTimeout`/`StopTimeout` (or non-zero without a terminal `result`) before any output reached pi
+- **THEN** the driver respawns (bounded retries) and logs each attempt at warn
+- **AND** pi sees a normal turn if a retry succeeds; only on exhausted retries does pi receive `stopReason: "error"`
 
 #### Scenario: Driver binary missing
 - **IF** `claude-p` (or the `claude` binary it requires) is not available at spawn time

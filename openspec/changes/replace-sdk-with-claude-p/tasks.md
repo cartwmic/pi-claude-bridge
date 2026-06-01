@@ -64,11 +64,11 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md", "openspec/changes/replace-sdk-with-claude-p/design.md"]
   - allow_new_files: true
-- [ ] 0b.G8 **Cross-channel tool-call correlation (HARD, blocks cut-over):** on a 2-parallel-tool fixture through claude-p, prove the router reconciles {shim MCP request} ↔ {model `toolu_…` id on stdout} ↔ {pi `toolResult.id`} per design D32 — first determine whether claude-p's `tools/call` carries the model's `toolu_…` id directly; if not, prove name+args matching (with positional fallback for identical calls) routes each held call to the correct pi result with no cross-wiring. This shapes the router's core data structures, so it runs BEFORE T1.7 (router impl). (mcp-stdio-shim.tool-call-correlation-across-the-split-channels; S11)
+- [ ] 0b.G8 **Parallel tool-call routing (HARD, blocks cut-over):** on a 2-parallel-tool fixture through claude-p, prove the router routes each held call to the correct pi `toolResult` with no cross-wiring. Per the claude-p investigation + design D32 reframe, routing goes via the MCP shim (bridge mints its OWN pi-facing id keyed to the parked `tools/call`; the model's `toolu_…` id is NOT needed to route) — so the cross-channel `toolu_…` reconciliation is UX-only, NOT a routing blocker. This still shapes the router's data structures, so it runs BEFORE T1.7 (router impl). (mcp-stdio-shim.tool-call-correlation-across-the-split-channels; S11)
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-parallel-tools.mjs"]
   - allow_new_files: true
-- [ ] 0b.G9 **Concurrent spawns / S25 + S14 (HARD, blocks cut-over):** prove two claude-p subprocesses run concurrently — BOTH (a) main + capture (a capture spawn while a main turn's tool is parked, S25) AND (b) **nested same-provider main + main** (a claude-bridge parent parked on `subagent` while a claude-bridge child runs, S14) — each with an isolated shim/socket/router and per-frame D32 correlation, no cross-talk, and that `WaitForMcpServers` resolves against a shim concurrently holding a DIFFERENT spawn's call open. Measure concurrent cold-boot cost. (claude-p-driver.concurrent-spawns-are-fully-isolated-capture-and-nested-subagents; output-capture.capture-path-isolation; design V/VI)
+- [ ] 0b.G9 **Concurrent spawns / S25 + S14 (HARD, blocks cut-over):** prove two claude-p subprocesses run concurrently — BOTH (a) main + capture (a capture spawn while a main turn's tool is parked, S25) AND (b) **nested same-provider main + main** (a claude-bridge parent parked on `subagent` while a claude-bridge child runs, S14) — each with an isolated shim/socket/router and per-frame D32 correlation, no cross-talk, and that `WaitForMcpServers` resolves against a shim concurrently holding a DIFFERENT spawn's call open. Measure concurrent cold-boot cost. NOTE (from the investigation): claude-p's FIFO/relay-script paths are unique-per-invocation (`$TMPDIR/claude-p-<pid>-<rand>/`) so path collision is already retired; 2-way concurrency tested clean; the WATCH ITEM is higher-order concurrent-boot contention, which is the suspected trigger of the observed hook-timeout flakiness (D33) — G9 must stress ≥2 concurrent boots and confirm the resilience layer covers any contention-induced timeout. (claude-p-driver.concurrent-spawns-are-fully-isolated-capture-and-nested-subagents; output-capture.capture-path-isolation; design V/VI)
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-concurrent.mjs"]
   - allow_new_files: true
@@ -137,6 +137,11 @@ default until Phase 3.
       - index.ts
       - src/driver/**/*.ts
       - src/mcp/**/*.ts
+- [ ] 1.9a Implement the claude-p resilience layer (design D33) in `src/driver/claudeP.ts`: bridge-side watchdog detects exit≠0-without-`result` / `SessionStartTimeout` / `StopTimeout`; bounded-retry-respawn (≤2, backoff, warn-logged) before surfacing `stopReason: "error"`; never retry after pi has consumed streamed output; abort signals the process GROUP and reaps orphaned `claude`/zmux descendants. (claude-p-driver.unexpected-driver-exit-surfaces-as-error retry path + abort orphan clause)
+  - intent: feature
+  - files_allowed:
+      - src/driver/claudeP.ts
+      - tests/unit-driver-resilience.mjs
 - [ ] 1.10 Integration test: end-to-end main-provider turn via claude-p (text-only) — spawns real claude-p, asserts coherent assistant text + usage
   - intent: feature
   - files_allowed:

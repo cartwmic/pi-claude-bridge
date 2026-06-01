@@ -59,18 +59,53 @@ call-log: `RECEIVED 03:16:34.741 → RESPONDING 03:16:38.743` (4.0s held).
 > The canonical, authoritative gate set lives in design.md's "Verification status"
 > block; it has grown to **G1–G9 + G-resume-flags** since this note was first written.
 
-## Reliability finding (2026-05-31, follow-up cache spike)
+## Reliability investigation (2026-05-31) — mechanism + design implications
 
-Attempting the G4 warm-cache cross-`--resume` measurement, claude-p 0.1.0 FAILED
-3 of 3 plain-prompt turns: one `claude-p: StopTimeout`, two `claude-p:
-SessionStartTimeout` (exit 2, no `result` emitted), even at `--timeout 150`. The
-earlier Exp C turn (with an MCP tool configured) succeeded. So claude-p 0.1.0's
-hook-based Stop/SessionStart detection is **flaky on this machine/version** — a
-concrete reliability risk that materially raises the likelihood the bridge must
-vendor/fork claude-p (or pin a hardened version) per task T4.10, independent of
-the feature gates. The G4 cross-turn cache number is therefore STILL UNMEASURED
-(blocked by the flakiness); caching is known ACTIVE per Exp C (`cache_read=127119`)
-but warm preservation across `--resume` spawns remains the open gate.
+### How claude-p detects turn lifecycle (from src/driver.zig, hook.zig, stream.zig, REPORT.md)
+- Registers `SessionStart` + `Stop` hooks via `--settings` JSON. Each hook runs a
+  generated relay script (`$TMPDIR/claude-p-<pid>-<rand>/hook.sh <event>`) that
+  appends `<event>\t<payload>\n` to a per-invocation **named FIFO** (unique path:
+  `$TMPDIR/claude-p-<pid>-<rand>/events.fifo`). claude-p polls the FIFO.
+- `SessionStart` event ⇒ "Ink is up" ⇒ wait for Ink quiescence (80ms silent, ≤2s)
+  ⇒ type prompt ⇒ 120ms debounce ⇒ send Enter.
+- `Stop` event ⇒ turn finished ⇒ drain post-Stop transcript (20×20ms) ⇒ emit the
+  `result` envelope ⇒ exit. **The `result` line / stream-end is GATED on the Stop
+  hook firing.**
+- `SessionStartTimeout` / `StopTimeout` = the corresponding FIFO event never arrived
+  within `--timeout`. Both reserve `--settings` (confirmed — bridge cannot add hooks).
+
+### Empirical flakiness
+- ~11 recent PASS (Exp C w/ MCP; a clean dbg turn SessionStart@953ms/Stop@4084ms; a
+  6/6 sequential batch; 2 concurrent + 1 control). 3 FAIL earlier (1 StopTimeout,
+  2 SessionStartTimeout) — clustered in a window with **3–4 overlapping background
+  claude-p tasks**. 2-way concurrency tested clean; the failures correlate with
+  heavier contention / transient conditions, NOT a hard incompatibility.
+- Failure MODE when it hits: a missed SessionStart/Stop FIFO event ⇒ timeout ⇒
+  **whole turn fails with exit 2 and NO output**. For a model provider (every pi
+  turn) this is fatal-per-turn and must be wrapped in resilience (retry/respawn).
+- REPORT.md own words: hook detection "depends on Claude Code's hook system
+  functioning as documented and the relay shell script executing reliably —
+  potential fragility points if hook behavior changes between versions"; and
+  claude-p is **"single-turn … multi-turn driving is out of scope"** (we use
+  `--resume` across invocations for warm cache — works but outside its design center).
+
+### Design implications (baked into design.md)
+- **D33 (NEW): bridge resilience layer** — detect SessionStart/StopTimeout / exit≠0
+  -without-`result` and bounded-retry-respawn before surfacing an error to pi.
+- **D32 refined**: route `tool_use`→pi via the MCP shim (synchronous, has name+args;
+  bridge mints its own pi-facing id keyed to the parked call) — NOT by parsing
+  stdout. The model's `toolu_…` id is NOT needed for routing ⇒ G8 downgraded from
+  load-bearing-routing to UX-correlation. stdout buffering can't deadlock the round-trip.
+- **D31 refined**: claude-p aborts via SIGTERM→SIGKILL without graceful `/exit`, and
+  its child `claude` PTY group can survive SIGKILL ⇒ the bridge must kill the
+  process GROUP and verify no orphaned `claude`/zmux processes (S8 orphan invariant).
+- **G9**: FIFO/script paths are unique-per-invocation ⇒ concurrency path-collision
+  retired; 2-way concurrency verified clean; higher-order concurrent-boot contention
+  (the suspected flakiness trigger) remains the G9/G1 watch item.
+
+The G4 cross-`--resume` cache number is STILL UNMEASURED (blocked by the flakiness
+burst during the attempt). Caching is known ACTIVE per Exp C (`cache_read=127119`);
+warm preservation across `--resume` spawns remains the open gate.
 
 The agent-loop thesis gate is CLEARED. The behavioral gates **G1–G9 + G-resume** are
 NOT, and must pass (or be documented exemptions / trigger the claude-p fork) BEFORE

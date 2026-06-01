@@ -131,7 +131,45 @@ so the prior `--settings permissions.deny` mechanism (D11 layer 1) is replaced b
 layer 1 becomes `--disallowedTools`; layers 2–4 (`--setting-sources ""`,
 `--strict-mcp-config`, shim `tools/list` rejection) unchanged.
 
-**UNVERIFIED — hard gate G2 (non-negotiable).** This is the single riskiest
+**VERIFIED — G2 PASS (2026-06-01, real claude-p 0.1.0 + claude 2.1.159).** The
+substitution holds on upstream claude-p — NO fork needed for isolation. Empirically:
+- (a) **closed-set:** with the COMPLETED denylist (see below), the model-facing
+  `system/init.tools` roster is `[]` natives; adding the bridge `--mcp-config`
+  yields EXACTLY `mcp__custom-tools__*`. (Introspected via raw `claude -p`'s
+  `system/init` line — claude-p's interactive stdout does NOT surface a roster, so
+  closed-set is asserted against the same `claude` binary + identical isolation argv.)
+- (b) **native refused:** the model ordered to `echo … > /tmp/…` via Bash through
+  real claude-p never created the file and emitted no `Bash` tool_use. ✔
+- (c) **bridged survives:** `mcp__custom-tools__*` round-trip still works under the
+  disallow set. ✔
+- **Format/flags honored through claude-p:** space-joined single-token
+  `--disallowedTools`, `--strict-mcp-config` (foreign user MCP server stripped AND
+  never spawned), and `--setting-sources ""` (user `permissions.allow:["Bash(*)"]`
+  did not re-enable Bash) all forward and are honored.
+
+**Denylist completeness (the only G2 defect, fixed in src).** The initial list
+leaked 11 natives into the 2.1.159 roster — `CronCreate/CronDelete/CronList`,
+`EnterWorktree/ExitWorktree`, `NotebookEdit`, `TaskCreate/TaskGet/TaskList/TaskUpdate`,
+`Workflow` (+ `PushNotification`/`RemoteTrigger` in some environments). `CLAUDE_P_DISALLOWED_TOOLS`
+now enumerates the full set (34 entries) and closes the roster. The exact native
+set is claude-version- AND environment-dependent, so the denylist is structurally
+fragile: **T4.7 MUST re-audit it against `claude --help`/`system/init` at runtime
+and warn on drift.** An **allowlist** (`--allowedTools mcp__custom-tools__*`) was
+tested and does NOT close the 2.1.159 `system/init` roster (natives still listed),
+so the denylist remains the mechanism (refutes a simple switch to the allowlist
+form previously floated below). The no-`Mcp` invariant is enforced by a guard +
+test (a denylist entry matching the bridged namespace would deadlock every round).
+
+**Operational caveat (record for G9/resilience):** claude-p 0.1.0 `SessionStart`/
+`StopTimeout`s whenever `CLAUDE_CONFIG_DIR` or `HOME` is overridden in its env — it
+boots cleanly only against the unmodified environment. This is a TEST-VEHICLE
+limit (adversarial config can't be injected into the through-claude-p path via env;
+G2(a) used raw `claude -p` for the roster). PRODUCTION is unaffected: the bridge
+runs against the user's real `~/.claude` and relies on `--setting-sources ""` +
+`--strict-mcp-config` (proven above) to ignore user settings/servers — it never
+overrides the config dir.
+
+**Historical (pre-G2) framing:** This was the single riskiest
 substitution in the replan. The prior `--settings permissions.deny` (D11 layer 1)
 was an EMISSION-time block we had verified on raw `claude`; claude-p REJECTS
 `--settings`, so that verified layer is LOST. Its replacement, `--disallowedTools`,

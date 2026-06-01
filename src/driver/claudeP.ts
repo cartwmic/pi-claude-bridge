@@ -61,27 +61,56 @@ import {
  * the runtime version-skew check (T4.7) must re-audit it against `claude --help`.
  */
 export const CLAUDE_P_DISALLOWED_TOOLS: readonly string[] = [
+	// Core file/shell/search/web natives.
 	"Read",
 	"Write",
 	"Edit",
 	"Bash",
 	"Glob",
 	"Grep",
-	"Agent",
 	"WebFetch",
 	"WebSearch",
-	"TodoWrite",
-	"EnterPlanMode",
-	"ExitPlanMode",
+	"NotebookEdit",
+	// Subagent / planning / skills / tool-search / interaction natives.
+	"Agent",
+	"Task",
 	"Skill",
 	"ToolSearch",
 	"AskUserQuestion",
-	"ScheduleWakeup",
+	"EnterPlanMode",
+	"ExitPlanMode",
+	"EnterWorktree",
+	"ExitWorktree",
+	// Background-task / scheduling / workflow / cron / notification natives.
+	"TodoWrite",
+	"TaskCreate",
+	"TaskGet",
+	"TaskList",
+	"TaskUpdate",
 	"TaskOutput",
 	"TaskStop",
 	"BashOutput",
 	"Monitor",
+	"Workflow",
+	"ScheduleWakeup",
+	"CronCreate",
+	"CronDelete",
+	"CronList",
+	"PushNotification",
+	"RemoteTrigger",
 ];
+// NOTE (G2, 2026-06-01): this set was completed empirically against claude
+// 2.1.159 — the prior list leaked 11 natives (Cron*, *Worktree, NotebookEdit,
+// Task{Create,Get,List,Update}, Workflow) into the model-facing `system/init`
+// roster, plus PushNotification/RemoteTrigger in some environments. With the
+// full set the roster closes to EXACTLY `mcp__custom-tools__*` (proven via raw
+// `claude -p` introspection; claude-p does not surface a roster line). The exact
+// native set is version- AND environment-dependent, so this denylist is
+// structurally fragile: T4.7 MUST re-audit it against `claude --help` /
+// `system/init` at runtime and warn on drift. An allowlist (`--allowedTools
+// mcp__custom-tools__*`) was tested and does NOT close the 2.1.159 roster, so a
+// denylist remains the mechanism (design D28). Still subject to the no-`Mcp`
+// invariant below — no entry may match the bridged namespace.
 
 /**
  * The exact `--disallowedTools` VALUE format.

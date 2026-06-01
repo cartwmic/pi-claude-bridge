@@ -43,7 +43,7 @@ THE driver SHALL configure every claude-p spawn with `--disallowedTools` enumera
 
 #### Scenario: Disallow list is non-empty and includes documented set
 - **WHEN** the driver builds claude-p arguments for a spawn
-- **THEN** the `--disallowedTools` value forbids at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `ToolSearch`, `AskUserQuestion`, `ScheduleWakeup`, `TaskOutput`, `TaskStop`, `BashOutput`, and `Monitor`
+- **THEN** the `--disallowedTools` value forbids at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `NotebookEdit`, `Agent`, `Task`, `Skill`, `ToolSearch`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `TodoWrite`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TaskOutput`, `TaskStop`, `BashOutput`, `Monitor`, `Workflow`, `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `PushNotification`, and `RemoteTrigger` (the set that empirically closes the claude 2.1.159 `system/init` roster; G2 verified — must be re-audited per claude version, task T4.7)
 - **AND** the disallow set MUST NOT include any token that matches the bridge's own `mcp__custom-tools__*` namespace under `claude`'s tool-name matching (notably a bare `Mcp`/`mcp__*` entry that could suppress the bridged surface and deadlock every tool round) — the held-open MCP surface MUST survive the disallow set
 - **AND** the model's only callable tool surface is EXACTLY `mcp__custom-tools__*` (closed-set; G2/T1.12 assert both that natives are refused AND that the bridged surface survives)
 

@@ -87,13 +87,13 @@ default until Phase 3.
   - files_allowed:
       - openspec/changes/replace-sdk-with-claude-p/review.md
   - allow_new_files: false
-- [ ] 1.2 Add runtime dependencies: `claude-p`, `@modelcontextprotocol/sdk`. Do NOT add `node-pty`. Do NOT remove SDK deps yet (Phase 3 cleanup). Pin tested `claude-p` version.
+- [x] 1.2 Add runtime dependencies: `claude-p`, `@modelcontextprotocol/sdk`. Do NOT add `node-pty`. Do NOT remove SDK deps yet (Phase 3 cleanup). Pin tested `claude-p` version. — **`claude-p` pinned `0.1.0` (exact); `@modelcontextprotocol/sdk` `^1.29.0`; SDK deps retained; typecheck green**
   - intent: infra
   - files_allowed:
       - package.json
       - package-lock.json
   - allow_new_files: false
-- [ ] 1.2a Add build pipeline (D14): create `tsconfig.build.json` emitting to `dist/`; add `"build": "tsc -p tsconfig.build.json"`; expand `files` to include `dist/**`; add `bin` entry pointing at `dist/mcp/shim.js`; ensure `prepublishOnly` runs the build. (No node-pty `spawn-helper` chmod postinstall — that prior R19 task is moot.)
+- [x] 1.2a Add build pipeline (D14): create `tsconfig.build.json` emitting to `dist/`; add `"build": "tsc -p tsconfig.build.json"`; expand `files` to include `dist/**`; add `bin` entry pointing at `dist/mcp/shim.js`; ensure `prepublishOnly` runs the build. (No node-pty `spawn-helper` chmod postinstall — that prior R19 task is moot.) — **`bin: pi-claude-bridge-shim → dist/mcp/shim.js`; `dist/` gitignored; stale build output removed**
   - intent: infra
   - files_allowed:
       - tsconfig.build.json

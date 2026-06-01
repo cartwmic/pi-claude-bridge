@@ -23,22 +23,30 @@
     "index.ts",
     "convert.ts",
     "models.ts",
+    "dist/**",
     "README.md",
     "LICENSE",
     "claude-bridge1.png",
     "claude-bridge2.png"
   ],
+  "bin": {
+    "pi-claude-bridge-shim": "dist/mcp/shim.js"
+  },
   "scripts": {
     "test:unit": "node --import tsx --test tests/unit-*.mjs",
     "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
     "test:usage": "tests/usage-test.sh",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build"
   },
   "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.111",
     "@anthropic-ai/sdk": "^0.73.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "change-case": "^5.4.4",
+    "claude-p": "0.1.0",
     "pino": "^10.3.1",
     "rotating-file-stream": "^3.2.9"
   },

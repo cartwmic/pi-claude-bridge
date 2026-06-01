@@ -30,7 +30,7 @@
     "claude-bridge2.png"
   ],
   "bin": {
-    "pi-claude-bridge-shim": "dist/mcp/shim.js"
+    "pi-claude-bridge-shim": "dist/src/mcp/shim.js"
   },
   "scripts": {
     "test:unit": "node --import tsx --test tests/unit-*.mjs",

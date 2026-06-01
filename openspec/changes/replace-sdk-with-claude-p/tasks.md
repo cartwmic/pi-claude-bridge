@@ -106,23 +106,23 @@ default until Phase 3.
   - files_allowed:
       - src/driver/claudeP.ts
       - tests/unit-driver-claude-p.mjs
-- [ ] 1.4 Implement `src/driver/stream.ts` — claude-p stdout stream-json parser + event emitter; filters noise/built-in lines (mode/permission-mode/file-history-snapshot/attachment/ai-title/stop_hook_summary/turn_duration/WaitForMcpServers); turn-end on `result` line; drift detection (transcript-stream full requirement set)
+- [x] 1.4 Implement `src/driver/stream.ts` — claude-p stdout stream-json parser + event emitter; filters noise/built-in lines (mode/permission-mode/file-history-snapshot/attachment/ai-title/stop_hook_summary/turn_duration/WaitForMcpServers); turn-end on `result` line; drift detection (transcript-stream full requirement set) — **`ClaudePStreamParser` (write/endOfStream, sync onEvent); 14 unit tests green; non-`mcp__*` tool_use dropped; `system` subtype-based noise filter + drift-warn for unknown subtypes**
   - intent: feature
   - files_allowed:
       - src/driver/stream.ts
       - tests/unit-driver-stream.mjs
-- [ ] 1.5 Implement `src/mcp/ipc.ts` — unique-per-spawn unix-socket transport (random socket path via `randomBytes`; D20)
+- [x] 1.5 Implement `src/mcp/ipc.ts` — unique-per-spawn unix-socket transport (random socket path via `randomBytes`; D20) — **NDJSON framing; `generateSocketPath`/`createIpcServer`/`connectIpcClient`; exported wire envelope types; 9 unit tests green**
   - intent: feature
   - files_allowed:
       - src/mcp/ipc.ts
       - tests/unit-mcp-ipc.mjs
-- [ ] 1.6 Implement `src/mcp/shim.ts` — stdio MCP server executable (MCP-server-only; NO hook-relay mode). Advertises only `mcp__custom-tools__*`; forwards `tools/call` to the router (held open); rejects non-bridged names; capture-mode deterministic response per `mcp-stdio-shim.capture-mode-tool-calls-receive-deterministic-shim-response`; absolute-path resolution via `require.resolve` (D19). Wire bin entry in `package.json`.
+- [x] 1.6 Implement `src/mcp/shim.ts` — stdio MCP server executable (MCP-server-only; NO hook-relay mode). Advertises only `mcp__custom-tools__*`; forwards `tools/call` to the router (held open); rejects non-bridged names; capture-mode deterministic response per `mcp-stdio-shim.capture-mode-tool-calls-receive-deterministic-shim-response`; absolute-path resolution via `require.resolve` (D19). Wire bin entry in `package.json`. — **17 unit tests green incl. real-subprocess malformed-frame `-32700`; argv config `--socket/--mode/--tools(b64)/--capture-tool`; bin → `dist/src/mcp/shim.js`; logs to stderr; capture `-32602`/`-32603`**
   - intent: feature
   - files_allowed:
       - src/mcp/shim.ts
       - package.json
       - tests/unit-mcp-shim.mjs
-- [ ] 1.7 Implement `src/mcp/router.ts` — in-process router; parks Promise per `tools/call`, resolves on pi's next `streamSimple()` (mcp-stdio-shim.shim-forwards-tool-calls-to-the-in-process-router)
+- [x] 1.7 Implement `src/mcp/router.ts` — in-process router; parks Promise per `tools/call`, resolves on pi's next `streamSimple()` (mcp-stdio-shim.shim-forwards-tool-calls-to-the-in-process-router) — **D32: mints own pi-facing id per parked call (model `toolu_…` not needed to route); parallel/identical calls key independently; `pendingResolvers`/`pendingResults` mirror index.ts; early-result race handled; 8 unit tests green. NOTE: G8 still validates this against the real binary (ordering deviation — built per D32 ahead of G8 since D32 already fixed the shape).**
   - intent: feature
   - files_allowed:
       - src/mcp/router.ts

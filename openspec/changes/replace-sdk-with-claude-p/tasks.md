@@ -82,7 +82,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
 New driver lives alongside the SDK path; `CLAUDE_BRIDGE_DRIVER` chooses. SDK is
 default until Phase 3.
 
-- [ ] 1.1 Create worktree at `worktrees/replace-sdk-with-claude-p`; capture Worktree Base SHA into `review.md`
+- [x] 1.1 Create worktree at `worktrees/replace-sdk-with-claude-p`; capture Worktree Base SHA into `review.md` — **N/A (same-tree owner override); Base SHA `3f73209` recorded in review.md**
   - intent: infra
   - files_allowed:
       - openspec/changes/replace-sdk-with-claude-p/review.md

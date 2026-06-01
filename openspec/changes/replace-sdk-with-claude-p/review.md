@@ -12,15 +12,20 @@ modes and dispatches behavior.
 | Verification Mode | retained-required | Constitution principle VII (failures surface) requires durable AC↔test mapping. `verify.md` MUST exist before archive; verify gate's check 5 enforces canonical AC ID grep. |
 | Debug Mode | standard | Not a regression-debug change; greenfield refactor. |
 | Review Status | requested | Schema mandates adversarial-review-cycle at Scale ≥ L. Owner sign-off required before invocation (the skill is user-invoked-only per its description). Will move to `findings-received` after adversarial round runs. |
-| Delegation Mode | single-agent | One agent owns the refactor end-to-end. Subagent dispatch adds coordination overhead that outweighs parallelism benefits for a tightly-coupled inference-driver swap. |
-| Worktree Mode | worktree-required | Phases 1–3 swap the inference driver behind a feature flag (`CLAUDE_BRIDGE_DRIVER=pty\|sdk`). A worktree isolates the refactor from `main`, keeps the SDK path testable during transition, and provides clean rollback. File-contract diffs need a stable base SHA. |
+| Delegation Mode | subagent-driven | **Owner override 2026-05-31** (was `single-agent`): owner directed subagent-driven implementation. Main agent is WRITEBACK OWNER (owns artifact `.md` writeback, tasks-checkbox marking, commits, per-task contract diffs); fresh subagents implement code/tests per task and return structured handoffs. |
+| Worktree Mode | same-tree | **Owner override 2026-05-31** (was `worktree-required`): owner directed implementation in the current work tree (branch `replan-driver-from-phase-0`), no separate git worktree. Feature-flag default stays `sdk` through Phase 2, so the SDK path remains the in-tree rollback fallback; contract diffs use the fixed Base SHA below. |
 | Spec Level | spec-anchored | OpenSpec's natural mode. The specs in this change describe behavior; the code implements them. Not `spec-as-source` — bridge code already exists with significant non-spec'd implementation detail. |
 
 ## Worktree Base SHA
 
 <!-- Captured by apply at worktree creation. Leave empty until apply starts. -->
 
-**Worktree Base SHA:** `27a471ceeb643c8ce386e66fdce3cc64a957cc57`
+**Worktree Base SHA:** `3f732090cb705a8d2eb4ca343d2505e59d5ae13c`
+<!-- 2026-05-31: re-pointed to current HEAD of `replan-driver-from-phase-0` for same-tree apply.
+     The prior value `27a471c` was the SUPERSEDED in-house-PTY base; the 2026-05-21 Execution
+     Note below (worktree at worktrees/replace-sdk-with-claude-p, base 27a471c) is from that
+     superseded plan and does not apply to this same-tree run. -->
+T1.1 (worktree creation) is N/A under same-tree mode — marked done with this note instead.
 
 ## Manual Adjustments
 
@@ -34,4 +39,5 @@ modes and dispatches behavior.
 
 <!-- Transient observations appended during apply. -->
 
-- 2026-05-21 00:31 — Worktree created at `worktrees/replace-sdk-with-claude-p`. Base SHA `27a471c`. Adversarial review complete (5 rounds, treadmill stop); persistent log in `.opsx-review/replace-sdk-with-claude-p/`. Beginning Phase 0 spikes.
+- 2026-05-21 00:31 — Worktree created at `worktrees/replace-sdk-with-claude-p`. Base SHA `27a471c`. Adversarial review complete (5 rounds, treadmill stop); persistent log in `.opsx-review/replace-sdk-with-claude-p/`. Beginning Phase 0 spikes. **[SUPERSEDED — in-house-PTY plan; superseded by the claude-p replan.]**
+- 2026-05-31 — Apply started under owner overrides: Delegation Mode → subagent-driven, Worktree Mode → same-tree (branch `replan-driver-from-phase-0`, HEAD `3f73209`). Base SHA re-pointed to `3f73209`. T1.1 N/A (no worktree). Observation: `src/driver/{ansi.ts,pty.ts}` + `tests/unit-driver-{ansi,trust-scanner}.mjs` are leftover in-house-PTY artifacts (commit 59f3885) the replan supersedes — not in any claude-p task contract; left in place behind the default-`sdk` flag, flagged for Phase-3 cleanup. claude-p obtained via npm (`claude-p@0.1.0`); `claude` 2.1.159 present. Executing plan.md order (foundation modules before the 0b empirical gates, which need the built shim/router/driver).

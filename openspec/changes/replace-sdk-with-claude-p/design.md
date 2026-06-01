@@ -303,6 +303,20 @@ a raw few-percent fatal-failure rate is unacceptable.
 the Stop-hook FIFO — derived from the stream `result` the bridge already consumes.
 If retry proves insufficient, the fork hardens or replaces hook detection.
 
+**Resilience + latency budget (observed numbers).** Per-spawn cost from the spike:
+SessionStart (Ink up) ~1s; a full trivial turn end-to-end ~5s; an MCP-tool turn ~17s
+(incl. model generation + held call). claude-p is one-shot, so **every pi turn pays
+a fresh ~5s+ process boot** (warm `--resume` keeps the prompt-cache but NOT the
+process — boot is re-paid each turn). The retry layer adds, in the worst case, up to
+`retries × (boot + watchdog-window)`: with ≤2 retries that is ~2 extra boots
+(~+10s) on a turn that eventually succeeds, and ~3 boots (~+15s) before an error is
+surfaced. Budget rule: set the per-spawn watchdog and `--timeout` so that
+`boot + max_tool_wait + retries × boot` stays under the provider's acceptable p99
+per-turn latency; if that ceiling can't hold, the **warm-PTY pool** (pre-booted
+claude-p processes, deferred to a follow-up change) becomes required, not optional.
+T4.6 benchmarks cold-boot + per-turn latency and records whether the warm-pool
+follow-up is needed; the retry count is configurable so the budget can be tuned.
+
 **4-point test:** multiple-approaches? yes. lasting? yes. disagreement? minor.
 future-constraint? yes. → **ADR candidate Y**.
 

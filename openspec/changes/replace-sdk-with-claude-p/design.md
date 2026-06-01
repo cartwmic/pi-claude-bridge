@@ -292,12 +292,17 @@ a raw few-percent fatal-failure rate is unacceptable.
 - Detect failure = claude-p exits non-zero WITHOUT having emitted a terminal
   `result` line, OR emits `SessionStartTimeout`/`StopTimeout`, within a bridge-side watchdog.
 - On detection, **bounded-retry by respawning** (fresh `--session-id` on cold,
-  `--resume <cached-id>` on warm — the failed attempt streamed nothing pi consumed).
-  Default ≤2 retries + short backoff; configurable.
+  `--resume <cached-id>` on warm). Default ≤2 retries + short backoff; configurable.
 - Only after retries exhaust does the bridge surface `stopReason: "error"` to pi
   (constitution VII). Each retry logs a structured warn entry.
-- Idempotent w.r.t. pi: nothing is streamed to pi until a spawn reaches first
-  output, so a failed-then-retried spawn does not double-emit.
+- **Idempotency guard (precise — side-effect-aware):** the bridge SHALL retry ONLY
+  when no `tools/call` has yet been routed to pi for this turn. Once a tool call has
+  been forwarded to pi, a side-effecting tool (Bash/Write) may have already executed
+  and pi may have recorded a `toolResult`, so a respawn+cold-replay would RE-EXECUTE
+  it. Therefore a `StopTimeout`/exit-without-`result` occurring AFTER the first routed
+  `tools/call` is NOT retried — it falls through to the abort/late-tool-result path
+  (D15) and surfaces an error if unrecoverable. ("Streamed text to pi" is the wrong
+  gate; "routed a tool call to pi" is the correct gate.)
 
 **Fork direction (T4.10):** the more robust fix is turn-end detection independent of
 the Stop-hook FIFO — derived from the stream `result` the bridge already consumes.

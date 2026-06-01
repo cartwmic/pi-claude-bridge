@@ -41,8 +41,16 @@
    pi-side divergence event (history hash mismatch, `/fork`,
    `/compact`, cwd change, restart) the cached id is dropped and the
    next turn cold-starts.
-4. Disallowed-tool blocking is enforced at emission (via driver
-   config) AND at execution (via MCP server defense-in-depth).
+4. Native tools are disallowed: the binding guarantee is that no native
+   tool is ROUTED, EXECUTED, or surfaced to pi — enforced via driver
+   config (disallow/allow list) AND the MCP server (defense-in-depth).
+   The model MAY emit a native `tool_use` on instinct (and some drivers
+   emit housekeeping built-ins, e.g. claude-p's `WaitForMcpServers`);
+   such emissions are permissible PROVIDED the bridge drops them
+   unrouted/unexecuted. (Reconciled 2026-05-31 to match Constitution IV
+   v1.2.0; the prior "enforced at emission" wording was aspirational and
+   did not match observed behavior — built-in tool_use blocks are emitted
+   regardless of config and must be dropped, not prevented.)
 5. Pi message-history-shape changes (image content, multi-block
    assistant messages, partial tool results post-abort) MUST be
    handled without re-architecting; the conversion layer normalizes

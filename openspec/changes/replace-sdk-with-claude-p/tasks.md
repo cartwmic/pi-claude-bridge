@@ -60,7 +60,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**"]
   - allow_new_files: true
-- [ ] 0b.G6 S5 disposition (also tracked at T1.16): finalize abort-and-respawn vs fork vs documented exemption; pre-record the forced cache-creation + abandoned-prefix-recall + no-duplicated-tail outcomes in `SCENARIO_RESULTS.md`. NOTE: G6 is intentionally EXCLUDED from the "G1–G5+G7 block cut-over" set (S5 may legitimately ship as a documented exemption); its disposition is re-openable if the T4.10 fork later adds mid-turn injection.
+- [ ] 0b.G6 S5 disposition (also tracked at T1.16): finalize abort-and-respawn vs fork vs documented exemption; pre-record the forced cache-creation + abandoned-prefix-recall + no-duplicated-tail outcomes in `SCENARIO_RESULTS.md`. NOTE: G6 is intentionally EXCLUDED from the cut-over-blocking set (G1–G5 + G7 + G8 + G9 + G-resume); S5 may legitimately ship as a documented exemption; its disposition is re-openable if the T4.10 fork later adds mid-turn injection.
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md", "openspec/changes/replace-sdk-with-claude-p/design.md"]
   - allow_new_files: true

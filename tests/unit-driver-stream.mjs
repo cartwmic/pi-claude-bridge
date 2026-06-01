@@ -145,6 +145,85 @@ describe("real fixture replay (expC-claude-p-stream.jsonl)", () => {
 	});
 });
 
+// ── 1b. G3: real MULTI-ROUND fixture — result is per-TURN, not per-segment ──
+//
+// Captured by tests/int-claude-p-multiround.mjs against the REAL claude-p binary
+// (3 sequential held tool rounds in one spawn). This is the cut-over-BLOCKING
+// turn-end assertion (gate 0b.G3): a per-segment `result` mis-detected as
+// turn-end would corrupt multi-round turns. The fixture proves claude-p emits
+// exactly ONE `result` line for the whole turn (no `result` between rounds), so
+// the parser's "turn-end only on result; tool rounds don't terminate" rule is
+// correct against the observed schema.
+const MULTIROUND_FIXTURE = join(
+	__dirname,
+	"..",
+	".spike-notes",
+	"claude-p-gate",
+	"g1-multiround-stream.jsonl",
+);
+
+describe("G3: real multi-round fixture (g1-multiround-stream.jsonl)", () => {
+	it("emits exactly ONE terminal done at the single per-turn result, across >=3 tool rounds", () => {
+		let raw;
+		try {
+			raw = readFileSync(MULTIROUND_FIXTURE, "utf8");
+		} catch {
+			// Fixture only exists after the G1 integration run; skip if absent so the
+			// default unit sweep (which doesn't spawn claude-p) stays green.
+			return;
+		}
+
+		// Pre-assert the fixture itself contains exactly ONE `result` line (per-TURN,
+		// not per-segment) — this is the raw-schema half of G3.
+		const resultLines = raw
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0)
+			.filter((l) => {
+				try {
+					return JSON.parse(l).type === "result";
+				} catch {
+					return false;
+				}
+			});
+		assert.equal(
+			resultLines.length,
+			1,
+			`fixture must carry exactly ONE result line per turn (per-TURN, not per-segment); saw ${resultLines.length}`,
+		);
+
+		const logger = makeLogger();
+		const { parser, events } = newParser(logger);
+		parser.write(raw);
+		parser.endOfStream({ aborted: false, exitInfo: { code: 0, signal: null } });
+
+		// >=3 bridged tool rounds surfaced (claude double-prefixes the MCP name:
+		// `mcp__custom-tools__mcp__custom-tools__step`; matched by prefix+suffix).
+		const toolUses = events.filter(
+			(e) => e.kind === "tool-use" && e.name.startsWith("mcp__") && e.name.endsWith("__step"),
+		);
+		assert.ok(toolUses.length >= 3, `>=3 bridged tool-use rounds; saw ${toolUses.length}`);
+
+		// WaitForMcpServers never surfaces as a bridged tool-use.
+		assert.ok(
+			!events.some((e) => e.kind === "tool-use" && e.name === "WaitForMcpServers"),
+			"WaitForMcpServers filtered",
+		);
+
+		// Exactly ONE terminal done(reason=result), and it is the LAST event — no
+		// tool round terminated the turn early.
+		const done = events.filter((e) => e.kind === "done");
+		assert.equal(done.length, 1, "exactly one terminal done across all rounds");
+		assert.equal(done[0].reason, "result");
+		assert.equal(events[events.length - 1].kind, "done", "done is terminal");
+
+		// Exactly one usage event (from the single result line); no error on a clean
+		// multi-round stream.
+		assert.equal(events.filter((e) => e.kind === "usage").length, 1, "one usage event");
+		assert.ok(!events.some((e) => e.kind === "error"), "no error on clean multi-round stream");
+	});
+});
+
 // ── 2. Multi-round synthetic: turn-end only on result ──────────────────────
 
 describe("multi-round turn", () => {

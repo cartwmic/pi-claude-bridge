@@ -36,7 +36,7 @@ Each captures a committed fixture/result under `.spike-notes/claude-p-gate/`. Th
 Phase-3 SDK deletion (T3.2/T3.3) is BLOCKED until G1–G5 + G7 + G8 + G9 + G-resume pass empirically OR the
 vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constitution IV).
 
-- [ ] 0b.G1 Multi-round held blocking: drive ≥3 sequential held MCP tool rounds in ONE claude-p spawn; assert each blocks inline and the turn completes. Record fixture.
+- [x] 0b.G1 **PASS (2026-06-01, real claude-p 0.1.0 + claude 2.1.159):** 3 sequential held rounds in one spawn, each blocked inline until router.deliver, stopReason:result. Fixture `.spike-notes/claude-p-gate/g1-multiround-stream.jsonl`. Multi-round held blocking: drive ≥3 sequential held MCP tool rounds in ONE claude-p spawn; assert each blocks inline and the turn completes. Record fixture.
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-multiround.mjs"]
   - allow_new_files: true
@@ -44,7 +44,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-tool-isolation.mjs"]
   - allow_new_files: true
-- [ ] 0b.G3 Turn-end & multi-round schema (in the G1–G5 blocking set): record a multi-tool-round claude-p stdout fixture; determine whether `result` is per-turn or per-segment; pin the transcript-stream turn-end rule (transcript-stream.held-open-tool-rounds-do-not-terminate-the-turn). The **turn-end correctness** clause is cut-over-BLOCKING (a per-segment `result` mis-detected as turn-end corrupts S1/S2/S11); the **cache-token aggregation** clause (summing per-turn from multiple segments) shares G4's exemption fallback if unobtainable. Verify parallel tool_use (S11) emits distinct correlated events.
+- [x] 0b.G3 **PASS:** claude-p emits exactly ONE `result` per pi turn (NOT per-segment) — parser turn-end rule holds, no fix needed; guard test added to unit-driver-stream.mjs. Turn-end & multi-round schema (in the G1–G5 blocking set): record a multi-tool-round claude-p stdout fixture; determine whether `result` is per-turn or per-segment; pin the transcript-stream turn-end rule (transcript-stream.held-open-tool-rounds-do-not-terminate-the-turn). The **turn-end correctness** clause is cut-over-BLOCKING (a per-segment `result` mis-detected as turn-end corrupts S1/S2/S11); the **cache-token aggregation** clause (summing per-turn from multiple segments) shares G4's exemption fallback if unobtainable. Verify parallel tool_use (S11) emits distinct correlated events.
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/unit-driver-stream.mjs"]
   - allow_new_files: true

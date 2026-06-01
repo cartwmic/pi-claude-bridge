@@ -1765,8 +1765,15 @@ async function startFreshQueryClaudeP(
 	frame.pendingResolvers = router.pendingResolvers as any;
 	frame.pendingResults = router.pendingResults as any;
 
+	// Advertise BARE pi tool names: claude namespaces every MCP tool as
+	// `mcp__<server>__<advertisedName>` itself, so the model sees exactly
+	// `mcp__custom-tools__<name>` (matching customToolNameToPi keys + the
+	// system-prompt tool-notice). Advertising the already-prefixed name would
+	// double-prefix to `mcp__custom-tools__mcp__custom-tools__<name>` (G1 finding
+	// F1). The shim then receives `tools/call` with the bare name (MCP strips the
+	// server prefix), which onRouterPark maps straight back to the pi name.
 	const toolDefs: ToolDef[] = mcpTools.map((t) => ({
-		name: `${MCP_TOOL_PREFIX}${t.name}`,
+		name: t.name,
 		description: t.description,
 		inputSchema: cleanSchemaForSdk(t.parameters),
 	}));

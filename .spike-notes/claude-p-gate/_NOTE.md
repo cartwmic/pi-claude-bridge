@@ -59,6 +59,19 @@ call-log: `RECEIVED 03:16:34.741 → RESPONDING 03:16:38.743` (4.0s held).
 > The canonical, authoritative gate set lives in design.md's "Verification status"
 > block; it has grown to **G1–G9 + G-resume-flags** since this note was first written.
 
+## Reliability finding (2026-05-31, follow-up cache spike)
+
+Attempting the G4 warm-cache cross-`--resume` measurement, claude-p 0.1.0 FAILED
+3 of 3 plain-prompt turns: one `claude-p: StopTimeout`, two `claude-p:
+SessionStartTimeout` (exit 2, no `result` emitted), even at `--timeout 150`. The
+earlier Exp C turn (with an MCP tool configured) succeeded. So claude-p 0.1.0's
+hook-based Stop/SessionStart detection is **flaky on this machine/version** — a
+concrete reliability risk that materially raises the likelihood the bridge must
+vendor/fork claude-p (or pin a hardened version) per task T4.10, independent of
+the feature gates. The G4 cross-turn cache number is therefore STILL UNMEASURED
+(blocked by the flakiness); caching is known ACTIVE per Exp C (`cache_read=127119`)
+but warm preservation across `--resume` spawns remains the open gate.
+
 The agent-loop thesis gate is CLEARED. The behavioral gates **G1–G9 + G-resume** are
 NOT, and must pass (or be documented exemptions / trigger the claude-p fork) BEFORE
 the Phase-3 SDK deletion (blocking set: G1–G5 + G7 + G8 + G9 + G-resume; G2

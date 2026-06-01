@@ -48,7 +48,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/unit-driver-stream.mjs"]
   - allow_new_files: true
-- [ ] 0b.G4 Cache-shape: prove per-turn `(cache_creation, cache_read)` is recoverable across tool rounds from `result.usage`, AND that `claude-p --resume <id>` yields `cache_read_input_tokens > 0` (warm). If warm reads are unobtainable, document the affected SCENARIOS cache-shape rows as exemptions up front.
+- [ ] 0b.G4 Cache-shape (HARD, blocks cut-over — cost+latency critical): prove per-turn `(cache_creation, cache_read)` is recoverable across tool rounds from `result.usage`, AND that `claude-p --resume <id>` yields `cache_read_input_tokens > 0` (warm) across process boundaries over ≥6 sequential turns — NOT a full-prefix re-creation each spawn. The specific risk: claude-p's per-spawn interactive injections (skill-listing/`attachment`, `ai-title`, `file-history-snapshot`, dynamic system-prompt sections) perturbing the cached prefix → creation every turn. Pin `--system-prompt` + exclude dynamic sections; if injections still bust the prefix, that is a per-turn cache-creation regression which is **NOT acceptable** → triggers the T4.10 fork (strip/pin the injections) or blocks the swap. Verified by the new scenario **S26** (sustained warm cache). NOTE: a single `claude-p` turn already shows caching is ACTIVE (spike Exp C: `cache_read_input_tokens=127119`); the unproven bit is cross-`--resume`-spawn warm preservation. claude-p 0.1.0 also showed `SessionStartTimeout`/`StopTimeout` flakiness on plain turns during the spike — reliability is part of this gate.
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md"]
   - allow_new_files: true
@@ -276,7 +276,7 @@ default until Phase 3.
 
 ## 4. Phase 4 — Hardening + the scenario gate
 
-- [ ] 4.1 **SCENARIO GATE (completion bar):** run the full pi-TUI scenario suite (`scripts/run-all-scenarios.sh`, S0–S25). EVERY scenario passes (mechanical + coherence + cache-shape) OR carries a documented fundamental architectural exemption recorded in `SCENARIO_RESULTS.md` AND design.md. No silent skips. S5 disposition (from T1.16) is recorded here. This task is NOT done until the suite is green-or-exempted.
+- [ ] 4.1 **SCENARIO GATE (completion bar):** run the full pi-TUI scenario suite (`scripts/run-all-scenarios.sh`, S0–S26). EVERY scenario passes (mechanical + coherence + cache-shape) OR carries a documented fundamental architectural exemption recorded in `SCENARIO_RESULTS.md` AND design.md. No silent skips. S5 disposition (from T1.16) is recorded here. This task is NOT done until the suite is green-or-exempted.
   - intent: feature
   - files_allowed:
       - scripts/**/*

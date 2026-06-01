@@ -4,7 +4,7 @@ The bridge currently depends on `@anthropic-ai/claude-agent-sdk` for every infer
 
 **Hard constraint (replan, 2026-05-31):** the bridge MUST completely avoid the nominal `claude -p` surface. The inference surface Anthropic is most committed to keeping unrestricted for personal subscriptions is the **interactive** `claude` TUI. We therefore drive the interactive TUI — but rather than build and maintain an in-house `node-pty` driver (the prior plan for this change), we delegate all terminal-driving to **`smithersai/claude-p`**, an external wrapper that emulates `claude -p`'s ergonomics by driving the interactive TUI inside its own PTY. `claude-p` is adopted as a dependency and **forked/patched if needed**.
 
-**Acceptance bar (replan):** this change is not "done" until the full pi-TUI scenario suite (S0–S25, ~28 scripts under `scripts/run-scenario-*.sh`) passes, OR a specific scenario carries a documented fundamental architectural/design exemption. No silent skips.
+**Acceptance bar (replan):** this change is not "done" until the full pi-TUI scenario suite (S0–S26, ~28 scripts under `scripts/run-scenario-*.sh`) passes, OR a specific scenario carries a documented fundamental architectural/design exemption. No silent skips.
 
 **Phase-0 spike (2026-05-31, claude 2.1.159 + claude-p 0.1.0) — *architectural-thesis* gate cleared (reproducible artifact: `.spike-notes/claude-p-gate/`):** Claude Code is an **agent loop**, not a completion endpoint — there is no `--max-turns` / stop-at-tool-use seam in the base CLI; it executes tools itself. The ONLY way pi can execute tools (constitution: "pi executes all tools") is for the bridge to **be the MCP server and hold the `tools/call` open inline** while pi computes the result. The CLI blocks on that held call (verified: 4–5s artificial holds reproduced exactly, on `-p` and — for a SINGLE round — **through claude-p**). Therefore the bridge's "one invocation per pi turn + park-the-promise" model is **structurally forced by Claude Code, not accidental complexity** — and it is preserved. claude-p's `--output-format stream-json --verbose` flushes transcript lines **live** (per-block), handles the workspace-trust dialog itself (ran in an untrusted dir with no hang), and exposes `usage`/cache tokens on the `result` envelope.
 
@@ -62,7 +62,7 @@ The bridge currently depends on `@anthropic-ai/claude-agent-sdk` for every infer
 **Tests**
 - `tests/int-*` integration tests: rewritten against the claude-p driver. Unit tests survive structurally.
 - New tests: claude-p spawn smoke, stream-json parser (interactive-schema lines), MCP shim handshake + held-open round-trip, capture forced-tool-call, native-tool-block via `--disallowedTools`.
-- **Scenario gate:** the full S0–S25 suite must pass (or carry a documented exemption) before cut-over — this is the completion bar, enforced in Phase 4.
+- **Scenario gate:** the full S0–S26 suite must pass (or carry a documented exemption) before cut-over — this is the completion bar, enforced in Phase 4.
 
 **Config**
 - Remove `askClaude.*` keys and `CLAUDE_BRIDGE_ASKCLAUDE_ENABLED`. `CLAUDE_BRIDGE_DEBUG*` preserved. Add (if needed) a `claudeP.*` block for tunables (timeout, claude-p binary path / fork override).
@@ -73,7 +73,7 @@ The bridge currently depends on `@anthropic-ai/claude-agent-sdk` for every infer
 - TODO.md: prune SDK-era items.
 
 **Operational risk**
-- claude-p is **v0.1.0** (very early). Its stream-json passthrough, flag-forwarding, and trust-dialog handling are the integration surface; a fork may be required for stability or for S5. Pin tested versions; vendor a fork if upstream drifts.
+- claude-p is **v0.1.0** (very early) and showed **concrete reliability flakiness** in the cache spike: 3/3 plain-prompt turns failed with `SessionStartTimeout`/`StopTimeout` (hook-detection timeouts), while an MCP-tool turn succeeded. This materially raises the likelihood of vendoring/forking claude-p (T4.10) for stability, independent of the feature gates. Its stream-json passthrough, flag-forwarding, and trust-dialog handling are the integration surface. Pin tested versions; vendor a fork if upstream drifts.
 - Cold interactive-TUI boot is **heavier than `-p`** (several seconds per spawn; one spike turn took ~17s incl. an artificial 4s hold + generation). Warm `--resume` amortizes within a conversation, but each capture call and cold turn pays it. Measured in Phase 4; warm-pool deferred.
 - claude-p reserves `--settings` — native-tool blocking depends on `--disallowedTools`/`--strict-mcp-config`/`--setting-sources` actually forwarding and being honored (Phase-1 verification; constitution IV is non-negotiable).
 - Driver couples to claude-p's emitted interactive-transcript schema (noise lines, `result` without `stop_reason`, `WaitForMcpServers` built-in). Parse with explicit guards + drift detection; surface unknown shapes per constitution VII.

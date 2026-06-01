@@ -700,6 +700,39 @@ models, and `findInitialModel` falls through to `defaultModelPerProvider`.
 `Symbol.for("claude-bridge:active")` so the next module init re-registers
 the provider into pi's freshly-built `ModelRegistry`.
 
+### S26 — Sustained warm prompt-cache across many turns (driver-swap regression guard)
+
+**Goal:** prove that the claude-p driver preserves Anthropic prompt-cache
+**reads** turn-over-turn, i.e. that spawning a fresh `claude-p` process per pi
+turn does NOT cause a prompt-cache cold-start (cache-creation) every turn. The
+prompt cache is server-side and prefix-keyed, so `--resume <id>` SHOULD yield
+cache-reads across process boundaries; the risk is that claude-p's per-spawn
+interactive injections (skill-listing/`attachment`, `ai-title`,
+`file-history-snapshot`, dynamic system-prompt sections) perturb the cached
+prefix and force creation each turn. This scenario is the regression guard for
+that failure mode. **It is a NEW acceptance scenario added in the
+replace-sdk-with-claude-p change; it maps to gate G4.**
+
+**Steps:**
+1. Send turn 1: *"My favorite number is 137. Acknowledge."* (cold — cache-creation expected).
+2. Send turns 2–6: five short follow-ups within the cache TTL (each <5 min apart), e.g. *"and my favorite color is octarine"*, *"and my pet is a fremen mouse"*, etc.
+3. Send turn 7: *"List the three facts I told you."*
+
+**Pass:**
+- Mechanical: turns 2–7 each log `cache_read_input_tokens > 0` AND
+  `cache_creation_input_tokens` ≈ only the new-suffix tokens (NOT a full-prefix
+  re-creation). A turn whose `cache_creation` ≈ the full running prefix while
+  `cache_read` ≈ 0 is a **FAIL** — it means claude-p busted the cache prefix.
+- The per-turn `(creation, read)` series must match the steady-state warm shape
+  (creation on T1, reads on T2..N) — identical to what the SDK era produced.
+- **Coherence:** turn 7 lists all three facts (137, octarine, fremen mouse).
+
+**Disposition if it FAILS:** a per-turn cache-creation regression is **NOT
+acceptable** (cost + latency). It triggers the claude-p fork (change task T4.10)
+to pin/strip the cache-perturbing injections, OR — if unfixable — blocks the
+driver swap. This is recorded as gate G4 in the change and is part of the
+"all scenarios pass or documented exemption" completion bar.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per

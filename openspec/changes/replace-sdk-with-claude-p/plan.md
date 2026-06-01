@@ -119,7 +119,7 @@ claude-p integration prevents pure TDD.
 
 - **Covers:** T4.1–T4.10
 - **Action:**
-  1. **Scenario gate (T4.1):** run `scripts/run-all-scenarios.sh` (S0–S25). Every scenario green-or-exempted; record results + any exemption (esp. S5) in `SCENARIO_RESULTS.md` + design.md. **This gates completion.**
+  1. **Scenario gate (T4.1):** run `scripts/run-all-scenarios.sh` (S0–S26). Every scenario green-or-exempted; record results + any exemption (esp. S5) in `SCENARIO_RESULTS.md` + design.md. **This gates completion.**
   2. Constitution III audit (no `~/.claude/` reads at all); constitution IV audit (`--disallowedTools` == spec list; never `--settings`/`-p`/`--print`).
   3. CI matrix macOS + Linux; tarball verify.
   4. `verify.md` AC↔test mapping (dynamic enumeration).
@@ -131,7 +131,7 @@ claude-p integration prevents pure TDD.
 ## Completion Verification
 
 - `openspec validate replace-sdk-with-claude-p` passes.
-- The full S0–S25 scenario suite passes OR every exception is documented in `SCENARIO_RESULTS.md` + design.md (the replan's hard acceptance bar).
+- The full S0–S26 scenario suite passes OR every exception is documented in `SCENARIO_RESULTS.md` + design.md (the replan's hard acceptance bar).
 - `npm test` green on macOS + Linux.
 - `grep -rn "@anthropic-ai" package.json src/ index.ts convert.ts models.ts tests/` empty (excluding `package-lock.json`).
 - `grep -rn "AskClaude\|askClaude" src/ index.ts tests/` empty.

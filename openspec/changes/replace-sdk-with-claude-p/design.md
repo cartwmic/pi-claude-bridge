@@ -11,7 +11,7 @@
 
 ## Replan drivers (two hard constraints)
 
-1. **All pi-TUI scenario tests (S0–S25, ~28 scripts) MUST pass**, OR a scenario
+1. **All pi-TUI scenario tests (S0–S26, ~28 scripts) MUST pass**, OR a scenario
    carries a documented fundamental architectural/design exemption. No silent skips.
 2. **No in-house PTY, and the nominal `claude -p` surface is forbidden.** Delegate
    all terminal-driving to **`smithersai/claude-p`** (interactive-TUI wrapper),

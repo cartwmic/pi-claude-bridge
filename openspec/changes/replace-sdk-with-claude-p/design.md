@@ -49,19 +49,19 @@ captured `claude-p` stdout from the run below). What the spike actually PROVED:
 2. The held-open mechanism works **through claude-p interactive** — for a SINGLE tool round (Exp C, 4s hold reproduced, EXIT 0).
 3. claude-p stream-json flushes live; trust dialog self-handled in an untrusted cwd; `result.usage` carries cache token fields; `result` carries NO `stop_reason`.
 
-What the spike did NOT prove — these are **behavioral hard gates G1–G9 + G-resume-flags**, NOT
-"cleared," and they block the Phase-3 SDK deletion (see ordering below):
+Behavioral hard gates G1–G9 + G-resume-flags — **Phase-1 empirical results (2026-06-01,
+real claude-p 0.1.0 + claude 2.1.159, model claude-haiku-4-5):**
 
-- **G1 multi-round held blocking** — ≥3 sequential held tool rounds in one spawn (Exp C tested one round).
-- **G2 constitution IV** — `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""` forwarded through claude-p AND honored, proven by `tools/list` introspection with a user-global `permissions.allow` + user MCP server present AND an actual native-tool-emission attempt that is refused. (Exp C had no user-global config present; claude-p reserves `--settings`, so the prior `permissions.deny` layer we had verified is LOST and replaced by an unverified `--disallowedTools` forwarding contract; `--strict-mcp-config` forwards only as an unknown flag; `--setting-sources ""` empty form is undocumented for claude-p.)
-- **G3 turn-end & cache-shape** — whether claude-p emits one `result` per pi TURN or per agent-loop SEGMENT, and whether per-turn `(cache_creation, cache_read)` is recoverable across tool rounds.
-- **G4 warm-resume cache-read** — `--resume <id>` yields `cache_read_input_tokens > 0`, not a cold creation per spawn.
-- **G5 abort coherence (S7/S13)** — cold-replay reproduces the interrupted-partial recall the SDK got via session-resume (see D31).
-- **G6 S5 mid-stream steer** — abort+respawn satisfies coherence + no duplicated-essay-tail (see D-S5).
-- **G7 `--timeout` semantics** — whether claude-p's `--timeout` counts wall-time blocked on a held MCP call (would trip exit 124 on S3 45s / S8 120s tools).
-- **G8 cross-channel tool-call correlation** — the held-open round-trip is now SPLIT across two channels: the shim sees an MCP `tools/call` (its own JSON-RPC id), while the model's `toolu_…` id appears only on claude-p's stdout, and pi delivers `toolResult.id` = the model's `toolu_…` id. G8 proves the router's correlation strategy (D32) reconciles these three ids — including **S11 parallel tool_use in one assistant line**, where FIFO is insufficient.
-- **G9 concurrent spawns (S25)** — two claude-p PTYs alive at once (a capture spawn while a main turn's tool is parked), each with an isolated shim/socket, and `WaitForMcpServers` resolving against a shim that is concurrently holding a DIFFERENT spawn's call open. Concurrent cold-boot cost is also measured here.
-- **G-resume-flags `--input-file`/`--system-prompt-file`** — verify claude-p forwards these (historical D7 verified them on raw `claude`, NOT through claude-p); load-bearing for cold-start replays that overflow argv.
+- **G1 multi-round held blocking — ✅ PASS.** 3 sequential held tool rounds in one spawn, each blocked inline until `router.deliver`, `stopReason:result`. Fixture `g1-multiround-stream.jsonl`.
+- **G2 constitution IV — ✅ PASS (no fork).** Isolation mechanism honored through claude-p: (a) closed-set after completing the denylist (`system/init.tools`→[] natives; raw-`claude -p` introspection since claude-p surfaces no roster), (b) Bash emission refused (side-effect file never created), (c) bridged surface survives. `--disallowedTools`(space-joined)+`--strict-mcp-config`+`--setting-sources ""` all forward+honored. See D28. CAVEAT: claude-p times out under CLAUDE_CONFIG_DIR/HOME override (test-vehicle only). Denylist is version-fragile → T4.7 re-audit.
+- **G3 turn-end — ✅ PASS.** claude-p emits exactly ONE `result` per pi TURN (not per-segment); parser turn-end rule holds. (Cache-token cross-round aggregation rolls into G4.)
+- **G4 warm-resume cache-read — ⏳ pending** — `--resume <id>` yields `cache_read_input_tokens > 0`, not a cold creation per spawn.
+- **G5 abort coherence (S7/S8/S13) — ⏳ pending** — cold-replay reproduces the interrupted-partial recall the SDK got via session-resume (see D31; T1.14a `commitAbortedPartial` is the mechanism).
+- **G6 S5 mid-stream steer — ⏳ pending (non-blocking)** — abort+respawn satisfies coherence + no duplicated-essay-tail (see D-S5).
+- **G7 `--timeout` semantics — ✅ RESOLVED.** claude-p's `--timeout` DOES count wall-time blocked on a held MCP call. A too-slow held tool → `claude-p: StopTimeout` (exit **2**, not 124) AFTER the call routed → D33 forbids respawn → turn-fatal `error` to pi. IMPLICATION: `CLAUDE_P_TIMEOUT_SECONDS=600` is a generous BACKSTOP only; primary cancellation MUST be pi's AbortSignal (D31, wired), never claude-p's wall-timer. If any pi turn can approach 600s wall-clock (sum of held tools + boot + generation), raise/derive it. Fixture `g7-timeout-results.md`.
+- **G8 parallel tool-call routing — ✅ PASS.** Distinct-tool AND same-tool-different-args parallel calls route via distinct minted piIds with NO cross-wiring (D32). **F-serialize:** `claude`'s MCP client dispatches parallel `tool_use` SEQUENTIALLY over the single stdio connection, so the router holds at most ONE call at a time within a turn — intra-turn park collision is structurally impossible; D32 keying still exercised across the sequential pair. Fixture `g8-parallel-stream.jsonl`.
+- **G9 concurrent spawns (S25 + S14) — ⏳ pending** — two claude-p subprocesses alive at once (capture-during-main AND nested main+main), each with an isolated shim/socket/router. Watch item: concurrent-boot contention (the suspected flakiness trigger; D33).
+- **G-resume-flags `--input-file`/`--system-prompt-file` — ✅ PASS.** Both forwarded + honored through claude-p (126KB input-file sentinel echoed; system-prompt-file token applied). The bridge's >50KB overflow path is safe, no change.
 
 ### Phase ordering (risk-inversion fix)
 

@@ -56,7 +56,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-abort-coherence.mjs", "SCENARIO_RESULTS.md"]
   - allow_new_files: true
-- [ ] 0b.G7 `--timeout` semantics: determine whether claude-p `--timeout` counts wall-time blocked on a held MCP call; set/derive it (or route cancellation via pi AbortSignal) so S3 (45s) / S8 (120s) tools cannot trip exit 124 (claude-p-driver.timeout-must-not-trip-on-a-held-tool-round).
+- [x] 0b.G7 **RESOLVED (2026-06-01):** claude-p `--timeout` DOES count held-call wall-time → a too-slow held tool yields `StopTimeout` (exit 2) AFTER routing → D33 forbids respawn → turn-fatal error. `CLAUDE_P_TIMEOUT_SECONDS=600` is a BACKSTOP only; primary cancellation is pi AbortSignal (D31). `--timeout` semantics: determine whether claude-p `--timeout` counts wall-time blocked on a held MCP call; set/derive it (or route cancellation via pi AbortSignal) so S3 (45s) / S8 (120s) tools cannot trip exit 124 (claude-p-driver.timeout-must-not-trip-on-a-held-tool-round).
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**"]
   - allow_new_files: true
@@ -64,7 +64,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md", "openspec/changes/replace-sdk-with-claude-p/design.md"]
   - allow_new_files: true
-- [ ] 0b.G8 **Parallel tool-call routing (HARD, blocks cut-over):** on a 2-parallel-tool fixture through claude-p, prove the router routes each held call to the correct pi `toolResult` with no cross-wiring. Per the claude-p investigation + design D32 reframe, routing goes via the MCP shim (bridge mints its OWN pi-facing id keyed to the parked `tools/call`; the model's `toolu_…` id is NOT needed to route) — so the cross-channel `toolu_…` reconciliation is UX-only, NOT a routing blocker. This still shapes the router's data structures, so it runs BEFORE T1.7 (router impl). (mcp-stdio-shim.tool-call-correlation-across-the-split-channels; S11)
+- [x] 0b.G8 **PASS (2026-06-01):** parallel distinct-tool AND same-tool-different-args calls route via distinct minted piIds, no cross-wiring. F-serialize: claude's MCP client serializes parallel tool_use over stdio, so ≤1 call parked at a time intra-turn (collision structurally impossible). Fixture g8-parallel-stream.jsonl. **Parallel tool-call routing (HARD, blocks cut-over):** on a 2-parallel-tool fixture through claude-p, prove the router routes each held call to the correct pi `toolResult` with no cross-wiring. Per the claude-p investigation + design D32 reframe, routing goes via the MCP shim (bridge mints its OWN pi-facing id keyed to the parked `tools/call`; the model's `toolu_…` id is NOT needed to route) — so the cross-channel `toolu_…` reconciliation is UX-only, NOT a routing blocker. This still shapes the router's data structures, so it runs BEFORE T1.7 (router impl). (mcp-stdio-shim.tool-call-correlation-across-the-split-channels; S11)
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-parallel-tools.mjs"]
   - allow_new_files: true
@@ -72,7 +72,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-concurrent.mjs"]
   - allow_new_files: true
-- [ ] 0b.G-resume Verify claude-p forwards `--input-file` AND `--system-prompt-file` (large/multiline prompt + cold-start replay >50 KB). Historical D7 verified these on raw `claude`, NOT through claude-p. If unsupported, document the fallback before relying on it.
+- [x] 0b.G-resume **PASS (2026-06-01):** both `--input-file` (126KB sentinel echoed) AND `--system-prompt-file` (token applied) forwarded+honored through claude-p; index.ts >50KB overflow path safe. Verify claude-p forwards `--input-file` AND `--system-prompt-file` (large/multiline prompt + cold-start replay >50 KB). Historical D7 verified these on raw `claude`, NOT through claude-p. If unsupported, document the fallback before relying on it.
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**"]
   - allow_new_files: true

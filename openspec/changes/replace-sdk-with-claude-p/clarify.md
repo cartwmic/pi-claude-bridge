@@ -1,5 +1,11 @@
 # Clarify Findings
 
+> ⚑ **PTY-era / superseded (2026-05-31).** These clarifications resolved EARS
+> ambiguities in the original in-house `node-pty` design. The change was replanned
+> to the `smithersai/claude-p` driver — see `proposal.md` + design.md "Replan
+> Amendment" for the authoritative current direction. `claude-tui-driver.*` AC IDs
+> here are now `claude-p-driver.*`. Retained as archaeology.
+
 Three passes over the EARS acceptance criteria in `specs/**/spec.md`. Each
 finding ends as a 2-option question. Answer A = keep as-is. Answer B = change
 as proposed. Status: `unanswered | answered | deferred`. `deferred` items are
@@ -71,5 +77,5 @@ Applied. Also (added in Round-1 adversarial review) `claude-tui-driver.abort-lif
 - Pass 1 findings: 10; unanswered: 0; deferred: 3 (A7, A8, partial overlap with C6)
 - Pass 2 findings: 5; unanswered: 0; deferred: 1 (I4)
 - Pass 3 findings: 10; unanswered: 0; deferred: 1 (C6)
-- **Round-1 adversarial review resolutions** (see `.opsx-review/replace-sdk-with-pty-tui/round-1-convergent.md`): A1 (node-pty named in spec) resolved by stripping mention; A9 wording corrected (validation happens IN the shim, not "at the MCP protocol layer" abstractly); D7 deferred companion CLOSED via `--system-prompt` verification.
+- **Round-1 adversarial review resolutions** (see `.opsx-review/replace-sdk-with-claude-p/round-1-convergent.md`): A1 (node-pty named in spec) resolved by stripping mention; A9 wording corrected (validation happens IN the shim, not "at the MCP protocol layer" abstractly); D7 deferred companion CLOSED via `--system-prompt` verification.
 - **Gate status:** READY for design (no `unanswered`; all `deferred` documented for analyze outstanding-risks)

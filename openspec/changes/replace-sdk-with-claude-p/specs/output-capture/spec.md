@@ -3,7 +3,7 @@
 External call-shape (`piAi.complete` with `ctx.tools = [captureTool]`) is
 unchanged. The mechanism for enforcing schema-constrained structured output
 shifts from the SDK's `outputFormat` option to a forced MCP tool-call on the
-new PTY-driven inference path. v1 limitations from the original spec are
+new claude-p driver path. v1 limitations from the original spec are
 preserved verbatim. Requirements expressed in terms of SDK internals
 (`outputFormat`, `result.structured_output`, `system:init`, SDK query) are
 re-stated against the new driver. Requirements expressed purely in
@@ -23,12 +23,12 @@ clarify I3.
 
 ### Requirement: Capture path honors `AbortSignal`
 
-WHEN pi signals abort on the current `AbortSignal` while a capture call is in flight, THE capture path SHALL deliver an interrupt to its PTY (per `claude-tui-driver.abort-propagates-to-the-pty`) and SHALL resolve `complete()` with `stopReason === "aborted"`.
+WHEN pi signals abort on the current `AbortSignal` while a capture call is in flight, THE capture path SHALL abort its claude-p subprocess (per `claude-p-driver.abort-propagates-to-the-claude-p-subprocess`) and SHALL resolve `complete()` with `stopReason === "aborted"`.
 
 #### Scenario: Abort during capture
 
 - **WHEN** a capture-shape `complete()` is in flight and the caller's `AbortSignal` fires
-- **THEN** the capture path interrupts its PTY
+- **THEN** the capture path aborts its claude-p subprocess
 - **AND** the pi-ai stream pushes a `done` event with `reason: "aborted"`
 - **AND** the resolved AssistantMessage's `stopReason === "aborted"`
 
@@ -49,7 +49,7 @@ The bridge SHALL inspect each tool in `Context.tools[]` **only at the start of a
 
 - **WHEN** `complete()` is invoked with `ctx.tools = [unregisteredCapture]` and `unregisteredCapture.name` is not in `pi.getActiveTools()`
 - **THEN** no MCP tool is registered for `unregisteredCapture` on the main-provider path
-- **AND** a fresh PTY is spawned on the isolated capture path with the shim advertising only `unregisteredCapture`
+- **AND** a fresh claude-p subprocess is spawned on the isolated capture path with the shim advertising only `unregisteredCapture`
 - **AND** the driver invocation's disallow list includes all native built-in tools
 
 #### Scenario: Registered-but-inactive tool is treated as capture
@@ -103,11 +103,11 @@ When the call shape is rejected, the bridge SHALL NOT invoke the inference drive
 
 - **WHEN** `complete()` is invoked with `ctx.tools = [unregisteredCapture]`, no other tools, and `unregisteredCapture.parameters.type === "object"`
 - **THEN** the bridge accepts the call
-- **AND** the capture path spawns a dedicated PTY with the capture tool advertised as the sole MCP tool
+- **AND** the capture path spawns a dedicated claude-p subprocess with the capture tool advertised as the sole MCP tool
 
 ### Requirement: Capture path isolation
 
-The capture path SHALL be implemented as a dedicated function that does not interact with the bridge's user-session state. While running, the capture path SHALL NOT push any frame onto the main-provider active-frame stack, SHALL NOT supersede or interrupt any active main-provider frame, SHALL NOT mutate the cross-call state variables `cachedSessionId`, `cachedSessionCwd`, or `lastSentMessageHashes`, and SHALL spawn its own PTY rooted at `os.tmpdir()` by default (unless the caller specifies a different cwd).
+The capture path SHALL be implemented as a dedicated function that does not interact with the bridge's user-session state. While running, the capture path SHALL NOT push any frame onto the main-provider active-frame stack, SHALL NOT supersede or interrupt any active main-provider frame, SHALL NOT mutate the cross-call state variables `cachedSessionId`, `cachedSessionCwd`, or `lastSentMessageHashes`, and SHALL spawn its own claude-p subprocess rooted at `os.tmpdir()` by default (unless the caller specifies a different cwd).
 
 #### Scenario: Capture call concurrent with active user turn does not interrupt the user
 
@@ -120,7 +120,7 @@ The capture path SHALL be implemented as a dedicated function that does not inte
 #### Scenario: Capture call does not pollute cached session
 
 - **WHEN** a capture-shape `complete()` call is invoked
-- **AND** the capture call's PTY emits a fresh driver session id (observable in the transcript or the `SessionStart` payload)
+- **AND** the capture call emits a fresh driver session id (observable in claude-p's stdout result line)
 - **THEN** `cachedSessionId` and `cachedSessionCwd` are not updated to the capture call's session
 - **AND** any subsequent main-provider turn (`ctx.tools = []`) starts with the cache state it had before the capture call
 
@@ -137,7 +137,7 @@ WHEN the capture path receives a valid IPC-stashed arguments object from the shi
 #### Scenario: Successful capture
 
 - **WHEN** the shim has IPC-stashed validated arguments `{ headline: "X", body: "Y" }` for capture tool `submit_digest`
-- **AND** the PTY's transcript terminal `result` entry shows `usage.input_tokens = 100`, `usage.output_tokens = 50`, `usage.cache_read_input_tokens = 10`, `usage.cache_creation_input_tokens = 0`
+- **AND** claude-p's stdout terminal `result` line shows `usage.input_tokens = 100`, `usage.output_tokens = 50`, `usage.cache_read_input_tokens = 10`, `usage.cache_creation_input_tokens = 0`
 - **THEN** the pi-ai stream's `done` event carries an `AssistantMessage` with `stopReason === "toolUse"`
 - **AND** the AssistantMessage's `content` contains exactly one `toolCall` block with `name === "submit_digest"` and `arguments === { headline: "X", body: "Y" }`
 - **AND** the AssistantMessage's `usage.input === 100`, `usage.output === 50`, `usage.cacheRead === 10`, `usage.cacheWrite === 0`
@@ -147,10 +147,10 @@ WHEN the capture path receives a valid IPC-stashed arguments object from the shi
 #### Scenario: IPC stash present but transcript divergent (Round-5 B.P1#3)
 
 - **WHEN** the shim has IPC-stashed validated arguments for the capture tool
-- **AND** the transcript JSONL does not (yet) show the corresponding tool-use block at Stop time (race, truncation, or settle-window-exceeded)
+- **AND** claude-p's stdout does not (yet) show the corresponding tool-use block at turn-end (race, truncation, or settle-window-exceeded)
 - **THEN** the IPC stash is authoritative; the bridge synthesizes the success AssistantMessage from the stashed arguments
 - **AND** the bridge emits a warn-level log entry naming the divergence
-- **AND** `usage` / `cost` fields fall back to whatever the terminal `result` JSONL entry contained (zeroes if absent)
+- **AND** `usage` / `cost` fields fall back to whatever the terminal `result` line contained (zeroes if absent)
 
 #### Scenario: Caller receives the same shape as direct providers
 
@@ -160,11 +160,11 @@ WHEN the capture path receives a valid IPC-stashed arguments object from the shi
 
 ### Requirement: Surface absent capture-tool call as error
 
-IF the capture path's PTY emits a `Stop` hook (turn complete) without the bridge having received any valid IPC-stashed arguments from the shim, THEN the bridge SHALL push an `error` event on the pi-ai stream whose `errorMessage` names the failure cause ("model did not call capture tool" if no stash and no tool-use block in transcript; "arguments failed schema validation" if the shim rejected one or more attempts via MCP error but no valid call followed) and end the stream. The error AssistantMessage SHALL also propagate the transcript's terminal `result` usage / cost where present, so callers can observe retry-cost on failures.
+IF the capture path's claude-p subprocess emits its terminal `result` line (turn complete) without the bridge having received any valid IPC-stashed arguments from the shim, THEN the bridge SHALL push an `error` event on the pi-ai stream whose `errorMessage` names the failure cause ("model did not call capture tool" if no stash and no tool-use block in transcript; "arguments failed schema validation" if the shim rejected one or more attempts via MCP error but no valid call followed) and end the stream. The error AssistantMessage SHALL also propagate the transcript's terminal `result` usage / cost where present, so callers can observe retry-cost on failures.
 
 #### Scenario: Model returned text only, never called the capture tool
 
-- **WHEN** the capture path's PTY transcript at `Stop` time contains assistant text blocks but no tool-use block matching the capture tool's name
+- **WHEN** the capture path's claude-p stdout at turn-end contains assistant text blocks but no tool-use block matching the capture tool's name
 - **THEN** the pi-ai stream emits `start` then `error` whose `errorMessage` references "model did not call capture tool"
 - **AND** the AssistantMessage's usage fields are populated from the terminal `result` entry where present
 - **AND** `complete()` resolves with an `AssistantMessage` whose `stopReason === "error"`

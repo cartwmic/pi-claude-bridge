@@ -1,3 +1,170 @@
+# ⚑ Replan Amendment (2026-05-31): claude-p driver supersedes the in-house node-pty design
+
+> **Authoritative.** This amendment is the current direction. The decisions
+> D1–D25 below it are retained as the adversarial-review archaeology (Rounds
+> 1–5) that produced the in-house-PTY plan; where this amendment and a prior
+> decision conflict, **this amendment wins**. The supersession map at the end
+> of this section says exactly what changed.
+>
+> Branch `replan-driver-from-phase-0`, rooted at commit `7cd9d3e` (the Phase-0
+> spike baseline — SDK still present, no PTY work yet).
+
+## Replan drivers (two hard constraints)
+
+1. **All pi-TUI scenario tests (S0–S25, ~28 scripts) MUST pass**, OR a scenario
+   carries a documented fundamental architectural/design exemption. No silent skips.
+2. **No in-house PTY, and the nominal `claude -p` surface is forbidden.** Delegate
+   all terminal-driving to **`smithersai/claude-p`** (interactive-TUI wrapper),
+   adopted as a dependency and **forked/patched if needed**.
+
+## Phase-0 spike results (claude 2.1.159 + claude-p 0.1.0; the new hard gate)
+
+The replan's gate was not "can we drive a PTY" but **"does Claude Code expose a
+completion-shaped seam, or only an agent loop?"** Spike answer, with evidence:
+
+| Probe | Result |
+|---|---|
+| Agent loop vs completion API | **Agent loop.** No `--max-turns` in the base CLI; no stop-at-tool-use. When the model calls an MCP tool the CLI executes it itself, synthesizes the `tool_result`, and runs `thinking→tool_use→tool_result→text→end_turn` in ONE invocation. |
+| Can pi execute tools? | **Yes — only via the MCP server, held open inline.** The CLI BLOCKS waiting for the MCP `tools/call` response (verified: 4–5s artificial holds reproduced exactly, on `claude -p` AND through claude-p). |
+| Live streaming | claude-p `--output-format stream-json --verbose` flushes transcript lines **live** (per-block, not per-token). |
+| Trust dialog | claude-p **handles it itself** — spike ran in an untrusted `/tmp` cwd with no hang. |
+| Cache accounting | `result.usage` carries `input/output/cache_read/cache_creation` tokens. |
+| Cold boot | Heavy (~seconds; one turn ~17s incl. a 4s artificial hold + generation) — much slower than `-p`. |
+
+**The decisive architectural conclusion:** the bridge's "one invocation per pi
+turn + park-the-promise in the MCP handler" model is **structurally forced by
+Claude Code**, not accidental complexity. Every other pi provider is a thin
+completion wrapper because it wraps the Messages API (a real completion endpoint
+that stops at `tool_use` and accepts `tool_result` blocks). Claude Code exposes
+no such seam, so the bridge must *be* the MCP server and hold the call open. This
+is the irreducible cost of riding the Claude Code surface instead of the API —
+and it is preserved across the driver swap.
+
+## New decisions
+
+### D26: Driver = `smithersai/claude-p`; nominal `claude -p` is forbidden
+**Choice:** spawn `claude-p` as a subprocess per turn. claude-p emulates `claude -p`
+by driving the **interactive** TUI inside its own PTY (zmux), responding to ANSI
+terminal probes, auto-answering the workspace-trust dialog, registering its own
+`SessionStart`/`Stop` hooks, and typing the prompt. The bridge never invokes
+`claude --print` itself. **Supersedes D1 + D2** (in-house node-pty). Forking
+claude-p (Zig 0.15.2) is in scope; npm ships prebuilts for darwin/linux × x64/arm64
+so adoption needs no Zig.
+**Rationale:** owner's trust stance — the interactive TUI is the subscription-blessed
+surface; `-p`/SDK is the headless surface that may be restricted. claude-p already
+solved the terminal-driving the prior plan was about to build by hand.
+
+### D27: Event source = claude-p `--output-format stream-json` stdout
+**Choice:** consume claude-p's stdout (requires `--verbose`) as the event stream;
+parse per-block. **The bridge reads nothing under `~/.claude/`** — claude-p does any
+transcript reading internally. **Supersedes D4 + D18 + D24** (in-house transcript
+tail + deterministic-path discovery + warm-resume baseline offset) for the streaming
+mechanism. The `transcript-stream` capability is repointed at claude-p's stdout.
+**claude-p's emitted schema is the raw interactive transcript, noisier than `-p`'s:**
+leading `mode`/`permission-mode`/`file-history-snapshot`/`attachment`/`ai-title`
+lines, user content as a STRING, a built-in `WaitForMcpServers` tool_use, trailing
+`system/stop_hook_summary` + `system/turn_duration`, and a `result` envelope that
+carries `usage` but **NO `stop_reason`**. The parser MUST filter the noise/built-in
+lines and detect turn-end from the `result` line (not `stop_reason`). Drift detection
+(known / valid-unknown-type / malformed) from D4 is retained.
+
+### D28: Native-tool blocking via `--disallowedTools` (claude-p reserves `--settings`)
+**Choice:** claude-p rejects user-supplied `--settings` (it owns it for its hooks),
+so the prior `--settings permissions.deny` mechanism (D11 layer 1) is replaced by
+`--disallowedTools <natives>`, which claude-p forwards to `claude`. Isolation flags
+`--strict-mcp-config` and `--setting-sources ""` also forward. **Modifies D11**:
+layer 1 becomes `--disallowedTools`; layers 2–4 (`--setting-sources ""`,
+`--strict-mcp-config`, shim `tools/list` rejection) unchanged. Constitution IV is
+non-negotiable; Phase-1 verifies these flags actually suppress native built-ins
+(incl. the `WaitForMcpServers` noise) via deterministic `tools/list` introspection.
+
+### D29: Hooks + trust dialog + prompt delivery owned by claude-p
+**Choice:** the bridge registers NO hooks and runs NO hook-relay subprocess —
+claude-p owns `SessionStart`/`Stop`, ANSI probes, the trust dialog, and prompt
+typing. **Supersedes D9 + D12 + D25** and the hook-relay dual-mode of the shim.
+Prompt delivery uses claude-p's positional arg / `--input-file` / stdin
+(`--input-file` for large or multiline prompts) — **supersedes D13**'s positional-arg
++ argv-overflow machinery; claude-p handles the typing fragility the prior plan
+worried about. The MCP shim is now MCP-server-only.
+
+### D30: MCP shim + router (held-open promise-park) — RETAINED, validated
+**Choice:** unchanged in spirit from D3/D16/D19/D20/D21. The shim is a stdio MCP
+server subprocess (`--mcp-config` → shim → in-process router over a per-spawn unix
+socket); the router parks a Promise per `tools/call` and resolves it on pi's next
+`streamSimple()`. The spike proved claude-p blocks on the held call. The shim's
+hook-relay mode (D12) is removed; everything else (capture deterministic response,
+shim path resolution, IPC wire protocol, capture authoritative-source) stands.
+
+### D31: Abort = signal the claude-p subprocess; late-tool-result coherence retained
+**Choice:** on pi abort, deliver `SIGINT` to the claude-p subprocess (claude-p
+returns 130 and tears down its own PTY + `claude`); escalate to `SIGKILL` after a
+grace window. No Esc-Esc/PTY-keystroke logic (that was the in-house-PTY path).
+**Modifies D10**; **retains D15** verbatim — the bridge-side router state (the
+`pendingResolvers`/`pendingResults` maps) survives so a late pi `tool_result` is
+captured for next-turn replay. Cold-replay (not transcript-resume) reconciles an
+aborted mid-tool turn, so there is no dangling-tool-use resume concern.
+
+### D-S5: Mid-stream steer — abort+respawn, exemption if insufficient
+**Choice:** claude-p is one-prompt-per-spawn with no mid-turn input channel (unlike
+`-p`'s `--input-format stream-json`). S5 (a new user message arriving during an
+in-flight turn) is handled bridge-side as **abort the current claude-p spawn +
+respawn with the steer**; both user messages remain in pi's history, so S5's
+coherence probe ("did I ever ask about the printing press? — yes, then redirected")
+still passes. IF abort+respawn proves insufficient against the live scenario, the
+fallback is **forking claude-p to type a second message into the live TUI mid-turn**.
+IF neither is pursued, S5 is the **documented architectural exemption** the
+acceptance bar permits (rationale: claude-p is one-shot by design; native mid-turn
+injection is not available without a fork). Disposition finalized in Phase 1 against
+the real scenario.
+
+## Supersession map
+
+| Prior decision | Status under claude-p |
+|---|---|
+| D1 (PTY-driven `claude` TUI) | **Superseded** by D26 (claude-p is the PTY driver) |
+| D2 (node-pty) | **Superseded** by D26 (no in-house PTY dep) |
+| D3 (stdio MCP shim) | **Retained** (D30) |
+| D4 (transcript JSONL tail) | **Superseded** by D27 (consume claude-p stdout) |
+| D5 (capture = forced MCP tool-call) | **Retained** |
+| D6 (drop AskClaude) | **Retained** |
+| D7-final (`--system-prompt[-file]`) | **Retained**, forwarded through claude-p (`--input-file` for size) |
+| D8 (module structure) | **Modified** — `driver/{claudeP,stream}.ts` replace `driver/{pty,ansi,transcript,settings}.ts` |
+| D9 (SessionStart+Stop hooks) | **Superseded** by D29 (claude-p owns hooks) |
+| D10 (abort: SIGINT + Esc-Esc) | **Modified** by D31 (signal claude-p; no Esc-Esc) |
+| D11 (4-layer disallow) | **Modified** by D28 (layer 1 → `--disallowedTools`) |
+| D12 (hook IPC relay) | **Superseded** by D29 (no bridge hooks) |
+| D13 (prompt via positional arg) | **Superseded** by D29 (claude-p positional/`--input-file`) |
+| D14 (build to `dist/`) | **Retained** (still need the shim bin) |
+| D15 (abort late-tool-result coherence) | **Retained** (D31) |
+| D16 (capture MCP completion) | **Retained** (D30) |
+| D17 (post-Stop settle window) | **Modified** — settle now keyed on claude-p's `result` line, not a bridge-observed Stop |
+| D18 (deterministic transcript path) | **Superseded** by D27 (bridge reads no transcript) |
+| D19 (shim path resolution) | **Retained** (D30) |
+| D20 (shim↔router IPC) | **Retained** (D30) |
+| D21 (capture authoritative source) | **Retained** (D30) |
+| D22 (warm-resume transcript path) | **Superseded** by D27; warm-resume = `--resume <id>`, events from stdout |
+| D23 (main-provider preserves ctx.systemPrompt) | **Retained** |
+| D24 (warm-resume baseline offset) | **Superseded** by D27 (no file tailing) |
+| D25 (trust-dialog scanner) | **Superseded** by D29 (claude-p owns the dialog) |
+
+## Constitution impact (replan)
+
+- **III (no `~/.claude/` coupling):** now satisfied *more* strongly — the bridge
+  reads NOTHING under `~/.claude/` (events come from claude-p's stdout; claude-p is
+  a black box that does its own transcript reading). The 2026-05-21 exemption (b)
+  (deterministic-path read) becomes **moot** for this driver; it stays on the books
+  harmlessly. No further amendment required.
+- **IV (native tools disallowed):** enforced via D28 (`--disallowedTools` + isolation
+  flags + shim rejection). Unchanged intent.
+- **V, VI, VII:** unchanged; the driver swap preserves system-prompt fidelity,
+  concurrent-path isolation (independent claude-p subprocesses), and failure-surfacing.
+
+---
+
+# Historical design (in-house node-pty plan — Rounds 1–5)
+
+> Retained for provenance. Superseded where the amendment above says so.
+
 ## Context
 
 The bridge today runs every inference call through `@anthropic-ai/claude-agent-sdk`. The SDK is a programmatic equivalent of `claude -p` and has historically been the most ergonomic surface for our needs. The owner no longer trusts the SDK as a durable surface — auth-path coupling, feature drift relative to the user-facing TUI, and the smithersai/claude-p observation that "client-side restrictions on how a product is used are fundamentally unenforceable" together justify removing the SDK from the dependency graph entirely.

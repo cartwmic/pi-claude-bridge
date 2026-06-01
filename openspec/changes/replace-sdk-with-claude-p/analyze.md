@@ -1,5 +1,12 @@
 # Analyze Findings
 
+> ⚑ **PTY-era / superseded (2026-05-31).** This analysis covers the original
+> in-house `node-pty` design (capability `claude-tui-driver`, decisions D1–D25).
+> The change was replanned to the `smithersai/claude-p` driver — see `proposal.md`
+> + design.md "Replan Amendment" (D26–D31) for the authoritative current
+> direction. `claude-tui-driver.*` AC IDs here are now `claude-p-driver.*`.
+> Retained as analysis archaeology; not re-run for claude-p.
+
 **Mode:** single-model (adversarial-review-cycle pending owner sign-off — see "Outstanding risks")
 **Generated:** 2026-05-20 by claude-sonnet during opsx-superpowers propose flow
 
@@ -136,7 +143,7 @@ Plus one spec edit:
 
 ## Round-2 adversarial review (added 2026-05-20)
 
-Full round-by-round log: `.opsx-review/replace-sdk-with-pty-tui/`. Summary of impact on this analyze artifact:
+Full round-by-round log: `.opsx-review/replace-sdk-with-claude-p/`. Summary of impact on this analyze artifact:
 
 - Constitution V verification scope corrected: T0.8 now uses INTERACTIVE mode (was `-p`) with fixture `CLAUDE.md` (Round-2 A.P1#1).
 - D11 fallback documented: if `--setting-sources ""` fails Phase 0, per-PTY `HOME` override is the fallback (Round-2 A.P1#2).
@@ -158,7 +165,7 @@ Full round-by-round log: `.opsx-review/replace-sdk-with-pty-tui/`. Summary of im
 
 ## Round-1 adversarial review (added 2026-05-20)
 
-Full round-by-round log: `.opsx-review/replace-sdk-with-pty-tui/`. Summary of impact on this analyze artifact:
+Full round-by-round log: `.opsx-review/replace-sdk-with-claude-p/`. Summary of impact on this analyze artifact:
 
 - Constitution V partial-compliance major **RESOLVED** by verifying `--system-prompt` (above).
 - Check 2 E2 EARS rewrite **APPLIED** in-flight; output-capture surface-absent-capture-tool-call-as-error head reworded to `IF…THEN` form.

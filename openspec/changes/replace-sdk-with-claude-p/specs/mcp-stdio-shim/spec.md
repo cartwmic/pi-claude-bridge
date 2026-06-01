@@ -1,28 +1,38 @@
 # Capability: mcp-stdio-shim
 
-Stdio MCP server subprocess that exposes pi-bridged tools to a `claude` PTY
-and proxies calls back to the bridge's in-process router. The shim is the
-only bridge-controlled interface the inference driver sees besides hook
-callbacks and the transcript JSONL it writes.
+Stdio MCP server subprocess that exposes pi-bridged tools to the `claude`
+process (spawned by claude-p, configured via `--mcp-config`) and proxies calls
+back to the bridge's in-process router. The shim is the only bridge-controlled
+interface the inference driver sees. It implements the **held-open promise-park**
+that the Phase-0 spike validated: a `tools/call` is forwarded to the in-process
+router, which parks a Promise and resolves it only when pi delivers the tool
+result via the next `streamSimple()` — and `claude` (driven by claude-p) blocks
+inline on that response.
+
+**Note (replan):** the hook-relay role from the prior in-house-PTY plan is
+REMOVED. claude-p owns `SessionStart`/`Stop` hook registration, so the shim is an
+MCP server only. The shim is still a separate process invoked by `claude` via
+`--mcp-config` (claude-p forwards `--mcp-config` to `claude`).
 
 ## ADDED Requirements
 
 ### Requirement: Shim exposes only pi-bridged tools
 
-THE shim SHALL advertise to the inference driver exactly the set of tools the bridge's in-process router declares for the current PTY's turn, with names in the `mcp__custom-tools__*` namespace. THE shim SHALL NOT expose any tool not declared by the router for that turn.
+THE shim SHALL advertise to the inference driver exactly the set of tools the bridge's in-process router declares for the current spawn's turn, with names in the `mcp__custom-tools__*` namespace. THE shim SHALL NOT expose any tool not declared by the router for that turn.
 
 #### Scenario: Shim handshake reflects router's tool set
-- **WHEN** a PTY initializes and the shim receives an MCP `initialize` request followed by `tools/list`
+- **WHEN** a turn initializes and the shim receives an MCP `initialize` request followed by `tools/list`
 - **THEN** the shim returns exactly the tool definitions the router declared at shim-spawn time
 - **AND** no tool outside `mcp__custom-tools__*` appears in the response
 
 ### Requirement: Shim forwards tool calls to the in-process router
 
-WHEN the shim receives an MCP `tools/call` request from the driver, THE shim SHALL forward the call (tool name, arguments, request id) to the bridge's in-process router over its dedicated IPC channel, await the router's response, and return the response to the driver verbatim.
+WHEN the shim receives an MCP `tools/call` request from the driver, THE shim SHALL forward the call (tool name, arguments, request id) to the bridge's in-process router over its dedicated IPC channel, await the router's response, and return the response to the driver verbatim. The router parks a Promise per call and resolves it when pi delivers the result on its next `streamSimple()`; the shim holds the MCP response open until then (the inference driver blocks inline, per the Phase-0 spike).
 
-#### Scenario: Round-trip through router
+#### Scenario: Round-trip through router (held open until pi delivers)
 - **WHEN** the driver issues `tools/call` for `mcp__custom-tools__read` with arguments `{ path: "/tmp/x" }`
-- **THEN** the shim forwards the request to the router over the IPC channel within an implementation-defined timeout
+- **THEN** the shim forwards the request to the router over the IPC channel
+- **AND** the shim does NOT respond until the router resolves (i.e. until pi delivers the tool result via its next `streamSimple()`)
 - **AND** when the router responds with a tool-result payload, the shim returns that payload as the MCP response
 
 ### Requirement: Shim rejects non-bridged tool names
@@ -35,38 +45,24 @@ IF the shim receives a `tools/call` request whose tool name is not in the set ad
 - **THEN** the shim returns an MCP error response with an "unknown tool" code
 - **AND** the bridge's router is not contacted for this call
 
-### Requirement: Shim lifecycle is bound to its PTY
+### Requirement: Shim lifecycle is bound to its spawn
 
-THE shim SHALL be spawned by the bridge per PTY, SHALL be reachable only by its owning PTY (via the inline `--mcp-config` pointer), and SHALL terminate when the IPC channel to the bridge closes or when its stdin is closed.
+THE shim SHALL be spawned per claude-p invocation, SHALL be reachable only by its owning `claude` process (via the inline `--mcp-config` pointer), and SHALL terminate when the IPC channel to the bridge closes or when its stdin is closed.
 
-#### Scenario: PTY exit teardown
-- **WHEN** the owning PTY exits (any reason: normal stop, abort, crash)
+#### Scenario: Driver exit teardown
+- **WHEN** the owning claude-p subprocess (and its `claude` child) exits (any reason: normal stop, abort, crash)
 - **THEN** the shim's stdin closes
 - **AND** the shim exits within an implementation-defined grace window
-- **AND** no shim process remains attached to a dead PTY
+- **AND** no shim process remains attached to a dead driver
 
 ### Requirement: Shim is a separate process
 
-THE shim SHALL run as its own OS process, not as a thread, worker, or in-process module of the bridge. THE shim SHALL communicate with the bridge only over its dedicated IPC channel.
+THE shim SHALL run as its own OS process, not as a thread, worker, or in-process module of the bridge. THE shim SHALL communicate with the bridge only over its dedicated IPC channel. (The bridge resolves the shim binary's absolute path via `require.resolve('pi-claude-bridge/dist/mcp/shim.js')` or equivalent and passes it in the `--mcp-config` JSON; it does not rely on the spawned `claude` having the shim on `$PATH` — design D19/D30.)
 
 #### Scenario: Process boundary preserved
-- **WHEN** the bridge spawns a shim for a new PTY
+- **WHEN** the bridge spawns a shim for a new turn
 - **THEN** the shim has a distinct OS pid from the pi process
 - **AND** the bridge process does not import the shim entry point at runtime as a module
-
-### Requirement: Shim binary serves both MCP-server and hook-relay roles
-
-THE `pi-claude-bridge-shim` binary SHALL accept a `--mode` flag selecting its role: `--mode mcp --socket <path>` for the stdio MCP server invoked by `claude --mcp-config`, or `--mode hook --event <name> --socket <path>` for hook-payload relay invoked by `claude` hook commands declared in inline `--settings`. Both modes communicate with the bridge over the same per-PTY unix-domain socket whose path is supplied via the `--socket` argument. Both modes communicate with the bridge using the newline-delimited JSON wire protocol specified in design D20.
-
-THE bridge SHALL resolve the shim binary's absolute path via `require.resolve('pi-claude-bridge/dist/mcp/shim.js')` (or equivalent ESM mechanism) and pass that absolute path in both the `--mcp-config` JSON and the `--settings` hook commands. THE bridge SHALL NOT rely on the spawned `claude` subprocess having `pi-claude-bridge-shim` on its `$PATH`.
-
-#### Scenario: MCP mode handshake
-- **WHEN** the shim is invoked with `--mode mcp --socket /tmp/pi-claude-bridge-abc.sock`
-- **THEN** the shim opens stdio MCP, advertises only `mcp__custom-tools__*` tools, and forwards `tools/call` requests to the bridge over the socket
-
-#### Scenario: Hook mode payload relay
-- **WHEN** the shim is invoked with `--mode hook --event session-start --socket /tmp/pi-claude-bridge-abc.sock` and a JSON payload is provided on stdin
-- **THEN** the shim connects to the socket, sends the event name and payload, awaits a structured response, writes the response to stdout in the format `claude` expects for that hook event, and exits within an implementation-defined latency budget
 
 ### Requirement: Capture-mode tool calls receive deterministic shim response
 
@@ -107,8 +103,7 @@ IF the shim receives a stdin message that is not valid JSON-RPC over MCP, THEN t
 | mcp-stdio-shim.shim-exposes-only-pi-bridged-tools | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-forwards-tool-calls-to-the-in-process-router | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-rejects-non-bridged-tool-names | [ ] | [ ] | [ ] | [ ] | [ ] |
-| mcp-stdio-shim.shim-lifecycle-is-bound-to-its-pty | [ ] | [ ] | [ ] | [ ] | [ ] |
+| mcp-stdio-shim.shim-lifecycle-is-bound-to-its-spawn | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-is-a-separate-process | [ ] | [ ] | [ ] | [ ] | [ ] |
-| mcp-stdio-shim.malformed-mcp-messages-surface-as-errors | [ ] | [ ] | [ ] | [ ] | [ ] |
-| mcp-stdio-shim.shim-binary-serves-both-mcp-server-and-hook-relay-roles | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.capture-mode-tool-calls-receive-deterministic-shim-response | [ ] | [ ] | [ ] | [ ] | [ ] |
+| mcp-stdio-shim.malformed-mcp-messages-surface-as-errors | [ ] | [ ] | [ ] | [ ] | [ ] |

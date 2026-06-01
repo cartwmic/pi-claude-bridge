@@ -34,4 +34,4 @@ modes and dispatches behavior.
 
 <!-- Transient observations appended during apply. -->
 
-- 2026-05-21 00:31 — Worktree created at `worktrees/replace-sdk-with-pty-tui`. Base SHA `27a471c`. Adversarial review complete (5 rounds, treadmill stop); persistent log in `.opsx-review/replace-sdk-with-pty-tui/`. Beginning Phase 0 spikes.
+- 2026-05-21 00:31 — Worktree created at `worktrees/replace-sdk-with-claude-p`. Base SHA `27a471c`. Adversarial review complete (5 rounds, treadmill stop); persistent log in `.opsx-review/replace-sdk-with-claude-p/`. Beginning Phase 0 spikes.

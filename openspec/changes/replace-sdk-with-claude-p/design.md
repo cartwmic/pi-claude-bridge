@@ -40,6 +40,39 @@ no such seam, so the bridge must *be* the MCP server and hold the call open. Thi
 is the irreducible cost of riding the Claude Code surface instead of the API —
 and it is preserved across the driver swap.
 
+### Verification status — PROVEN vs UNVERIFIED (do not over-claim)
+
+The reproducible spike artifact lives at `.spike-notes/claude-p-gate/` (harness +
+captured `claude-p` stdout from the run below). What the spike actually PROVED:
+
+1. Claude Code is an agent loop; host tool execution only via a held-open MCP server.
+2. The held-open mechanism works **through claude-p interactive** — for a SINGLE tool round (Exp C, 4s hold reproduced, EXIT 0).
+3. claude-p stream-json flushes live; trust dialog self-handled in an untrusted cwd; `result.usage` carries cache token fields; `result` carries NO `stop_reason`.
+
+What the spike did NOT prove — these are **behavioral hard gates G1–G9 + G-resume-flags**, NOT
+"cleared," and they block the Phase-3 SDK deletion (see ordering below):
+
+- **G1 multi-round held blocking** — ≥3 sequential held tool rounds in one spawn (Exp C tested one round).
+- **G2 constitution IV** — `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""` forwarded through claude-p AND honored, proven by `tools/list` introspection with a user-global `permissions.allow` + user MCP server present AND an actual native-tool-emission attempt that is refused. (Exp C had no user-global config present; claude-p reserves `--settings`, so the prior `permissions.deny` layer we had verified is LOST and replaced by an unverified `--disallowedTools` forwarding contract; `--strict-mcp-config` forwards only as an unknown flag; `--setting-sources ""` empty form is undocumented for claude-p.)
+- **G3 turn-end & cache-shape** — whether claude-p emits one `result` per pi TURN or per agent-loop SEGMENT, and whether per-turn `(cache_creation, cache_read)` is recoverable across tool rounds.
+- **G4 warm-resume cache-read** — `--resume <id>` yields `cache_read_input_tokens > 0`, not a cold creation per spawn.
+- **G5 abort coherence (S7/S13)** — cold-replay reproduces the interrupted-partial recall the SDK got via session-resume (see D31).
+- **G6 S5 mid-stream steer** — abort+respawn satisfies coherence + no duplicated-essay-tail (see D-S5).
+- **G7 `--timeout` semantics** — whether claude-p's `--timeout` counts wall-time blocked on a held MCP call (would trip exit 124 on S3 45s / S8 120s tools).
+- **G8 cross-channel tool-call correlation** — the held-open round-trip is now SPLIT across two channels: the shim sees an MCP `tools/call` (its own JSON-RPC id), while the model's `toolu_…` id appears only on claude-p's stdout, and pi delivers `toolResult.id` = the model's `toolu_…` id. G8 proves the router's correlation strategy (D32) reconciles these three ids — including **S11 parallel tool_use in one assistant line**, where FIFO is insufficient.
+- **G9 concurrent spawns (S25)** — two claude-p PTYs alive at once (a capture spawn while a main turn's tool is parked), each with an isolated shim/socket, and `WaitForMcpServers` resolving against a shim that is concurrently holding a DIFFERENT spawn's call open. Concurrent cold-boot cost is also measured here.
+- **G-resume-flags `--input-file`/`--system-prompt-file`** — verify claude-p forwards these (historical D7 verified them on raw `claude`, NOT through claude-p); load-bearing for cold-start replays that overflow argv.
+
+### Phase ordering (risk-inversion fix)
+
+The Phase-3 SDK deletion (tasks 3.2/3.3) is IRREVERSIBLE in-process. It SHALL NOT
+proceed until G1–G5 + G7 + **G8 + G9** + G-resume-flags pass empirically OR the
+vendored claude-p fork (task 4.10) is already in place. (G6/S5 is intentionally
+NOT in the blocking set — it may ship as a documented exemption.) G2 (constitution IV) is a non-negotiable hard gate: if
+`--disallowedTools` does not demonstrably suppress native-tool emission through
+claude-p, the fork is mandatory before cut-over, not conditional. The SDK path
+(`CLAUDE_BRIDGE_DRIVER=sdk`) remains the rollback fallback until every gate is green.
+
 ## New decisions
 
 ### D26: Driver = `smithersai/claude-p`; nominal `claude -p` is forbidden
@@ -68,15 +101,64 @@ carries `usage` but **NO `stop_reason`**. The parser MUST filter the noise/built
 lines and detect turn-end from the `result` line (not `stop_reason`). Drift detection
 (known / valid-unknown-type / malformed) from D4 is retained.
 
+**UNVERIFIED — hard gate G3 (turn-end vs the held-open multi-round loop).** Exp C
+observed a single linear sequence ending in one `result`. But a real pi turn is an
+agent loop: `assistant(tool_use) → [bridge holds the MCP call, pi executes] →
+tool_result → assistant(text/tool_use) → … → result`. It is NOT yet established
+whether claude-p emits ONE `result` per pi TURN or one per agent-loop SEGMENT. If
+per-segment, "turn-end = first `result`" would terminate the turn after the first
+tool round and corrupt every multi-round scenario (S1/S2/S11). G3 MUST record a
+multi-tool-round claude-p stdout fixture and pin the turn-end requirement to it.
+The transcript-stream spec adds explicit ACs: (a) a `tool_use` block does NOT end
+the turn (it routes to the MCP shim/router and the turn continues), (b) multiple
+`tool_use` blocks in one assistant line each emit a distinct routed event with
+stable correlation (S11 parallel-tool regression), (c) `result` is disambiguated
+from the `system/stop_hook_summary`/`system/turn_duration` trailers.
+
+**UNVERIFIED — hard gate G4 (cache-shape obtainability).** SCENARIOS requires
+per-TURN `(cache_creation, cache_read)` and treats a mismatch as scenario-blocking.
+The replan sources usage only from the terminal `result.usage`. G4 MUST prove that
+for a multi-tool-round turn the per-turn cache tokens are recoverable (cumulative,
+not just the last segment) AND that `--resume` yields `cache_read_input_tokens > 0`
+(warm) rather than a cold creation per spawn. If claude-p cannot surface warm cache
+reads, the affected cache-shape rows need documented exemptions stated up front.
+
 ### D28: Native-tool blocking via `--disallowedTools` (claude-p reserves `--settings`)
 **Choice:** claude-p rejects user-supplied `--settings` (it owns it for its hooks),
 so the prior `--settings permissions.deny` mechanism (D11 layer 1) is replaced by
 `--disallowedTools <natives>`, which claude-p forwards to `claude`. Isolation flags
 `--strict-mcp-config` and `--setting-sources ""` also forward. **Modifies D11**:
 layer 1 becomes `--disallowedTools`; layers 2–4 (`--setting-sources ""`,
-`--strict-mcp-config`, shim `tools/list` rejection) unchanged. Constitution IV is
-non-negotiable; Phase-1 verifies these flags actually suppress native built-ins
-(incl. the `WaitForMcpServers` noise) via deterministic `tools/list` introspection.
+`--strict-mcp-config`, shim `tools/list` rejection) unchanged.
+
+**UNVERIFIED — hard gate G2 (non-negotiable).** This is the single riskiest
+substitution in the replan. The prior `--settings permissions.deny` (D11 layer 1)
+was an EMISSION-time block we had verified on raw `claude`; claude-p REJECTS
+`--settings`, so that verified layer is LOST. Its replacement, `--disallowedTools`,
+is a different `claude` flag with different semantics, here only forwarded by
+claude-p as an unrecognized flag (claude-p documents `--disallowedTools` explicitly,
+but `--strict-mcp-config` only as pass-through, and `--setting-sources ""` empty
+form is undocumented for claude-p). The spike did NOT prove isolation through
+claude-p (Exp C ran with no user-global config present). Before cut-over, G2 MUST
+prove, through claude-p: (a) `tools/list` introspection with a user-global
+`permissions.allow:["Bash(*)"]` AND a user-global MCP server present shows ONLY
+`mcp__custom-tools__*`; AND (b) an actual native-tool EMISSION attempt (model asked
+to use Bash) is refused — not merely absent from `tools/list`. If either fails, the
+claude-p fork (task 4.10) is mandatory before Phase 3. A native tool leaking
+(Read/Write/Bash) bypasses pi's sandbox and diverges history — a constitution-IV
+violation, which is non-negotiable.
+
+**Denylist vs allowlist (constitution IV is allowlist-shaped).** `--disallowedTools`
+is a DENYLIST that must enumerate every native tool; constitution IV's intent is
+"only pi-bridged tools are callable" (an allowlist), and a denylist is exactly the
+"audit new CC built-ins on upgrade" fragility — a future `claude` built-in not in
+the enumerated set would be callable. G2 SHALL therefore additionally (i) test
+whether `--allowedTools mcp__custom-tools__*` (a true allowlist) is honored through
+claude-p and prefer it if so; and (ii) assert via `tools/list` that the callable set
+is EXACTLY `mcp__custom-tools__*` (closed-set), not merely that the enumerated names
+are absent — the closed-set assertion catches an unknown re-enabled built-in. The
+runtime version-skew check (T4.7) SHALL name "re-audit the disallow set against
+`claude --help`'s tool list" as its trigger.
 
 ### D29: Hooks + trust dialog + prompt delivery owned by claude-p
 **Choice:** the bridge registers NO hooks and runs NO hook-relay subprocess —
@@ -104,6 +186,79 @@ grace window. No Esc-Esc/PTY-keystroke logic (that was the in-house-PTY path).
 captured for next-turn replay. Cold-replay (not transcript-resume) reconciles an
 aborted mid-tool turn, so there is no dangling-tool-use resume concern.
 
+**UNVERIFIED — hard gate G5 (S7/S13 abort coherence).** The SDK era did MORE than
+preserve router state: `index.ts:1265-1313` deliberately KEEPS `cachedSessionId`
+on abort and `--resume`s the SDK session on the next turn precisely so the model
+recalls the *interrupted partial assistant message* (S7's probe "what number did
+you reach before I interrupted you?"; S13's enumeration). Under claude-p we DROP
+the cache on abort and cold-replay pi history — which contains the aborted-error
+`AssistantMessage`, NOT necessarily the literal partial text the model had
+streamed. **Requirement added (claude-p-driver spec):** on abort, the bridge SHALL *attempt to*
+commit the partial assistant text (and any tool-call blocks) streamed so far into the
+aborted `AssistantMessage` so pi history carries it into the next cold-replay.
+
+**Caveats G5 must resolve (do not treat as settled):**
+- The SDK recovered the partial via session-`--resume` of its own JSONL, NOT via pi
+  history (`index.ts:1273-1278` comment is explicit) — so whether pi's cold-replay
+  even INCLUDES the content of an `aborted`/`error` AssistantMessage is itself
+  UNPROVEN and is part of what G5 proves.
+- The **abort-while-blocked-on-a-held-tool variant** (S8: abort during tool
+  execution; the turn already emitted `tool_use` and pi is computing the result) has
+  NO in-flight assistant text to commit — `index.ts:1287-1331` synthesizes a fresh
+  `newTurnOutput` with only an error. G5 MUST cover this variant and define what is
+  preserved when no partial text exists (e.g. the prior tool_use blocks + an explicit
+  "interrupted" marker), so S8's coherence ("did the sleep finish? — no") holds.
+- G5 proves the above against live **S7, S8, AND S13**; if pi history is insufficient
+  even with the partial committed, escalate (preserve more context, or a documented
+  exemption). This is the deferred-message-loss bug class S13 exists to guard.
+
+**Post-abort cache-shape consequence (S7/S8/S9/S13) — pre-stated, not discovered.**
+SCENARIOS pins these post-abort/steer turns as cache-**read**, premised on the SDK
+keeping the cache and `--resume`-ing the aborted session. Dropping the cache on abort
++ cold-replay makes them cache-**creation** (same mechanism as D-S5/S5). Two options,
+decided in G4/G5: (a) if `claude-p --resume <id>` of a SIGINT-aborted session yields
+warm cache reads, KEEP the cached id on abort (mirroring the SDK) and the rows stay
+"read"; (b) if not, these rows become documented "read OR creation (cold-replay)"
+exemptions recorded in `SCENARIO_RESULTS.md` up front — exactly as S5 was. Either way
+the disposition is pre-stated before the T4.1 scenario gate, not surfaced as four
+late failures.
+
+### D32: Cross-channel tool-call correlation (held-open round-trip across shim + stdout)
+
+**Problem (surfaced in review).** In the SDK era a SINGLE in-process MCP handler
+correlated everything: it parked keyed by the model's `toolu_…` id (captured from
+the SDK stream via `toolUseIdQueue`), and pi delivered `toolResult.id` = that same
+`toolu_…` id, so resolution was a direct key match (`index.ts` ~586, 960-1006).
+Under claude-p the round-trip is SPLIT across two channels:
+- the **MCP shim** receives a `tools/call` carrying its own JSON-RPC request id and
+  the tool `name` + `arguments` — but NOT, in general, the model's `toolu_…` id;
+- the model's `toolu_…` id appears only on **claude-p's stdout** tool_use line;
+- **pi** still delivers `toolResult.id` = the model's `toolu_…` id.
+
+So the router must reconcile {shim request id} ↔ {model `toolu_…` id} ↔ {pi
+`toolResult.id`}. This is the single most load-bearing mechanism of the change.
+
+**Choice (to be proven by G8):** the router parks each shim `tools/call` and
+correlates it to the model `toolu_…` id observed on stdout by matching on tool
+`name` + canonicalized `arguments` (the shim call and the stdout tool_use describe
+the same call), then keys the parked resolver by the recovered `toolu_…` id so pi's
+`toolResult.id` resolves it directly — preserving today's resolution contract.
+**Parallel/identical calls (S11):** when two tool_use blocks in one assistant line
+share name+arguments, name+args matching is ambiguous; the router SHALL fall back to
+positional pairing WITHIN that single assistant line (the shim receives the calls in
+the model's emission order; stdout lists them in the same order) and SHALL assert the
+counts match. **Serialization invariant:** the agent loop is serial PER round — a
+`tool_use` blocks the model until its held MCP call resolves — so at most one held
+call per `(name, canonicalized args)` is outstanding at any instant ACROSS rounds; the
+router SHALL assert this when parking, so the within-line positional fallback is
+sufficient and identical-args calls in *different* rounds cannot collide. G1
+(multi-round) confirms rounds are serialized. If claude-p's MCP `tools/call` turns out to carry the model's `toolu_…`
+id directly (to be checked in G8), that id is used and the name+args heuristic is
+unnecessary. **G8 proves this on a 2-parallel-tool fixture before the router is written.**
+
+**4-point test:** multiple-approaches? yes. lasting? yes. disagreement? yes.
+future-constraint? yes. → **ADR candidate Y**.
+
 ### D-S5: Mid-stream steer — abort+respawn, exemption if insufficient
 **Choice:** claude-p is one-prompt-per-spawn with no mid-turn input channel (unlike
 `-p`'s `--input-format stream-json`). S5 (a new user message arriving during an
@@ -115,7 +270,21 @@ fallback is **forking claude-p to type a second message into the live TUI mid-tu
 IF neither is pursued, S5 is the **documented architectural exemption** the
 acceptance bar permits (rationale: claude-p is one-shot by design; native mid-turn
 injection is not available without a fork). Disposition finalized in Phase 1 against
-the real scenario.
+the real scenario (gate G6).
+
+**Pre-stated consequences (do not leave to "observed behavior"):**
+- **Cache shape:** abort+respawn cold-starts a new claude-p process, so the steer
+  turn will ALWAYS be cache-**creation**, never read. SCENARIOS S5's row permits
+  "read OR creation (note observed)"; under claude-p the answer is fixed at
+  creation and SHALL be recorded as such in `SCENARIO_RESULTS.md`, not discovered.
+- **No duplicated essay tail:** the respawn prompt replays pi history (which now
+  contains the abandoned-essay prefix). T1.16 SHALL assert the model does NOT
+  re-emit/echo the abandoned essay's tail (S5 mechanical bar).
+- **Abandoned-prefix recall:** S5's coherence probe ("did I ever ask about the
+  printing press?") needs the abandoned assistant prefix to be recallable — this
+  shares the G5 partial-preservation requirement (D31). "Both user messages are in
+  history" is necessary but NOT sufficient; the abandoned ASSISTANT prefix must
+  also survive. T1.16 asserts this explicitly.
 
 ## Supersession map
 
@@ -137,7 +306,7 @@ the real scenario.
 | D14 (build to `dist/`) | **Retained** (still need the shim bin) |
 | D15 (abort late-tool-result coherence) | **Retained** (D31) |
 | D16 (capture MCP completion) | **Retained** (D30) |
-| D17 (post-Stop settle window) | **Modified** — settle now keyed on claude-p's `result` line, not a bridge-observed Stop |
+| D17 (post-Stop settle window) | **Superseded** — turn-end is claude-p's `result` line (D27); there is NO settle window |
 | D18 (deterministic transcript path) | **Superseded** by D27 (bridge reads no transcript) |
 | D19 (shim path resolution) | **Retained** (D30) |
 | D20 (shim↔router IPC) | **Retained** (D30) |
@@ -152,8 +321,14 @@ the real scenario.
 - **III (no `~/.claude/` coupling):** now satisfied *more* strongly — the bridge
   reads NOTHING under `~/.claude/` (events come from claude-p's stdout; claude-p is
   a black box that does its own transcript reading). The 2026-05-21 exemption (b)
-  (deterministic-path read) becomes **moot** for this driver; it stays on the books
-  harmlessly. No further amendment required.
+  (deterministic-path read) becomes **DEAD** for this driver — it MUST NOT be
+  exercised: the claude-p-driver spec forbids ALL `~/.claude/` reads by the bridge,
+  so an implementer must not invoke exemption (b) to add a transcript read. It stays
+  on the constitution's books (no re-amendment needed) but is unused here.
+  **Scope note:** claude-p itself reads
+  `~/.claude/projects/*.jsonl` internally — that is the black box's concern, not the
+  bridge's; constitution III binds the *bridge process* only, and the task 4.2 audit
+  asserts no bridge-process read/write under `~/.claude/`, not claude-p's.
 - **IV (native tools disallowed):** enforced via D28 (`--disallowedTools` + isolation
   flags + shim rejection). Unchanged intent.
 - **V, VI, VII:** unchanged; the driver swap preserves system-prompt fidelity,
@@ -454,6 +629,12 @@ Each block separated by a blank line. If `ctx.systemPrompt` is empty, the assemb
 
 ### D18: Deterministic transcript path via pre-generated `--session-id` (added Round-3; corrected Phase-0 F1)
 
+> ⚑ **SUPERSEDED — see D27 + the amendment's Constitution-impact note.** This
+> decision's claim that "Constitution III was amended to add exemption (b),
+> ratified by THIS change" is HISTORICAL: under claude-p the bridge reads NO
+> transcript file, so exemption (b) is DEAD (must not be exercised). A
+> constitution-III auditor (task 4.2) must NOT cite this decision as a live amendment.
+
 **Choice:** Discover the transcript path WITHOUT depending on hook payload contracts. For each PTY spawn:
 
 1. Bridge generates a UUID at spawn time via `crypto.randomUUID()`.
@@ -627,6 +808,13 @@ The current bridge (index.ts:1008-1016, 1260-1336) deliberately keeps aborted fr
 
 ### D17: Bounded post-`Stop` transcript settle window (per Round-2 B.P1#4)
 
+> ⚑ **SUPERSEDED — see D27.** This (historical) decision claims interactive mode
+> emits no `result` entry and uses `stop_hook_summary` as the terminal marker. The
+> claude-p spike (Exp C) showed claude-p's stdout DOES carry a terminal `result`
+> line (after `stop_hook_summary`/`turn_duration`); D27 detects turn-end from
+> `result`. The bridge no longer tails the transcript file or runs a settle window.
+> Whether `result` is per-turn or per-segment is hard gate G3.
+
 **Choice:** When the `Stop` hook fires, the transcript tailer does NOT close the file immediately. Instead it enters a bounded settle window (default 250ms, env-overridable via `CLAUDE_BRIDGE_TRANSCRIPT_SETTLE_MS`) during which it continues to read newly-appended lines. The window closes when either (a) the configured timeout elapses, OR (b) the tailer observes a terminal `system / stop_hook_summary` JSONL entry (Phase-0 finding: interactive mode does NOT emit a separate `result` entry as originally assumed; the `stop_hook_summary` line written AFTER the Stop hook executes is the true terminal marker). This protects against the documented race where the hook fires before the last transcript write hits disk.
 
 **Alternatives considered**
@@ -657,6 +845,16 @@ The current bridge (index.ts:1008-1016, 1260-1336) deliberately keeps aborted fr
 **Rationale:** addresses Round-1 B.P1#3. The capture path needs its own MCP completion semantics distinct from the main-provider Promise-parking contract; the deterministic-success response is the simplest model-friendly way to terminate the capture round.
 
 **4-point test:** multiple-approaches? yes. lasting? yes. disagreement? yes. future-constraint? yes. → **ADR candidate Y** (4 of 4).
+
+> ⚑ **SUPERSEDED (historical) — Migration Plan, Risks, and Open Questions below
+> describe the in-house node-pty plan.** The authoritative phase order, risk set,
+> and gates are in the Replan Amendment at the top (G1–G9 + G-resume-flags + the
+> "no SDK deletion before gates" rule) and in tasks.md/plan.md. Individual risks
+> here that are moot under claude-p (R3 node-pty install, R4 fs.watch, R11 PTY boot,
+> R19 spawn-helper chmod, R21 realpath-cwd, AND the transcript-coupled rows R1
+> hook/transcript-schema drift, R8 mid-turn session-id, R13 transcript-file
+> accumulation — the bridge reads no transcript under claude-p) no longer apply;
+> claude-p-specific risks live in proposal.md "Operational risk". Provenance only.
 
 ## Risks / Trade-offs
 

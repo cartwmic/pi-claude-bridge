@@ -43,13 +43,21 @@ THE driver SHALL configure every claude-p spawn with `--disallowedTools` enumera
 
 #### Scenario: Disallow list is non-empty and includes documented set
 - **WHEN** the driver builds claude-p arguments for a spawn
-- **THEN** the `--disallowedTools` value forbids at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `ToolSearch`, `AskUserQuestion`, `ScheduleWakeup`, `TaskOutput`, `TaskStop`, `BashOutput`, `Monitor`, and `Mcp`
-- **AND** the model's only callable tool surface is `mcp__custom-tools__*`
+- **THEN** the `--disallowedTools` value forbids at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `ToolSearch`, `AskUserQuestion`, `ScheduleWakeup`, `TaskOutput`, `TaskStop`, `BashOutput`, and `Monitor`
+- **AND** the disallow set MUST NOT include any token that matches the bridge's own `mcp__custom-tools__*` namespace under `claude`'s tool-name matching (notably a bare `Mcp`/`mcp__*` entry that could suppress the bridged surface and deadlock every tool round) — the held-open MCP surface MUST survive the disallow set
+- **AND** the model's only callable tool surface is EXACTLY `mcp__custom-tools__*` (closed-set; G2/T1.12 assert both that natives are refused AND that the bridged surface survives)
 
 #### Scenario: Built-in `WaitForMcpServers` is not surfaced to pi
 - **WHEN** the model emits a built-in `WaitForMcpServers` tool_use during MCP-server startup (observed in claude-p's stream)
 - **THEN** the driver/stream layer does NOT surface it to pi as a tool call
 - **AND** no pi tool execution is triggered for it
+
+#### Scenario: Native-tool block is verified by emission refusal, not just `tools/list` (hard gate G2)
+- **GIVEN** a user-global `~/.claude/settings.json` with `permissions.allow: ["Bash(*)"]` AND a user-global MCP server configured
+- **WHEN** a turn is spawned through claude-p with the bridge's `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""`, and the model is explicitly asked to run a `Bash` command
+- **THEN** deterministic `tools/list` introspection shows ONLY `mcp__custom-tools__*` (no `Bash`, no user MCP tools)
+- **AND** the model's attempt to emit a `Bash` tool_use is refused (no native execution occurs)
+- **AND** IF either assertion fails, constitution IV is violated and the claude-p fork (task 4.10) is required before cut-over
 
 ### Requirement: Prompt injection via claude-p input
 
@@ -58,7 +66,8 @@ WHEN a fresh claude-p subprocess is spawned for a pi user turn, THE driver SHALL
 #### Scenario: Cold-start replay
 - **WHEN** the driver starts a turn with no cached driver session id
 - **THEN** claude-p receives the full pi history flattened to text per the bridge's existing conversion contract
-- **AND** when that text exceeds the implementation-defined size threshold (default 200 KB) it is delivered via `--input-file <tempfile>` rather than the positional argument
+- **AND** when that text exceeds the implementation-defined size threshold (default **50 KB**, conservative vs the ~256 KB macOS argv ceiling at which the historical spike saw the prompt silently dropped) it is delivered via `--input-file <tempfile>` rather than the positional argument
+- **AND** that claude-p actually accepts `--input-file` (and `--system-prompt-file` if used) is gate **G-resume-flags** — verified through claude-p, not assumed from raw `claude`
 
 #### Scenario: Warm-resume injection
 - **WHEN** the driver starts a turn with a cached driver session id matching the current pi cwd and message-hash chain
@@ -113,6 +122,15 @@ IF the claude-p subprocess exits with a non-success code while a turn is in flig
 - **THEN** the driver pushes an `error` event whose `errorMessage` includes the exit code (e.g. 2 wrapper failure, 124 timeout)
 - **AND** any cached driver session id is cleared so the next turn cold-starts
 
+### Requirement: `--timeout` must not trip on a held tool round
+
+THE driver SHALL set claude-p's `--timeout` such that it cannot expire while an MCP tool call is held open awaiting pi's tool execution. Because the inference driver blocks inline on the held MCP response, the wall-time of a long pi tool (S3 ≥45s, S8 120s) counts against claude-p's `--timeout` (exit 124). THE driver SHALL derive `--timeout` to exceed the maximum expected pi-tool latency plus interactive-boot overhead, OR drive abort/cancellation through pi's `AbortSignal` rather than claude-p's wall-timer. Hard gate G7 confirms whether claude-p's `--timeout` counts held-call time.
+
+#### Scenario: Long held tool round does not trip claude-p timeout
+- **WHEN** a turn runs a pi tool that takes ≥45s (S3) while the MCP call is held open
+- **THEN** claude-p does NOT exit 124 (timeout) mid-tool
+- **AND** the turn completes once pi delivers the tool result
+
 ---
 
 ### Requirement: Image content handling in v1
@@ -163,6 +181,35 @@ WHEN pi signals abort while a turn is mid-tool-round (an MCP tool call is parked
 - **AND** pops the aborted frame from the active stack
 - **AND** the new turn proceeds as a fresh-turn dispatch
 
+### Requirement: Abort preserves the interrupted partial for next-turn recall
+
+The SDK era recovered the interrupted-partial recall (S7 "what number did you reach before I interrupted you?", S13 enumeration) by keeping the cached session and `--resume`-ing the driver session whose JSONL retained the partial assistant message (`index.ts:1265-1313`). The claude-p replan drops the cache on abort and cold-replays pi history, which carries the aborted `AssistantMessage` but NOT necessarily the literal partial text. THEREFORE, on abort, THE bridge SHALL commit the assistant text (and any tool-call blocks) streamed so far into the aborted-turn `AssistantMessage` it hands pi, so the abandoned prefix survives in pi history and is available to the next turn's cold-replay. THIS requirement is a hard gate (G5): it SHALL be proven against the live S7 and S13 scenarios before Phase-3 SDK deletion. IF cold-replay with the committed partial still fails the coherence probe, the disposition escalates (preserve additional context, or a documented exemption per the acceptance bar).
+
+#### Scenario: Interrupted-partial recall survives abort
+- **WHEN** pi aborts a turn after the model has streamed partial text (e.g. "1, 2, 3, …")
+- **THEN** the aborted `AssistantMessage` the bridge resolves to pi contains the partial text streamed so far
+- **AND** the next turn's cold-replay includes that partial in pi history
+- **AND** the model's next response can reference what it had reached before the interruption (S7 / S13 coherence)
+
+### Requirement: Concurrent spawns are fully isolated (capture AND nested subagents)
+
+WHEN two or more claude-p spawns are alive at the same time — whether a capture spawn running while a main turn's tool is parked (S25), OR a nested same-provider **subagent** where a claude-bridge parent turn is parked on a `subagent` tool-call while a claude-bridge child turn runs concurrently (S14) — EACH spawn SHALL have its OWN independent claude-p subprocess, MCP shim, in-process router state, unix socket, and `WaitForMcpServers` startup. No two concurrent spawns SHALL share a router map, socket, or correlation domain. The model `toolu_…` → parked-resolver correlation of D32 is scoped PER spawn/frame, so identical tool names+args across two concurrent frames cannot collide. (The SDK era expressed this via the per-frame `QueryFrame` context stack, `index.ts:264-299`; the claude-p replan preserves the stack but each frame now owns a full driver+shim+socket+router instance.)
+
+#### Scenario: Nested same-provider subagent (S14) — two concurrent main spawns
+- **WHEN** a claude-bridge parent turn is parked on a `subagent` tool-call and a claude-bridge child turn spawns its own claude-p concurrently
+- **THEN** parent and child each have a disjoint claude-p subprocess + shim + socket + router
+- **AND** neither frame's stream events nor tool-call correlations leak into the other
+- **AND** both frames complete; the parent resumes correctly after the child returns
+
+### Requirement: Respawn does not race the dying subprocess's stdout reader
+
+WHEN the driver aborts an in-flight spawn and immediately dispatches a fresh turn (supersede / S9 abort-then-steer / S13 rapid retype), THE driver SHALL NOT spawn the replacement claude-p process until the prior subprocess's stdout reader is fully detached and its frame's `done`/abort handling has completed. The two subprocesses' stdout streams SHALL NOT interleave into the bridge's parser. (The SDK's `query.interrupt()` was synchronous; SIGINT-a-subprocess + stop-reading is asynchronous, so ordering must be explicit.)
+
+#### Scenario: Abort-then-immediate-steer does not interleave streams
+- **WHEN** pi aborts and within milliseconds sends a new user message (S9 / S13)
+- **THEN** the driver detaches the aborted subprocess's stdout reader and emits its `done(aborted)` before spawning the replacement
+- **AND** no event from the dying subprocess is attributed to the new turn
+
 ### Requirement: Mid-stream steer is handled by abort-and-respawn
 
 WHEN pi delivers a new user message while a main-provider turn is still in flight (the steering scenario, S5), THE driver SHALL abort the in-flight claude-p subprocess (per the abort lifecycle above) and dispatch the steering message as a fresh turn. Because pi owns conversation history, both the abandoned-turn prefix and the steering message remain in pi's session, so the next response can accurately recall the redirection. claude-p exposes no mid-turn input channel; injecting a second message into a live TUI turn is NOT supported in v1 without a claude-p fork. IF Phase 1 finds abort-and-respawn fails S5's coherence probe against the live scenario, the disposition escalates to a claude-p fork OR a documented architectural exemption per the acceptance bar (design D-S5).
@@ -189,4 +236,8 @@ WHEN pi delivers a new user message while a main-provider turn is still in fligh
 | claude-p-driver.image-content-handling-in-v1 | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-p-driver.abort-lifecycle-is-decoupled-from-claude-p-completion | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-p-driver.abort-preserves-late-tool-result-coherence-with-pi | [ ] | [ ] | [ ] | [ ] | [ ] |
+| claude-p-driver.abort-preserves-the-interrupted-partial-for-next-turn-recall | [ ] | [ ] | [ ] | [ ] | [ ] |
+| claude-p-driver.concurrent-spawns-are-fully-isolated-capture-and-nested-subagents | [ ] | [ ] | [ ] | [ ] | [ ] |
+| claude-p-driver.respawn-does-not-race-the-dying-subprocesss-stdout-reader | [ ] | [ ] | [ ] | [ ] | [ ] |
+| claude-p-driver.timeout-must-not-trip-on-a-held-tool-round | [ ] | [ ] | [ ] | [ ] | [ ] |
 | claude-p-driver.mid-stream-steer-is-handled-by-abort-and-respawn | [ ] | [ ] | [ ] | [ ] | [ ] |

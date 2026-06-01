@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pi-spike-tools": {
+      "command": "node",
+      "args": ["/tmp/pi-spike/mcp-server.mjs"]
+    }
+  }
+}

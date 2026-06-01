@@ -18,9 +18,16 @@ claude-p integration prevents pure TDD.
   validated on `-p` AND through claude-p); claude-p `--output-format stream-json
   --verbose` flushes live and emits the raw interactive schema; claude-p handles the
   trust dialog itself; cold boot is heavy. Findings promoted to proposal.md +
-  design.md Replan Amendment (D26–D31).
+  design.md Replan Amendment (D26–D32).
 - **Verification:** `openspec validate replace-sdk-with-claude-p` passes; design
-  Replan Amendment present.
+  Replan Amendment present; reproducible spike artifact committed at
+  `.spike-notes/claude-p-gate/`.
+- **NOT cleared by this step:** behavioral hard gates **G1–G9 + G-resume** (tasks `0b`) —
+  multi-round held blocking, constitution-IV isolation through claude-p, turn-end +
+  cache-shape across rounds, warm-resume cache reads, S7/S13 abort coherence, S5,
+  `--timeout` vs held call. These run in Phase 1 and **block the Phase-3 cut-over**
+  (step 12) until they pass or the claude-p fork (T4.10) is in place. The thesis
+  gate proved the agent loop + a single held round — not these.
 
 ## Plan step 2: Worktree + dependencies + build pipeline
 
@@ -104,8 +111,9 @@ claude-p integration prevents pure TDD.
 ## Plan step 12: Cut over
 
 - **Covers:** T3.1–T3.5
+- **BLOCKED until:** hard gates G1–G5 + G7 + G8 + G9 + G-resume pass AND G2 (constitution IV) is closed — or the vendored claude-p fork (T4.10) is in place. (G6/S5 may ship as documented exemption.) Deleting the SDK path before the gates is the risk-inversion the review flagged; do not proceed otherwise.
 - **Action:** default flag → `claude-p` (sdk → deprecation error); delete SDK path; remove `@anthropic-ai/*` deps; grep verify empty; README final pass. Commit each.
-- **Verification:** full `npm test` green; no `@anthropic-ai` refs.
+- **Verification:** full `npm test` green; no `@anthropic-ai` refs; gate sign-offs recorded.
 
 ## Plan step 13: Hardening + the scenario gate
 

@@ -107,7 +107,7 @@ When the call shape is rejected, the bridge SHALL NOT invoke the inference drive
 
 ### Requirement: Capture path isolation
 
-The capture path SHALL be implemented as a dedicated function that does not interact with the bridge's user-session state. While running, the capture path SHALL NOT push any frame onto the main-provider active-frame stack, SHALL NOT supersede or interrupt any active main-provider frame, SHALL NOT mutate the cross-call state variables `cachedSessionId`, `cachedSessionCwd`, or `lastSentMessageHashes`, and SHALL spawn its own claude-p subprocess rooted at `os.tmpdir()` by default (unless the caller specifies a different cwd).
+The capture path SHALL be implemented as a dedicated function that does not interact with the bridge's user-session state. While running, the capture path SHALL NOT push any frame onto the main-provider active-frame stack, SHALL NOT supersede or interrupt any active main-provider frame, SHALL NOT mutate the cross-call state variables `cachedSessionId`, `cachedSessionCwd`, or `lastSentMessageHashes`, and SHALL spawn its own claude-p subprocess rooted at `os.tmpdir()` by default (unless the caller specifies a different cwd). The capture spawn SHALL use its OWN independent claude-p subprocess, MCP shim, in-process router state, and unix socket — disjoint from any concurrent main-provider spawn's — so a capture call running while a main turn's tool is parked (S25) shares no router map, socket, or `WaitForMcpServers` startup with the main spawn. (Gate G9 verifies the concurrent two-spawn case.)
 
 #### Scenario: Capture call concurrent with active user turn does not interrupt the user
 
@@ -132,7 +132,7 @@ The capture path SHALL be implemented as a dedicated function that does not inte
 
 ### Requirement: Synthesized `toolCall` content block on success
 
-WHEN the capture path receives a valid IPC-stashed arguments object from the shim (per design D16/D21, the shim validates arguments against the capture tool's JSON schema before stashing), the bridge SHALL synthesize an `AssistantMessage` containing exactly one `toolCall` content block whose `name` equals the capture tool's name and whose `arguments` equals the stashed arguments. The IPC stash is the AUTHORITATIVE result source (per D21). The transcript is consulted ONLY for `usage` / `cost` extraction (terminal `result` entry) and as a cross-check (verify a matching tool-use block was emitted; warn on divergence and trust the stash). The synthesized AssistantMessage SHALL be built via the same `newTurnOutput(model)` helper the main-provider path uses. Usage propagation maps transcript fields `input_tokens` → `usage.input`, `output_tokens` → `usage.output`, `cache_read_input_tokens` → `usage.cacheRead`, `cache_creation_input_tokens` → `usage.cacheWrite`; `calculateCost(model, usage)` populates cost fields. The bridge SHALL push a `done` event with `reason: "toolUse"` carrying that AssistantMessage on the pi-ai stream and end the stream.
+WHEN the capture path receives a valid IPC-stashed arguments object from the shim (per design D16/D21, the shim validates arguments against the capture tool's JSON schema before stashing), the bridge SHALL synthesize an `AssistantMessage` containing exactly one `toolCall` content block whose `name` equals the capture tool's name and whose `arguments` equals the stashed arguments. The IPC stash is the AUTHORITATIVE result source (per D21). claude-p's stdout terminal `result` line is consulted ONLY for `usage` / `cost` extraction, and claude-p's emitted tool-use lines only as a cross-check (verify a matching tool-use block was emitted; warn on divergence and trust the stash). There is no transcript-file read and no settle window — the bridge sees only claude-p's stdout. The synthesized AssistantMessage SHALL be built via the same `newTurnOutput(model)` helper the main-provider path uses. Usage propagation maps claude-p `result.usage` fields `input_tokens` → `usage.input`, `output_tokens` → `usage.output`, `cache_read_input_tokens` → `usage.cacheRead`, `cache_creation_input_tokens` → `usage.cacheWrite`; `calculateCost(model, usage)` populates cost fields. The bridge SHALL push a `done` event with `reason: "toolUse"` carrying that AssistantMessage on the pi-ai stream and end the stream.
 
 #### Scenario: Successful capture
 
@@ -147,7 +147,7 @@ WHEN the capture path receives a valid IPC-stashed arguments object from the shi
 #### Scenario: IPC stash present but transcript divergent (Round-5 B.P1#3)
 
 - **WHEN** the shim has IPC-stashed validated arguments for the capture tool
-- **AND** claude-p's stdout does not (yet) show the corresponding tool-use block at turn-end (race, truncation, or settle-window-exceeded)
+- **AND** claude-p's stdout does not (yet) show the corresponding tool-use block at turn-end (race or truncation in claude-p's stdout)
 - **THEN** the IPC stash is authoritative; the bridge synthesizes the success AssistantMessage from the stashed arguments
 - **AND** the bridge emits a warn-level log entry naming the divergence
 - **AND** `usage` / `cost` fields fall back to whatever the terminal `result` line contained (zeroes if absent)
@@ -160,7 +160,7 @@ WHEN the capture path receives a valid IPC-stashed arguments object from the shi
 
 ### Requirement: Surface absent capture-tool call as error
 
-IF the capture path's claude-p subprocess emits its terminal `result` line (turn complete) without the bridge having received any valid IPC-stashed arguments from the shim, THEN the bridge SHALL push an `error` event on the pi-ai stream whose `errorMessage` names the failure cause ("model did not call capture tool" if no stash and no tool-use block in transcript; "arguments failed schema validation" if the shim rejected one or more attempts via MCP error but no valid call followed) and end the stream. The error AssistantMessage SHALL also propagate the transcript's terminal `result` usage / cost where present, so callers can observe retry-cost on failures.
+IF the capture path's claude-p subprocess emits its terminal `result` line (turn complete) without the bridge having received any valid IPC-stashed arguments from the shim, THEN the bridge SHALL push an `error` event on the pi-ai stream whose `errorMessage` names the failure cause ("model did not call capture tool" if no stash and no tool-use line in claude-p's stdout; "arguments failed schema validation" if the shim rejected one or more attempts via MCP error but no valid call followed) and end the stream. The error AssistantMessage SHALL also propagate claude-p's terminal `result.usage` / cost where present, so callers can observe retry-cost on failures.
 
 #### Scenario: Model returned text only, never called the capture tool
 
@@ -171,7 +171,7 @@ IF the capture path's claude-p subprocess emits its terminal `result` line (turn
 
 #### Scenario: Capture tool called with arguments failing schema validation
 
-- **WHEN** the transcript contains a tool-use block for the capture tool whose arguments fail JSON-schema validation
+- **WHEN** claude-p's stdout contains a tool-use line for the capture tool whose arguments fail JSON-schema validation
 - **THEN** the pi-ai stream emits `error` whose `errorMessage` references "arguments failed schema validation" and names at least one failing field path
 - **AND** `complete()` resolves with `stopReason === "error"`
 

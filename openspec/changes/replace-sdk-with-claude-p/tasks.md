@@ -7,20 +7,75 @@ per `openspec-apply-change` diff checking.
 > The prior in-house-PTY task list (node-pty spawn, ANSI stripper, trust-dialog
 > scanner, hook-relay shim, transcript-file tailer, settle window) is SUPERSEDED.
 > Those tasks are removed; claude-p owns PTY/ANSI/trust/hooks, and events come
-> from claude-p's stdout. See design Replan Amendment D26–D31 + the supersession map.
+> from claude-p's stdout. See design Replan Amendment D26–D32 + the supersession map.
 
 ## 0. Phase 0 — claude-p feasibility spike (DONE 2026-05-31)
 
-The replan's hard gate: "does Claude Code expose a completion-shaped seam, or only
-an agent loop?" Spike completed on `claude 2.1.159` + `claude-p 0.1.0`. Findings
-promoted into proposal.md + design.md Replan Amendment. (The old Phase-0 node-pty
-spikes T0.1–T0.14 are historical; superseded by this gate.)
+The replan's **architectural-thesis** gate: "does Claude Code expose a
+completion-shaped seam, or only an agent loop?" Cleared on `claude 2.1.159` +
+`claude-p 0.1.0`. Reproducible artifact (harness + captured claude-p stdout) is
+committed at `.spike-notes/claude-p-gate/`; findings promoted into proposal.md +
+design.md Replan Amendment. (The old node-pty spikes T0.1–T0.14 are historical.)
+
+**The thesis gate is NOT the behavioral gate.** The spike proved the agent loop +
+a SINGLE held tool round through claude-p. It did NOT prove multi-round blocking,
+constitution-IV isolation through claude-p, turn-end/cache-shape across rounds,
+warm-resume cache reads, S7/S13 abort coherence, S5, cross-channel correlation, or concurrent spawns — those are gates **G1–G9 + G-resume**
+in `0b` below, which BLOCK the Phase-3 cut-over.
 
 - [x] 0.1 Spike: confirm Claude Code is an agent loop (no `--max-turns`/stop-at-tool-use; CLI executes MCP tools itself in one invocation). RESULT: confirmed.
 - [x] 0.2 Spike: confirm the held-open MCP `tools/call` blocks the CLI inline (the promise-park mechanism). RESULT: confirmed on `-p` AND through claude-p (4–5s holds reproduced exactly).
 - [x] 0.3 Spike: confirm claude-p `--output-format stream-json --verbose` flushes lines live, and document its emitted interactive-transcript schema (noise lines, `WaitForMcpServers`, `result` without `stop_reason`, `usage` present). RESULT: documented in design D27.
 - [x] 0.4 Spike: confirm claude-p handles the workspace-trust dialog itself (untrusted cwd, no hang) and forwards the flags the bridge needs (`--mcp-config`, `--disallowedTools`, `--setting-sources`, `--session-id`/`--resume`, `--system-prompt`). RESULT: confirmed; `--settings` reserved by claude-p.
 - [x] 0.5 Spike: record cold-boot latency observation (heavy vs `-p`). RESULT: noted as risk; Phase-4 benchmark.
+
+## 0b. Phase-1 HARD GATES (G1–G9 + G-resume-flags) — must pass (or trigger the fork) BEFORE Phase-3 cut-over
+
+These verify the load-bearing claude-p behaviors the thesis spike did NOT cover.
+Each captures a committed fixture/result under `.spike-notes/claude-p-gate/`. The
+Phase-3 SDK deletion (T3.2/T3.3) is BLOCKED until G1–G5 + G7 + G8 + G9 + G-resume pass empirically OR the
+vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constitution IV).
+
+- [ ] 0b.G1 Multi-round held blocking: drive ≥3 sequential held MCP tool rounds in ONE claude-p spawn; assert each blocks inline and the turn completes. Record fixture.
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-multiround.mjs"]
+  - allow_new_files: true
+- [ ] 0b.G2 **Constitution IV (HARD):** with a user-global `permissions.allow:["Bash(*)"]` + a user MCP server present, spawn through claude-p with `--disallowedTools`+`--strict-mcp-config`+`--setting-sources ""`; assert (a) `tools/list` shows EXACTLY `mcp__custom-tools__*` (closed-set), AND (b) an actual model `Bash` emission is REFUSED (no native execution), AND (c) the bridged `mcp__custom-tools__*` surface SURVIVES the disallow set (a tool round still works — the disallow set must not match the bridge's own namespace). If any fails → fork (T4.10) mandatory before cut-over. (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools)
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-tool-isolation.mjs"]
+  - allow_new_files: true
+- [ ] 0b.G3 Turn-end & multi-round schema (in the G1–G5 blocking set): record a multi-tool-round claude-p stdout fixture; determine whether `result` is per-turn or per-segment; pin the transcript-stream turn-end rule (transcript-stream.held-open-tool-rounds-do-not-terminate-the-turn). The **turn-end correctness** clause is cut-over-BLOCKING (a per-segment `result` mis-detected as turn-end corrupts S1/S2/S11); the **cache-token aggregation** clause (summing per-turn from multiple segments) shares G4's exemption fallback if unobtainable. Verify parallel tool_use (S11) emits distinct correlated events.
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "tests/unit-driver-stream.mjs"]
+  - allow_new_files: true
+- [ ] 0b.G4 Cache-shape: prove per-turn `(cache_creation, cache_read)` is recoverable across tool rounds from `result.usage`, AND that `claude-p --resume <id>` yields `cache_read_input_tokens > 0` (warm). If warm reads are unobtainable, document the affected SCENARIOS cache-shape rows as exemptions up front.
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md"]
+  - allow_new_files: true
+- [ ] 0b.G5 Abort coherence (S7 + S8 + S13): prove cold-replay of pi history reproduces interrupted-partial recall. MUST cover (a) text-streaming abort (S7), (b) **abort-while-blocked-on-a-held-tool (S8)** where there is no in-flight text — define what is preserved (prior tool_use blocks + "interrupted" marker) so "did the sleep finish? — no" holds, (c) that pi cold-replay actually INCLUDES the content of an aborted/error AssistantMessage (the SDK got the partial from session-resume, NOT pi history — this is unproven). ALSO decide the post-abort cache-shape for S7/S8/S9/S13: test whether `claude-p --resume` of a SIGINT-aborted session yields warm reads (→ keep cache on abort, rows stay "read") OR pre-record "read OR creation (cold-replay)" exemptions in SCENARIO_RESULTS.md. If coherence insufficient, escalate (more context, or documented exemption).
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-abort-coherence.mjs", "SCENARIO_RESULTS.md"]
+  - allow_new_files: true
+- [ ] 0b.G7 `--timeout` semantics: determine whether claude-p `--timeout` counts wall-time blocked on a held MCP call; set/derive it (or route cancellation via pi AbortSignal) so S3 (45s) / S8 (120s) tools cannot trip exit 124 (claude-p-driver.timeout-must-not-trip-on-a-held-tool-round).
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**"]
+  - allow_new_files: true
+- [ ] 0b.G6 S5 disposition (also tracked at T1.16): finalize abort-and-respawn vs fork vs documented exemption; pre-record the forced cache-creation + abandoned-prefix-recall + no-duplicated-tail outcomes in `SCENARIO_RESULTS.md`. NOTE: G6 is intentionally EXCLUDED from the "G1–G5+G7 block cut-over" set (S5 may legitimately ship as a documented exemption); its disposition is re-openable if the T4.10 fork later adds mid-turn injection.
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md", "openspec/changes/replace-sdk-with-claude-p/design.md"]
+  - allow_new_files: true
+- [ ] 0b.G8 **Cross-channel tool-call correlation (HARD, blocks cut-over):** on a 2-parallel-tool fixture through claude-p, prove the router reconciles {shim MCP request} ↔ {model `toolu_…` id on stdout} ↔ {pi `toolResult.id`} per design D32 — first determine whether claude-p's `tools/call` carries the model's `toolu_…` id directly; if not, prove name+args matching (with positional fallback for identical calls) routes each held call to the correct pi result with no cross-wiring. This shapes the router's core data structures, so it runs BEFORE T1.7 (router impl). (mcp-stdio-shim.tool-call-correlation-across-the-split-channels; S11)
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-parallel-tools.mjs"]
+  - allow_new_files: true
+- [ ] 0b.G9 **Concurrent spawns / S25 + S14 (HARD, blocks cut-over):** prove two claude-p subprocesses run concurrently — BOTH (a) main + capture (a capture spawn while a main turn's tool is parked, S25) AND (b) **nested same-provider main + main** (a claude-bridge parent parked on `subagent` while a claude-bridge child runs, S14) — each with an isolated shim/socket/router and per-frame D32 correlation, no cross-talk, and that `WaitForMcpServers` resolves against a shim concurrently holding a DIFFERENT spawn's call open. Measure concurrent cold-boot cost. (claude-p-driver.concurrent-spawns-are-fully-isolated-capture-and-nested-subagents; output-capture.capture-path-isolation; design V/VI)
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-concurrent.mjs"]
+  - allow_new_files: true
+- [ ] 0b.G-resume Verify claude-p forwards `--input-file` AND `--system-prompt-file` (large/multiline prompt + cold-start replay >50 KB). Historical D7 verified these on raw `claude`, NOT through claude-p. If unsupported, document the fallback before relying on it.
+  - intent: infra
+  - files_allowed: [".spike-notes/claude-p-gate/**"]
+  - allow_new_files: true
 
 ## 1. Phase 1 — claude-p driver + MCP shim/router/stream behind feature flag
 
@@ -112,6 +167,24 @@ default until Phase 3.
   - files_allowed:
       - tests/int-claude-p-warm-resume.sh
       - tests/int-claude-p-warm-resume.mjs
+- [ ] 1.14a Implement abort partial-preservation: wire `index.ts`'s abort path to commit the assistant text (and prior tool_use blocks, or an "interrupted" marker when no in-flight text) streamed so far into the aborted-turn `AssistantMessage` handed to pi, so cold-replay carries it (claude-p-driver.abort-preserves-the-interrupted-partial-for-next-turn-recall). Ordered BEFORE 0b.G5's empirical proof.
+  - intent: feature
+  - files_allowed:
+      - index.ts
+      - tests/unit-abort-partial.mjs
+- [ ] 1.16b Integration test: image handling (claude-p-driver.image-content-handling-in-v1) — main-path image strip + warn; capture-path image reject pre-spawn with stopReason error
+  - intent: feature
+  - files_allowed:
+      - tests/int-claude-p-image.mjs
+- [ ] 1.16c Unit test: stream premature-exit error (transcript-stream.driver-exit-without-terminal-result-surfaces-as-error) + malformed/garbage MCP message handling (mcp-stdio-shim.malformed-mcp-messages-surface-as-errors)
+  - intent: feature
+  - files_allowed:
+      - tests/unit-driver-stream.mjs
+      - tests/unit-mcp-shim.mjs
+- [ ] 1.16d Integration test: abort-then-immediate-steer does not interleave the dying subprocess's stdout into the new turn (claude-p-driver.respawn-does-not-race-the-dying-subprocesss-stdout-reader; S9/S13)
+  - intent: feature
+  - files_allowed:
+      - tests/int-claude-p-abort-steer-race.mjs
 - [ ] 1.16 Integration test: mid-stream steer (S5) via abort-and-respawn — start a long turn, deliver a steering message mid-flight, assert the in-flight spawn is aborted, the steer dispatches as a fresh turn, and the next response recalls both topics (claude-p-driver.mid-stream-steer-is-handled-by-abort-and-respawn). **Records the S5 disposition** (abort-respawn passes / needs claude-p fork / documented exemption) into design D-S5.
   - intent: feature
   - files_allowed:
@@ -136,7 +209,7 @@ default until Phase 3.
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-success.mjs
-- [ ] 2.4 Integration test: capture mid-conversation isolation (output-capture.capture-path-isolation)
+- [ ] 2.4 Integration test: capture mid-conversation isolation (output-capture.capture-path-isolation) — covers SINGLE-spawn isolation invariants (no shared `cachedSessionId`/socket/router state); the CONCURRENT two-spawn case (capture while a main tool is parked, + `WaitForMcpServers`) is gate 0b.G9
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-isolation.mjs
@@ -166,6 +239,13 @@ default until Phase 3.
   - allow_new_files: false
 
 ## 3. Phase 3 — Cut over
+
+> **BLOCKED until gates pass.** T3.2/T3.3 (delete SDK path + deps) SHALL NOT run
+> until G1–G5 + G7 + G8 + G9 + G-resume pass empirically AND G2 (constitution IV)
+> is closed — OR the vendored claude-p fork (T4.10) is in place. (G6/S5 excluded —
+> may ship as documented exemption.) The SDK path is the rollback fallback;
+> deleting it before the gates is the risk-inversion the review flagged. T4.10 is
+> reachable as a Phase-1 decision (see its note), not deferred to Phase 4.
 
 - [ ] 3.1 Default `CLAUDE_BRIDGE_DRIVER` to `claude-p`; `sdk` value rejected with deprecation error
   - intent: refactor
@@ -211,7 +291,7 @@ default until Phase 3.
       - .github/workflows/**/*.yml
       - tests/int-claude-dir-audit.mjs
   - allow_new_files: true
-- [ ] 4.3 Audit constitution IV — assert the runtime `--disallowedTools` set equals the spec list in `claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools`; assert `--settings`/`-p`/`--print` are NEVER in the assembled claude-p argv
+- [ ] 4.3 Audit constitution IV — the BINDING assertion is the CLOSED-SET check: `tools/list` through claude-p shows EXACTLY `mcp__custom-tools__*` (catches any unknown re-enabled built-in), with the enumerated `--disallowedTools`/`--allowedTools` list as the mechanism (per D28(ii)); assert `--settings`/`-p`/`--print` are NEVER in the assembled claude-p argv; the runtime version-skew check (T4.7) re-audits the disallow set against `claude --help`'s tool list
   - intent: infra
   - files_allowed:
       - tests/unit-disallow-list.mjs
@@ -259,7 +339,7 @@ default until Phase 3.
   - files_allowed:
       - TODO.md
   - allow_new_files: false
-- [ ] 4.10 (CONDITIONAL) If Phase 1/4 found upstream claude-p 0.1.0 insufficient (stream-json passthrough gaps, `--disallowedTools` not honored, or S5 needs mid-turn injection): vendor a claude-p fork, document the patch set, and pin the bridge to it (forking-for-custom-patches skill). Record the rationale in design.md.
+- [ ] 4.10 (DECISION GATE — reachable in Phase 1) Vendor a claude-p fork if ANY blocking gate (G1–G5, G7, G8, G9, G-resume) fails or G2 (constitution IV) cannot be closed on upstream claude-p 0.1.0 (stream-json passthrough gaps, `--disallowedTools`/isolation not honored, no mid-turn injection for S5, `--timeout` counts held-call time). Vendor the fork, document the patch set, pin the bridge to it (forking-for-custom-patches skill), record rationale in design.md. This task is NOT deferred to Phase 4 — it is the precondition that unblocks Phase-3 cut-over when a gate fails.
   - intent: infra
   - files_allowed:
       - vendor/claude-p/**/*

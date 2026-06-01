@@ -32,6 +32,22 @@ WHEN the driver spawns claude-p with `--output-format stream-json --verbose`, TH
 - **AND** marks the turn complete (the `result` line — not a `stop_reason` field, which claude-p does not emit — is the terminal marker)
 - **AND** no further events are emitted for that turn
 
+### Requirement: Held-open tool rounds do not terminate the turn
+
+THE transcript stream SHALL NOT treat a `tool_use` block as turn-end. WHEN an assistant line carries one or more `tool_use` blocks for bridged tools, THE stream SHALL emit a routed `tool-use` event per block (each with a stable correlation id so its eventual `tool_result` can be matched) and SHALL continue parsing — the turn remains in flight while the MCP shim holds the call open and pi executes. Turn-end is recognized ONLY at the per-turn `result` line. WHETHER claude-p emits one `result` per pi turn or one per agent-loop segment is hard gate G3 (design.md); the parser's turn-end rule SHALL be pinned to a recorded multi-tool-round fixture and SHALL NOT terminate the turn on an intermediate segment marker.
+
+#### Scenario: Multi-round turn is not terminated early
+- **WHEN** claude-p's stdout for one pi turn contains `assistant(tool_use) → user(tool_result) → assistant(tool_use) → user(tool_result) → assistant(text) → result`
+- **THEN** the transcript stream keeps the turn in flight across both tool rounds (routing each `tool_use` to the shim/router)
+- **AND** emits turn-end only at the per-turn `result` line
+- **AND** does NOT mark the turn complete at any intermediate segment marker
+
+#### Scenario: Parallel tool_use in one assistant line (S11 regression)
+- **WHEN** a single assistant line carries two `tool_use` blocks for bridged tools
+- **THEN** the transcript stream emits two distinct `tool-use` events (carrying the model's `toolu_…` id + name + arguments) for streaming/UX
+- **AND** the AUTHORITATIVE routing/correlation of each held call to pi's `toolResult` is owned by the MCP shim + router per design D32 (NOT by matching stdout `tool_result` lines) — the stdout `tool-use` event is observational
+- **AND** the router reconciles the two parallel calls without index-based collision per D32 (name+args match, with positional fallback within the single assistant line for identical calls)
+
 ### Requirement: Emit text-delta, tool-use, thinking, and usage events
 
 THE transcript stream SHALL map recognized JSON lines to four structured event kinds: `text-delta` for assistant text-content additions, `tool-use` for tool-call blocks with the model's full argument object, `thinking-delta` for thinking-content additions when present, and `usage` for the terminal `result` line's token-accounting fields.
@@ -103,6 +119,7 @@ IF the claude-p subprocess exits (or its stdout closes) before a terminal `resul
 | AC ID | Testable | Solution-free | Unambiguous | Consistent | Complete |
 |---|---|---|---|---|---|
 | transcript-stream.parse-claude-p-stdout-while-the-turn-is-in-flight | [ ] | [ ] | [ ] | [ ] | [ ] |
+| transcript-stream.held-open-tool-rounds-do-not-terminate-the-turn | [ ] | [ ] | [ ] | [ ] | [ ] |
 | transcript-stream.emit-text-delta-tool-use-thinking-and-usage-events | [ ] | [ ] | [ ] | [ ] | [ ] |
 | transcript-stream.filter-claude-p-noise-and-built-in-lines | [ ] | [ ] | [ ] | [ ] | [ ] |
 | transcript-stream.partial-lines-are-buffered-until-newline | [ ] | [ ] | [ ] | [ ] | [ ] |

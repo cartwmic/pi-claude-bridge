@@ -3,7 +3,7 @@
 > ⚑ **PTY-era / superseded (2026-05-31).** This analysis covers the original
 > in-house `node-pty` design (capability `claude-tui-driver`, decisions D1–D25).
 > The change was replanned to the `smithersai/claude-p` driver — see `proposal.md`
-> + design.md "Replan Amendment" (D26–D31) for the authoritative current
+> + design.md "Replan Amendment" (D26–D32) for the authoritative current
 > direction. `claude-tui-driver.*` AC IDs here are now `claude-p-driver.*`.
 > Retained as analysis archaeology; not re-run for claude-p.
 

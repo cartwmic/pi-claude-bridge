@@ -35,6 +35,15 @@ WHEN the shim receives an MCP `tools/call` request from the driver, THE shim SHA
 - **AND** the shim does NOT respond until the router resolves (i.e. until pi delivers the tool result via its next `streamSimple()`)
 - **AND** when the router responds with a tool-result payload, the shim returns that payload as the MCP response
 
+### Requirement: Tool-call correlation across the split channels (D32)
+
+The held-open round-trip is split: the shim receives an MCP `tools/call` (its own JSON-RPC request id + tool name + arguments), while the model's `toolu_…` id appears only on claude-p's stdout, and pi delivers `toolResult.id` = the model's `toolu_…` id. THE router SHALL reconcile {shim request} ↔ {model `toolu_…` id} ↔ {pi `toolResult.id`} per design D32: park each shim call, recover the model's `toolu_…` id by matching tool name + canonicalized arguments against the stdout `tool_use` event, and key the parked resolver by that `toolu_…` id so pi's `toolResult.id` resolves it. For multiple identical-name+args calls in one assistant line (S11), fall back to positional pairing within that line and assert the counts match. IF claude-p's `tools/call` is found (gate G8) to carry the model's `toolu_…` id directly, that id is authoritative and the heuristic is unnecessary. This correlation is verified by gate G8 on a 2-parallel-tool fixture BEFORE the router is implemented.
+
+#### Scenario: Parallel held calls resolve to the correct pi tool_result
+- **WHEN** one assistant line emits two `tool_use` blocks (distinct names or args) and the shim receives two `tools/call` requests
+- **THEN** each parked call is keyed to its model `toolu_…` id (recovered per D32)
+- **AND** pi's two `toolResult`s — keyed by those `toolu_…` ids — each resolve the matching parked call (no cross-wiring)
+
 ### Requirement: Shim rejects non-bridged tool names
 
 IF the shim receives a `tools/call` request whose tool name is not in the set advertised at shim-spawn time, THEN the shim SHALL respond with an MCP error whose code indicates "unknown tool" and SHALL NOT forward the call to the router.
@@ -102,6 +111,7 @@ IF the shim receives a stdin message that is not valid JSON-RPC over MCP, THEN t
 |---|---|---|---|---|---|
 | mcp-stdio-shim.shim-exposes-only-pi-bridged-tools | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-forwards-tool-calls-to-the-in-process-router | [ ] | [ ] | [ ] | [ ] | [ ] |
+| mcp-stdio-shim.tool-call-correlation-across-the-split-channels | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-rejects-non-bridged-tool-names | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-lifecycle-is-bound-to-its-spawn | [ ] | [ ] | [ ] | [ ] | [ ] |
 | mcp-stdio-shim.shim-is-a-separate-process | [ ] | [ ] | [ ] | [ ] | [ ] |

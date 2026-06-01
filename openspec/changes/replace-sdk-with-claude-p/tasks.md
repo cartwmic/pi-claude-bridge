@@ -127,17 +127,17 @@ default until Phase 3.
   - files_allowed:
       - src/mcp/router.ts
       - tests/unit-mcp-router.mjs
-- [ ] 1.8 Add `CLAUDE_BRIDGE_DRIVER` env switch in `index.ts`; default = `sdk` during Phase 1 (values: `sdk` | `claude-p`)
+- [x] 1.8 Add `CLAUDE_BRIDGE_DRIVER` env switch in `index.ts`; default = `sdk` during Phase 1 (values: `sdk` | `claude-p`) — **`CLAUDE_BRIDGE_DRIVER` (default sdk) + `__setDriverForTests`/`effectiveDriver`**
   - intent: feature
   - files_allowed:
       - index.ts
-- [ ] 1.9 Wire main-provider path to the claude-p driver when flag = `claude-p`; preserve all conversation-state machinery (divergence detection, abort coordination, supersede, session cache hint)
+- [x] 1.9 Wire main-provider path to the claude-p driver when flag = `claude-p`; preserve all conversation-state machinery (divergence detection, abort coordination, supersede, session cache hint) — **`startFreshQueryClaudeP` single-dispatch (SDK body byte-unchanged); router `onPark` ends pi stream keyed by minted piId (D32); `frame.pendingResolvers===router.pendingResolvers` keeps Case-1 delivery unchanged; `abortFrame` + `finalizeClaudePFrame`; main-path image-strip; 222/222 unit green**
   - intent: feature
   - files_allowed:
       - index.ts
       - src/driver/**/*.ts
       - src/mcp/**/*.ts
-- [ ] 1.9a Implement the claude-p resilience layer (design D33) in `src/driver/claudeP.ts`: bridge-side watchdog detects exit≠0-without-`result` / `SessionStartTimeout` / `StopTimeout`; bounded-retry-respawn (≤2, backoff, warn-logged) before surfacing `stopReason: "error"`; never retry after pi has consumed streamed output; abort signals the process GROUP and reaps orphaned `claude`/zmux descendants. (claude-p-driver.unexpected-driver-exit-surfaces-as-error retry path + abort orphan clause)
+- [x] 1.9a Implement the claude-p resilience layer (design D33) in `src/driver/claudeP.ts`: bridge-side watchdog detects exit≠0-without-`result` / `SessionStartTimeout` / `StopTimeout`; bounded-retry-respawn (≤2, backoff, warn-logged) before surfacing `stopReason: "error"`; never retry after pi has consumed streamed output; abort signals the process GROUP and reaps orphaned `claude`/zmux descendants. (claude-p-driver.unexpected-driver-exit-surfaces-as-error retry path + abort orphan clause) — **`spawnClaudePWithResilience` in claudeP.ts; policy `shouldRetry:()=>!router.everRoutedToolCall`; ≤2 retries/backoff; abort-during-backoff suppressed; fresh-id on cold / stable --resume on warm; 6 tests**
   - intent: feature
   - files_allowed:
       - src/driver/claudeP.ts
@@ -178,7 +178,7 @@ default until Phase 3.
   - files_allowed:
       - tests/int-claude-p-warm-resume.sh
       - tests/int-claude-p-warm-resume.mjs
-- [ ] 1.14a Implement abort partial-preservation: wire `index.ts`'s abort path to commit the assistant text (and prior tool_use blocks, or an "interrupted" marker when no in-flight text) streamed so far into the aborted-turn `AssistantMessage` handed to pi, so cold-replay carries it (claude-p-driver.abort-preserves-the-interrupted-partial-for-next-turn-recall). Ordered BEFORE 0b.G5's empirical proof.
+- [x] 1.14a Implement abort partial-preservation: wire `index.ts`'s abort path to commit the assistant text (and prior tool_use blocks, or an "interrupted" marker when no in-flight text) streamed so far into the aborted-turn `AssistantMessage` handed to pi, so cold-replay carries it (claude-p-driver.abort-preserves-the-interrupted-partial-for-next-turn-recall). Ordered BEFORE 0b.G5's empirical proof. — **`commitAbortedPartial` syncs streamed text+tool_use into aborted msg, `[interrupted]` marker when no text; both drivers; normal-abort terminal event unchanged; 5 tests**
   - intent: feature
   - files_allowed:
       - index.ts

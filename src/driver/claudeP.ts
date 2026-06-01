@@ -505,6 +505,164 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 }
 
 // ---------------------------------------------------------------------------
+// Resilience layer (design D33 / task T1.9a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Policy the resilience wrapper consults; the bridge (index.ts) owns frame
+ * state, so it supplies the side-effect-aware idempotency gate via shouldRetry.
+ */
+export interface ResiliencePolicy {
+	/** Max bounded retries after the initial spawn (default 2). */
+	maxRetries?: number;
+	/**
+	 * Whether a retry is permitted at the moment a spawn fails with
+	 * stopReason "error". The bridge wires this to `!router.everRoutedToolCall`
+	 * — once a tools/call routed to pi, a side-effecting tool may have run and a
+	 * respawn+cold-replay would re-execute it (D33). Consulted per-attempt.
+	 */
+	shouldRetry: () => boolean;
+	/** Notified before each retry spawn (attempt is 1-based: the Nth retry). */
+	onRetry?: (attempt: number, res: ClaudePDoneResult) => void;
+	/**
+	 * Mint a fresh session id for a COLD retry. When the config's session is
+	 * `fresh`, each retry gets a brand-new id from here (a stale partial session
+	 * must not be reused). When the config's session is `resume`, the id is kept
+	 * STABLE across retries (the warm transcript is the recovery anchor).
+	 */
+	freshSessionId?: () => string;
+}
+
+/** Backoff between retries: 250ms × attempt. Exported so tests can reason about timing. */
+export const RESILIENCE_BACKOFF_MS = 250;
+
+/**
+ * Wrap spawnClaudeP() in a bounded-retry loop (design D33). Owns: the retry
+ * loop, backoff, abort-during-backoff suppression, and fresh-session-id on a
+ * cold retry. It does NOT own the idempotency gate — that is the bridge's
+ * `policy.shouldRetry` (which reads `router.everRoutedToolCall`).
+ *
+ * Returns a ClaudePHandle whose `done` resolves once the (possibly retried)
+ * spawn reaches a terminal state. `abort()` aborts the live inner spawn and
+ * suppresses any scheduled retry. Events from a failed attempt that DID retry
+ * are still forwarded (text streamed before a hook-timeout is harmless); the
+ * retry only happens when no tools/call was routed, so no partial pi state is
+ * double-committed.
+ */
+export function spawnClaudePWithResilience(
+	cfg: ClaudePSpawnConfig,
+	opts: SpawnClaudePOptions,
+	policy: ResiliencePolicy,
+): ClaudePHandle {
+	const maxRetries = policy.maxRetries ?? 2;
+	const logger: ClaudePLogger = opts.logger ?? NOOP;
+
+	let aborted = false;
+	let outerSettled = false;
+	let current: ClaudePHandle | null = null;
+	let backoffTimer: NodeJS.Timeout | undefined;
+	let lastSessionId = cfg.session.sessionId;
+	let resolveDoneRaw!: (r: ClaudePDoneResult) => void;
+	const done = new Promise<ClaudePDoneResult>((res) => {
+		resolveDoneRaw = res;
+	});
+	const resolveDone = (r: ClaudePDoneResult) => {
+		if (outerSettled) return;
+		outerSettled = true;
+		resolveDoneRaw(r);
+	};
+
+	// External abort signal: fold into our abort() so it both suppresses a
+	// scheduled retry AND forwards to the inner handle.
+	const externalSignal = opts.signal;
+	// We do NOT pass opts.signal down to the inner spawn; we forward aborts
+	// ourselves via the inner handle so retry suppression is centralized.
+	const innerOpts: SpawnClaudePOptions = { ...opts, signal: undefined };
+
+	const abort = () => {
+		if (aborted) return;
+		aborted = true;
+		if (backoffTimer) {
+			// Abort fired while waiting in the backoff window: cancel the
+			// scheduled retry and resolve `done` ourselves (no inner spawn is
+			// live to drive resolution).
+			clearTimeout(backoffTimer);
+			backoffTimer = undefined;
+			resolveDone({ stopReason: "aborted", sessionId: lastSessionId, exitCode: null, signal: null });
+			return;
+		}
+		// Otherwise an inner spawn is live; aborting it drives `done` via its
+		// own done handler (which sees `aborted` and resolves aborted).
+		current?.abort();
+	};
+
+	if (externalSignal) {
+		if (externalSignal.aborted) queueMicrotask(abort);
+		else externalSignal.addEventListener("abort", abort, { once: true });
+	}
+
+	const launch = (spawnCfg: ClaudePSpawnConfig, attempt: number) => {
+		lastSessionId = spawnCfg.session.sessionId;
+		const handle = spawnClaudeP(spawnCfg, innerOpts);
+		current = handle;
+		// If an abort arrived between scheduling and launch, propagate immediately.
+		if (aborted) handle.abort();
+
+		void handle.done.then((res) => {
+			if (aborted) {
+				// Abort wins regardless of how the inner spawn classified itself.
+				resolveDone({ ...res, stopReason: "aborted" });
+				return;
+			}
+			const canRetry =
+				res.stopReason === "error" && attempt < maxRetries && policy.shouldRetry();
+			if (!canRetry) {
+				resolveDone(res);
+				return;
+			}
+			const nextAttempt = attempt + 1;
+			policy.onRetry?.(nextAttempt, res);
+			logger.warn?.(
+				{ event: "claudeP.resilience.retry", attempt: nextAttempt, maxRetries, prevStopReason: res.stopReason },
+				`claude-p spawn failed (error); retrying (attempt ${nextAttempt}/${maxRetries})`,
+			);
+			// Fresh session id on cold retry; stable --resume on warm.
+			const nextCfg = buildRetryConfig(spawnCfg, policy);
+			backoffTimer = setTimeout(() => {
+				backoffTimer = undefined;
+				if (aborted) {
+					// Abort fired during backoff — do NOT spawn a replacement.
+					resolveDone({ stopReason: "aborted", sessionId: nextCfg.session.sessionId, exitCode: null, signal: null });
+					return;
+				}
+				launch(nextCfg, nextAttempt);
+			}, RESILIENCE_BACKOFF_MS * nextAttempt);
+			backoffTimer.unref?.();
+		});
+	};
+
+	launch(cfg, 0);
+
+	return {
+		get pid() {
+			return current?.pid;
+		},
+		abort,
+		done,
+	};
+}
+
+/** Build the next attempt's config: fresh id on cold, stable id on warm. */
+function buildRetryConfig(cfg: ClaudePSpawnConfig, policy: ResiliencePolicy): ClaudePSpawnConfig {
+	if (cfg.session.kind === "fresh") {
+		const sessionId = policy.freshSessionId ? policy.freshSessionId() : cfg.session.sessionId;
+		return { ...cfg, session: { kind: "fresh", sessionId } };
+	}
+	// Warm resume: keep the same --resume id across retries.
+	return cfg;
+}
+
+// ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 

@@ -39,11 +39,23 @@ import { existsSync, mkdirSync, readFileSync } from "fs";
 import pino from "pino";
 import { createStream } from "rotating-file-stream";
 import { homedir, tmpdir } from "os";
-import { randomBytes } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
+import { writeFileSync } from "fs";
+import { createRequire } from "module";
 import { dirname, join, resolve } from "path";
 import { pascalCase } from "change-case";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
+import {
+	spawnClaudePWithResilience as _realSpawnClaudeP,
+	type ClaudePSpawnConfig,
+	type ClaudePHandle,
+	type ClaudePDoneResult,
+	type SystemPromptSource,
+	type PromptSource,
+} from "./src/driver/claudeP.js";
+import type { DriverStreamEvent } from "./src/driver/stream.js";
+import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,6 +104,41 @@ export function __setQueryFactoryForTests(f: typeof _realQuery): () => void {
 	const prev = _queryFactory;
 	_queryFactory = f;
 	return () => { _queryFactory = prev; };
+}
+
+// ---------------------------------------------------------------------------
+// claude-p spawn factory — test seam, mirrors _queryFactory (T1.9).
+// Production always uses _spawnClaudePFactory(...); tests inject a mock.
+// ---------------------------------------------------------------------------
+
+let _spawnClaudePFactory: typeof _realSpawnClaudeP = _realSpawnClaudeP;
+
+/** Test-only: swap the claude-p spawn (resilience) factory and return a restorer. */
+export function __setSpawnClaudePForTests(f: typeof _realSpawnClaudeP): () => void {
+	const prev = _spawnClaudePFactory;
+	_spawnClaudePFactory = f;
+	return () => { _spawnClaudePFactory = prev; };
+}
+
+// ---------------------------------------------------------------------------
+// Driver selection — sdk (default) vs claude-p (T1.8). The dispatch is a single
+// early branch at the top of startFreshQuery; the SDK body below is unchanged.
+// ---------------------------------------------------------------------------
+
+const CLAUDE_BRIDGE_DRIVER: "sdk" | "claude-p" =
+	(process.env.CLAUDE_BRIDGE_DRIVER ?? "sdk").trim().toLowerCase() === "claude-p" ? "claude-p" : "sdk";
+
+let _driverOverride: "sdk" | "claude-p" | null = null;
+
+/** Test-only: force the active driver and return a restorer. Mirrors __setQueryFactoryForTests. */
+export function __setDriverForTests(d: "sdk" | "claude-p" | null): () => void {
+	const prev = _driverOverride;
+	_driverOverride = d;
+	return () => { _driverOverride = prev; };
+}
+
+function effectiveDriver(): "sdk" | "claude-p" {
+	return _driverOverride ?? CLAUDE_BRIDGE_DRIVER;
 }
 
 /** Test-only: swap piApiRef and return a restorer. Not part of the public API. */
@@ -271,7 +318,14 @@ function detectHistoryDivergence(
  * MCP handler).
  */
 type QueryFrame = {
-	sdkQuery: ReturnType<typeof _realQuery>;
+	/** Which driver owns this frame. "sdk" = legacy; "claude-p" = T1.9 path. */
+	driverKind: "sdk" | "claude-p";
+	/** SDK query handle — present only on sdk frames. */
+	sdkQuery?: ReturnType<typeof _realQuery>;
+	/** claude-p driver handle — present only on claude-p frames. */
+	claudeHandle?: ClaudePHandle;
+	/** Per-spawn router — present only on claude-p frames. */
+	router?: Router;
 	currentPiStream: AssistantMessageEventStream | null;
 	turnOutput: AssistantMessage | null;
 	turnStarted: boolean;
@@ -287,7 +341,8 @@ type QueryFrame = {
 	// Tool-handler queue: the SDK invokes our MCP handlers in the same order it
 	// emitted tool_use blocks (toolUseId not exposed to handlers). We push ids
 	// when we see them in stream events, pop them when the handler runs.
-	toolUseIdQueue: string[];
+	// Present only on sdk frames; claude-p frames route via router.onPark.
+	toolUseIdQueue?: string[];
 	pendingResolvers: Map<string, (result: { content: { type: "text"; text: string }[]; isError?: boolean }) => void>;
 	pendingResults: Map<string, { content: { type: "text"; text: string }[]; isError?: boolean }>;
 
@@ -421,7 +476,7 @@ function buildMcpServers(tools: Tool[], frame: QueryFrame) {
 		inputSchema: jsonSchemaToZodShape(tool.parameters),
 		handler: async () => {
 			// FIFO match: SDK calls handlers in the same order it emitted tool_use blocks.
-			const toolUseId = frame.toolUseIdQueue.shift();
+			const toolUseId = frame.toolUseIdQueue!.shift();
 			if (!toolUseId) {
 				frame.log.error({ tool: tool.name }, `mcp handler: ${tool.name} — NO toolUseId in queue (BUG); returning empty`);
 				return { content: [{ type: "text", text: "internal error: no tool_use_id" }] };
@@ -530,6 +585,26 @@ function syncTurnContent(frame: QueryFrame) {
 	frame.turnOutput.content = out;
 }
 
+/**
+ * T1.14a: commit the streamed partial into the frame's turnOutput as the
+ * ABORTED message. Mirrors turnBlocks → content via syncTurnContent (preserving
+ * streamed text + any prior tool_use blocks) and, when no text block exists,
+ * appends a synthetic "[interrupted]" text block so the abandoned prefix always
+ * survives into pi history for next-turn cold-replay (S7/S13 coherence). The
+ * caller then sets stopReason/errorMessage. Applies to BOTH drivers. Returns
+ * the same turnOutput for convenience; does NOT replace it with a fresh one.
+ */
+function commitAbortedPartial(frame: QueryFrame): AssistantMessage | null {
+	if (!frame.turnOutput) return null;
+	syncTurnContent(frame);
+	const hasText = frame.turnBlocks.some((b) => b.type === "text");
+	if (!hasText) {
+		frame.turnBlocks.push({ type: "text", text: "[interrupted]" });
+		syncTurnContent(frame);
+	}
+	return frame.turnOutput;
+}
+
 function newTurnOutput(model: Model<any>): AssistantMessage {
 	return {
 		role: "assistant",
@@ -583,7 +658,7 @@ function processStreamEvent(frame: QueryFrame, message: SDKMessage) {
 			// every subsequent tool result to lag by one slot. (See bug RCA on
 			// session 019dcb97.)
 			if (typeof cb.name === "string" && cb.name.startsWith(MCP_TOOL_PREFIX)) {
-				frame.toolUseIdQueue.push(cb.id);
+				frame.toolUseIdQueue!.push(cb.id);
 			} else {
 				frame.log.warn({ tool: cb.name, id: cb.id }, `processStreamEvent: built-in tool_use observed (${cb.name}) — skipping queue push to prevent off-by-N`);
 			}
@@ -662,7 +737,7 @@ function processStreamEvent(frame: QueryFrame, message: SDKMessage) {
 async function consumeQuery(frame: QueryFrame): Promise<{ sessionId?: string }> {
 	let sessionId: string | undefined;
 	try {
-		for await (const message of frame.sdkQuery) {
+		for await (const message of frame.sdkQuery!) {
 			if (frame.wasAborted) break;
 			switch (message.type) {
 				case "stream_event":
@@ -1091,8 +1166,7 @@ export function streamClaudeAgentSdk(
 		active.log.info(`streamSimple: superseding active frame (top of stack), interrupting`);
 		drainPendingResolversAsAborted(active, "superseded by new user turn");
 		active.wasAborted = true;
-		void active.sdkQuery.interrupt().catch(() => {});
-		try { active.sdkQuery.close?.(); } catch { /* ignore */ }
+		abortFrame(active);
 		stack.pop();
 		// Drain any deeper buried frames too — they're equally orphaned by
 		// the steer. Without this, a parent_frame buried beneath a popped
@@ -1102,7 +1176,7 @@ export function streamClaudeAgentSdk(
 			if (buried.pendingResolvers.size === 0 && !buried.wasAborted) break;
 			drainPendingResolversAsAborted(buried, "buried beneath superseded frame");
 			buried.wasAborted = true;
-			void buried.sdkQuery?.interrupt?.().catch(() => {});
+			abortFrame(buried);
 			stack.pop();
 		}
 	}
@@ -1116,6 +1190,24 @@ export function streamClaudeAgentSdk(
  * the SDK's session JSONL as the tool_result content, so it must be
  * unambiguous about user attribution to keep resume coherence. */
 const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before completion]";
+
+/**
+ * Stop a frame's underlying driver (T1.9). For claude-p frames this aborts the
+ * driver handle (SIGINT to the process group, decoupled abort lifecycle) and
+ * stops the per-spawn router. For sdk frames it interrupts + closes the SDK
+ * query. Used by every abort/supersede/clearSession site so the dispatch is
+ * driver-agnostic.
+ */
+function abortFrame(frame: QueryFrame): void {
+	if (frame.driverKind === "claude-p") {
+		frame.claudeHandle?.abort();
+		void frame.router?.stop();
+	} else {
+		void frame.sdkQuery?.interrupt().catch(() => {});
+		try { (frame.sdkQuery as any)?.close?.(); } catch { /* ignore */ }
+	}
+}
+
 function drainPendingResolversAsAborted(frame: QueryFrame, reason: string) {
 	const drained = frame.pendingResolvers.size;
 	if (drained === 0) return;
@@ -1132,6 +1224,12 @@ function startFreshQuery(
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
 ): void {
+	// ---- Driver dispatch (T1.8). Single early branch; SDK body below unchanged. ----
+	if (effectiveDriver() === "claude-p") {
+		void startFreshQueryClaudeP(model, context, options, stream);
+		return;
+	}
+
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 
@@ -1211,6 +1309,7 @@ function startFreshQuery(
 
 	// Build the frame BEFORE building the MCP server (handlers close over it).
 	const frame: QueryFrame = {
+		driverKind: "sdk",
 		sdkQuery: null as any,
 		currentPiStream: stream,
 		turnOutput: newTurnOutput(model),
@@ -1268,8 +1367,7 @@ function startFreshQuery(
 		// Stop further inference. The SDK won't make new requests on this
 		// query. Pending MCP handler promises remain unresolved until pi's
 		// next event (real result or new turn) decides their fate.
-		void sdkQuery.interrupt().catch(() => {});
-		try { (sdkQuery as any).close?.(); } catch { /* ignore */ }
+		abortFrame(frame);
 		// IMPORTANT: do NOT drop cachedSessionId here. The SDK's session JSONL
 		// retains all messages up to the abort point (including the interrupted
 		// partial assistant message). On the next user turn, resuming that
@@ -1286,9 +1384,12 @@ function startFreshQuery(
 		// for this turn.
 		if (!frame.currentPiStream) {
 			try {
-				const out = newTurnOutput(model);
+				// T1.14a: preserve the streamed partial (text + prior tool_use
+				// blocks) in the aborted message rather than emitting a fresh,
+				// empty one — so the abandoned prefix survives into pi history.
+				const out = commitAbortedPartial(frame) ?? newTurnOutput(model);
 				out.stopReason = "aborted";
-				out.errorMessage = "Operation aborted by user";
+				out.errorMessage = out.errorMessage ?? "Operation aborted by user";
 				stream.push({ type: "error", reason: "aborted", error: out });
 				stream.end();
 				frame.log.info({ where: "tool-execution-window" }, "pushAbortedError: pi was awaiting tool result, surfacing aborted to pi stream");
@@ -1314,14 +1415,20 @@ function startFreshQuery(
 		}
 		// Finalize the most recent stream
 		if (frame.currentPiStream && frame.turnOutput) {
-			syncTurnContent(frame);
 			if (frame.wasAborted) {
+				// T1.14a: commit the streamed partial (with a synthetic
+				// "[interrupted]" text block when no text was streamed) BEFORE
+				// stamping the aborted stopReason, so the abandoned prefix
+				// survives into pi history for next-turn cold-replay.
+				commitAbortedPartial(frame);
 				frame.turnOutput.stopReason = "aborted";
 				frame.turnOutput.errorMessage = frame.turnOutput.errorMessage ?? "Operation aborted";
 				frame.currentPiStream.push({ type: "error", reason: "aborted", error: frame.turnOutput });
 			} else if (frame.turnOutput.stopReason === "error") {
+				syncTurnContent(frame);
 				frame.currentPiStream.push({ type: "error", reason: "error", error: frame.turnOutput });
 			} else {
+				syncTurnContent(frame);
 				if (!frame.turnStarted) ensureTurnStarted(frame);
 				const reason = frame.turnOutput.stopReason === "length" ? "length" : "stop";
 				frame.currentPiStream.push({ type: "done", reason, message: frame.turnOutput });
@@ -1346,6 +1453,408 @@ function startFreshQuery(
 		frame.log.error({ err: err instanceof Error ? err.message : String(err) }, "streamSimple: consumeQuery promise error");
 		if (top() === frame && frame.pendingResolvers.size === 0) stack.pop();
 	});
+}
+
+// ===========================================================================
+// claude-p driver path (T1.9) — mirrors the SDK path's translation contract
+// but consumes the claude-p subprocess driver + in-process MCP router instead
+// of the in-process SDK. The DEFAULT sdk path above is byte-unchanged.
+// ===========================================================================
+
+const CLAUDE_P_TIMEOUT_SECONDS = 600; // generous; must not trip on a held tool round (spec)
+const PROMPT_FILE_THRESHOLD_BYTES = 50 * 1024; // >50KB → tmpfile (argv-limit safety, constitution III)
+
+/**
+ * Resolve the absolute path to the built MCP shim. Prefers the published
+ * dist entrypoint (`pi-claude-bridge/dist/src/mcp/shim.js`); falls back to the
+ * in-repo TypeScript source under tsx for dev/test. NEVER touches ~/.claude.
+ */
+function resolveShimPath(): string {
+	const req = createRequire(import.meta.url);
+	try {
+		return req.resolve("pi-claude-bridge/dist/src/mcp/shim.js");
+	} catch {
+		// Dev/test fallback: built dist next to this module, else TS source.
+		const distLocal = join(dirname(new URL(import.meta.url).pathname), "dist", "src", "mcp", "shim.js");
+		if (existsSync(distLocal)) return distLocal;
+		return join(dirname(new URL(import.meta.url).pathname), "src", "mcp", "shim.ts");
+	}
+}
+
+/** Spill large/multiline content to a tmpfile under os.tmpdir() (NEVER ~/.claude). */
+function writeOverflowTmp(prefix: string, content: string): string {
+	const p = join(tmpdir(), `${prefix}-${randomBytes(8).toString("hex")}.txt`);
+	writeFileSync(p, content, "utf-8");
+	return p;
+}
+
+/** Update the frame's usage from a driver `usage` event (already pi-shaped). */
+function updateUsageFromDriver(frame: QueryFrame, usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number }) {
+	const output = frame.turnOutput;
+	if (!output) return;
+	output.usage.input = usage.input;
+	output.usage.output = usage.output;
+	output.usage.cacheRead = usage.cacheRead;
+	output.usage.cacheWrite = usage.cacheWrite;
+	output.usage.totalTokens = usage.totalTokens;
+	calculateCost(frame.model, output.usage);
+}
+
+/**
+ * THE round-trip trigger (T1.9). Invoked synchronously by router.onPark the
+ * instant a `tools/call` parks. Pushes a pi toolCall block keyed by the
+ * router-minted `info.piId` (NOT the model `toolu_…`) and ends the pi stream so
+ * pi executes the tool. pi later delivers `toolResult.id === piId` → Case 1
+ * (unchanged) finds the resolver in frame.pendingResolvers (== router.pendingResolvers)
+ * and resolves it, unblocking the shim. Mirrors the SDK message_stop path.
+ */
+function onRouterPark(frame: QueryFrame, info: ParkedCallInfo): void {
+	if (!frame.currentPiStream || !frame.turnOutput) return;
+	ensureTurnStarted(frame);
+	closeOpenInlineBlocks(frame);
+	frame.turnBlocks.push({
+		type: "toolCall",
+		id: info.piId, // router-minted pi id — the id pi echoes back as toolResult.id
+		name: mapToolName(info.name, frame.customToolNameToPi),
+		arguments: mapToolArgs(info.name, info.arguments),
+	});
+	const idx = frame.turnBlocks.length - 1;
+	syncTurnContent(frame);
+	frame.turnSawToolCall = true;
+	frame.turnOutput.stopReason = "toolUse";
+	frame.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: frame.turnOutput });
+	frame.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: frame.turnBlocks[idx], partial: frame.turnOutput });
+	frame.currentPiStream.push({ type: "done", reason: "toolUse", message: frame.turnOutput });
+	frame.currentPiStream.end();
+	frame.currentPiStream = null;
+	frame.log.debug({ piId: info.piId, name: info.name }, `onRouterPark: routed tools/call to pi (piId=${info.piId})`);
+}
+
+/** Close any still-open inline (text/thinking) blocks before a tool call / turn end. */
+function closeOpenInlineBlocks(frame: QueryFrame): void {
+	if (!frame.currentPiStream) return;
+	for (let i = 0; i < frame.turnBlocks.length; i++) {
+		const b = frame.turnBlocks[i];
+		if (b.index === undefined) continue;
+		const wasOpen = b.index;
+		delete b.index;
+		if (b.type === "text") {
+			frame.currentPiStream.push({ type: "text_end", contentIndex: i, content: b.text, partial: frame.turnOutput });
+		} else if (b.type === "thinking") {
+			frame.currentPiStream.push({ type: "thinking_end", contentIndex: i, content: b.thinking, partial: frame.turnOutput });
+		}
+		void wasOpen;
+	}
+}
+
+/**
+ * Translate one driver-internal stream event into pi event-stream pushes
+ * (mirrors processStreamEvent). text/thinking deltas open+append inline blocks;
+ * tool-use is DISPLAY ONLY (best-effort label of an already-parked block — does
+ * NOT push a new block, does NOT route); usage updates token counts; done/error
+ * set the terminal stopReason for finalizeClaudePFrame to push.
+ */
+function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
+	if (!frame.turnOutput) return;
+
+	switch (ev.kind) {
+		case "text-delta": {
+			if (!frame.currentPiStream) return;
+			ensureTurnStarted(frame);
+			let block = frame.turnBlocks.find((b) => b.type === "text" && b.index !== undefined);
+			if (!block) {
+				block = { type: "text", text: "", index: frame.turnBlocks.length };
+				frame.turnBlocks.push(block);
+				frame.currentPiStream.push({ type: "text_start", contentIndex: frame.turnBlocks.length - 1, partial: frame.turnOutput });
+			}
+			const idx = frame.turnBlocks.indexOf(block);
+			block.text += ev.text;
+			frame.currentPiStream.push({ type: "text_delta", contentIndex: idx, delta: ev.text, partial: frame.turnOutput });
+			return;
+		}
+		case "thinking-delta": {
+			if (!frame.currentPiStream) return;
+			ensureTurnStarted(frame);
+			let block = frame.turnBlocks.find((b) => b.type === "thinking" && b.index !== undefined);
+			if (!block) {
+				block = { type: "thinking", thinking: "", thinkingSignature: "", index: frame.turnBlocks.length };
+				frame.turnBlocks.push(block);
+				frame.currentPiStream.push({ type: "thinking_start", contentIndex: frame.turnBlocks.length - 1, partial: frame.turnOutput });
+			}
+			const idx = frame.turnBlocks.indexOf(block);
+			block.thinking += ev.text;
+			frame.currentPiStream.push({ type: "thinking_delta", contentIndex: idx, delta: ev.text, partial: frame.turnOutput });
+			return;
+		}
+		case "tool-use": {
+			// DISPLAY ONLY (D32). Best-effort: label an already-parked toolCall
+			// block whose name+args match. Do NOT push a new block; do NOT route.
+			const parked = frame.router?.listParkedCalls() ?? [];
+			const match = parked.find((p) => p.name === ev.name);
+			if (match) {
+				frame.log.debug({ toolu: ev.toolUseId, piId: match.piId }, "processDriverEvent: tool-use observed (display-only correlation)");
+			}
+			return;
+		}
+		case "usage": {
+			updateUsageFromDriver(frame, ev.usage);
+			return;
+		}
+		case "done": {
+			if (frame.currentPiStream) {
+				closeOpenInlineBlocks(frame);
+				syncTurnContent(frame);
+			}
+			frame.turnOutput.stopReason = frame.turnSawToolCall ? "toolUse" : "stop";
+			return;
+		}
+		case "error": {
+			frame.turnOutput.stopReason = "error";
+			frame.turnOutput.errorMessage = ev.errorMessage;
+			return;
+		}
+	}
+}
+
+/**
+ * Finalize a claude-p frame once its (possibly retried) driver `done` resolves.
+ * Caches the session id (even on abort) UNLESS stopReason==="error" (clear so
+ * the next turn cold-starts); finalizes the current pi stream like the SDK
+ * finalizer; pops the frame iff it's the top and has no pending resolvers.
+ */
+function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
+	const cwd = frame.cwd;
+	if (res.stopReason === "error") {
+		// Clear cache so the next turn cold-starts (spec: "any cached driver
+		// session id is cleared").
+		if (cachedSessionId === res.sessionId || cachedSessionCwd === cwd) {
+			cachedSessionId = null;
+			cachedSessionCwd = null;
+		}
+		frame.log.warn({ stopReason: res.stopReason, exitCode: res.exitCode }, "finalizeClaudePFrame: error — cleared cached session");
+	} else if (res.sessionId) {
+		// Cache the session id for next-turn warm resume — even on abort, so the
+		// next turn can resume and the model sees the interrupted partial.
+		cachedSessionId = res.sessionId;
+		cachedSessionCwd = cwd;
+		frame.log.debug({ aborted: frame.wasAborted, session: res.sessionId.slice(0, 8) }, `finalizeClaudePFrame: caching session=${res.sessionId.slice(0, 8)}${frame.wasAborted ? " (aborted)" : ""}`);
+	}
+
+	// Finalize the most recent stream (mirrors SDK finalizer).
+	if (frame.currentPiStream && frame.turnOutput) {
+		if (frame.wasAborted || res.stopReason === "aborted") {
+			commitAbortedPartial(frame);
+			frame.turnOutput.stopReason = "aborted";
+			frame.turnOutput.errorMessage = frame.turnOutput.errorMessage ?? "Operation aborted";
+			frame.currentPiStream.push({ type: "error", reason: "aborted", error: frame.turnOutput });
+		} else if (frame.turnOutput.stopReason === "error") {
+			syncTurnContent(frame);
+			frame.currentPiStream.push({ type: "error", reason: "error", error: frame.turnOutput });
+		} else {
+			syncTurnContent(frame);
+			if (!frame.turnStarted) ensureTurnStarted(frame);
+			frame.currentPiStream.push({ type: "done", reason: "stop", message: frame.turnOutput });
+		}
+		frame.currentPiStream.end();
+		frame.currentPiStream = null;
+	}
+
+	if (top() === frame) {
+		if (frame.pendingResolvers.size === 0) {
+			void frame.router?.stop();
+			stack.pop();
+		} else {
+			frame.log.info({ pending: frame.pendingResolvers.size }, "finalizeClaudePFrame: frame retained on stack (pending resolvers may receive late tool_results)");
+		}
+	}
+}
+
+/**
+ * claude-p main-provider fresh turn (T1.9). Reuses the SDK path's prompt /
+ * session / system-prompt assembly verbatim, then spawns the claude-p driver
+ * with a per-spawn MCP router whose onPark drives the pi round-trip. May be
+ * async (awaits router.start()); the dispatcher does `void startFreshQueryClaudeP(...)`.
+ */
+async function startFreshQueryClaudeP(
+	model: Model<any>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	stream: AssistantMessageEventStream,
+): Promise<void> {
+	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
+
+	const promptBlocks = extractUserPromptBlocks(context.messages);
+	const promptText = extractUserPrompt(context.messages) ?? "";
+
+	if (!promptText && !promptBlocks) {
+		logger.child({ piSessionId: getPiSessionId(), model: model.id }).warn(`streamSimple[claude-p]: empty prompt; last role=${context.messages[context.messages.length - 1]?.role}`);
+		queueMicrotask(() => {
+			const empty = newTurnOutput(model);
+			stream.push({ type: "start", partial: empty });
+			stream.push({ type: "done", reason: "stop", message: empty });
+			stream.end();
+		});
+		return;
+	}
+
+	// Image handling: claude-p cannot inject images — strip + warn, deliver text-only.
+	let imageCount = 0;
+	for (const m of context.messages) {
+		const content = Array.isArray(m.content) ? m.content : [];
+		for (const b of content) if ((b as any).type === "image") imageCount++;
+	}
+	if (imageCount > 0) {
+		logger.child({ piSessionId: getPiSessionId(), model: model.id }).warn({ imageCount }, `streamSimple[claude-p]: dropping ${imageCount} image block(s) — claude-p path is text-only (image-strip-on-main-path)`);
+	}
+
+	// Divergence detection (verbatim from SDK path).
+	const newHashes = computeMessageHashes(context.messages);
+	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
+	if (diverged) {
+		logger.child({ piSessionId: getPiSessionId(), model: model.id }).info(
+			{ priorLen: lastSentMessageHashes?.length ?? 0, newLen: newHashes.length, droppedSession: cachedSessionId?.slice(0, 8) ?? null },
+			`startFreshQueryClaudeP: history divergence detected — dropping cached session (was ${cachedSessionId?.slice(0, 8) ?? "none"})`,
+		);
+		cachedSessionId = null;
+		cachedSessionCwd = null;
+	}
+	lastSentMessageHashes = newHashes;
+
+	const useResume = cachedSessionId !== null && cachedSessionCwd === cwd;
+
+	// Cold → embed full pi history; warm → only the new user message (text-only).
+	const promptString = useResume
+		? promptText
+		: buildColdStartPrompt(context.messages);
+
+	// System-prompt assembly (verbatim from SDK path).
+	const skillsAppend = extractSkillsBlock(context.systemPrompt);
+	const agentsAppend = extractAgentsAppend();
+	const appendSystem = extractAppendSystem();
+	const appendParts = [agentsAppend, appendSystem, skillsAppend].filter((p): p is string => Boolean(p));
+	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	const staticSystemPrompt = systemPromptAppend ?? "You are a helpful coding assistant.";
+
+	// Build the frame BEFORE the router (onPark closes over it).
+	const frame: QueryFrame = {
+		driverKind: "claude-p",
+		currentPiStream: stream,
+		turnOutput: newTurnOutput(model),
+		turnStarted: false,
+		turnSawToolCall: false,
+		turnBlocks: [],
+		customToolNameToPi,
+		model,
+		cwd,
+		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: "claude-p" }),
+		pendingResolvers: new Map(),
+		pendingResults: new Map(),
+		wasAborted: false,
+		donePromise: Promise.resolve(),
+	};
+	resetTurnState(frame);
+
+	// Per-spawn router. Its pending maps ARE the frame's pending maps (by
+	// reference) so Case 1 delivery + drainPendingResolversAsAborted work unchanged.
+	const router = createRouter({
+		logger: frame.log,
+		onPark: (info) => onRouterPark(frame, info),
+	});
+	frame.router = router;
+	frame.pendingResolvers = router.pendingResolvers as any;
+	frame.pendingResults = router.pendingResults as any;
+
+	const toolDefs: ToolDef[] = mcpTools.map((t) => ({
+		name: `${MCP_TOOL_PREFIX}${t.name}`,
+		description: t.description,
+		inputSchema: cleanSchemaForSdk(t.parameters),
+	}));
+	router.declareTools(toolDefs);
+	await router.start();
+
+	// Build --mcp-config pointing at the stdio shim for this spawn.
+	const shimPath = resolveShimPath();
+	const toolsB64 = Buffer.from(JSON.stringify(toolDefs), "utf-8").toString("base64");
+	const mcpConfig = JSON.stringify({
+		mcpServers: {
+			[MCP_SERVER_NAME]: {
+				command: process.execPath,
+				args: [shimPath, "--socket", router.socketPath, "--mode", "main", "--tools", toolsB64],
+			},
+		},
+	});
+
+	// System prompt: inline text, or file when large.
+	const systemPrompt: SystemPromptSource = staticSystemPrompt.length > PROMPT_FILE_THRESHOLD_BYTES
+		? { kind: "file", path: writeOverflowTmp("pcb-sysprompt", staticSystemPrompt) }
+		: { kind: "text", text: staticSystemPrompt };
+
+	// Prompt: positional, or --input-file when large/multiline.
+	const promptSrc: PromptSource = promptString.length > PROMPT_FILE_THRESHOLD_BYTES
+		? { kind: "file", path: writeOverflowTmp("pcb-prompt", promptString) }
+		: { kind: "positional", text: promptString };
+
+	// Session identity: fresh (new uuid) XOR resume (cached id).
+	const session = useResume && cachedSessionId
+		? { kind: "resume" as const, sessionId: cachedSessionId }
+		: { kind: "fresh" as const, sessionId: randomUUID() };
+
+	const cfg: ClaudePSpawnConfig = {
+		model: model.id,
+		systemPrompt,
+		prompt: promptSrc,
+		mcpConfig,
+		session,
+		timeoutSeconds: CLAUDE_P_TIMEOUT_SECONDS,
+	};
+
+	frame.log.debug(
+		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionId?.slice(0, 8) : null },
+		`streamSimple[claude-p]: fresh spawn model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionId?.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
+	);
+
+	stack.push(frame);
+
+	// Wire abort. Mirror the SDK onAbort: deferred drain; surface aborted to the
+	// pi stream when pi is awaiting a tool result (currentPiStream null). Does
+	// NOT drop cachedSessionId here (finalizeClaudePFrame handles caching).
+	const onAbort = () => {
+		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort[claude-p]: pendingResolvers=${frame.pendingResolvers.size} (deferred drain)`);
+		frame.wasAborted = true;
+		abortFrame(frame);
+		if (!frame.currentPiStream) {
+			try {
+				const out = commitAbortedPartial(frame) ?? newTurnOutput(model);
+				out.stopReason = "aborted";
+				out.errorMessage = out.errorMessage ?? "Operation aborted by user";
+				stream.push({ type: "error", reason: "aborted", error: out });
+				stream.end();
+				frame.log.info({ where: "tool-execution-window" }, "pushAbortedError[claude-p]: pi was awaiting tool result, surfacing aborted");
+			} catch (err) {
+				frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "pushAbortedError[claude-p]: stream may already be ended");
+			}
+		}
+	};
+	if (options?.signal) {
+		if (options.signal.aborted) onAbort();
+		else options.signal.addEventListener("abort", onAbort, { once: true });
+	}
+
+	// Spawn via the resilience wrapper. POLICY: retry only while no tools/call
+	// has been routed to pi (router.everRoutedToolCall) — D33 idempotency gate.
+	const handle = _spawnClaudePFactory(
+		cfg,
+		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any },
+		{
+			maxRetries: 2,
+			shouldRetry: () => !router.everRoutedToolCall,
+			freshSessionId: () => randomUUID(),
+			onRetry: (attempt) => frame.log.warn({ attempt }, `startFreshQueryClaudeP: retrying claude-p spawn (attempt ${attempt})`),
+		},
+	);
+	frame.claudeHandle = handle;
+	frame.donePromise = handle.done.then((res) => finalizeClaudePFrame(frame, res));
 }
 
 // ---------------------------------------------------------------------------
@@ -1702,7 +2211,7 @@ export default function (pi: ExtensionAPI) {
 			const frame = stack.pop()!;
 			drainPendingResolversAsAborted(frame, `clearSession:${event}`);
 			frame.wasAborted = true;
-			void frame.sdkQuery?.interrupt?.().catch(() => {});
+			abortFrame(frame);
 		}
 	};
 	pi.on("session_start", (event, ctx) => {

@@ -88,6 +88,14 @@ export type RouterOptions = {
 	logger?: RouterLogger;
 	/** Mint a pi-facing id for a parked call. Overridable for deterministic tests. */
 	mintPiId?: () => string;
+	/**
+	 * Invoked synchronously the instant a `tools/call` is parked (BEFORE the
+	 * await that blocks the shim). The bridge (T1.9) uses this as the
+	 * round-trip trigger: it pushes a pi toolCall block keyed by `info.piId`
+	 * and ends the pi stream so pi executes the tool. Defaults to a no-op so
+	 * existing router consumers are unaffected.
+	 */
+	onPark?: (info: ParkedCallInfo) => void;
 };
 
 export type Router = {
@@ -113,6 +121,14 @@ export type Router = {
 	getCaptureStash: () => Record<string, unknown> | undefined;
 	/** Inspect currently-parked calls (UX correlation + tests). */
 	listParkedCalls: () => ParkedCallInfo[];
+	/**
+	 * True once at least one `tools/call` has been routed to pi (i.e. onPark
+	 * fired) for this spawn. The resilience layer (D33 / T1.9a) reads this as
+	 * the side-effect-aware idempotency gate: a respawn is forbidden once a
+	 * tool call has been routed, because a side-effecting tool may have run.
+	 * Defaults to false. Additive; existing consumers ignore it.
+	 */
+	readonly everRoutedToolCall: boolean;
 	/** Close the IPC server and drop all connections. */
 	stop: () => Promise<void>;
 };
@@ -141,6 +157,8 @@ export function createRouter(opts: RouterOptions = {}): Router {
 	const pendingResults = new Map<string, ToolResult>();
 	const parked = new Map<string, ParkedCallInfo>(); // keyed by piId
 	let captureStash: Record<string, unknown> | undefined;
+	let everRoutedToolCall = false;
+	const onPark = opts.onPark;
 
 	const onToolCall = async (req: ToolCallRequest): Promise<ToolCallResponse> => {
 		const piId = mintPiId();
@@ -158,14 +176,26 @@ export function createRouter(opts: RouterOptions = {}): Router {
 			}
 		}
 
-		parked.set(piId, {
+		const info: ParkedCallInfo = {
 			piId,
 			shimRequestId: req.id,
 			name: req.name,
 			arguments: req.arguments,
 			argsKey,
-		});
+		};
+		parked.set(piId, info);
 		log.debug({ name: req.name, piId, shimRequestId: req.id }, "router: parked tools/call");
+
+		// Mark that a tool call has been routed (D33 idempotency gate) and fire
+		// the bridge's round-trip trigger SYNCHRONOUSLY, before the await below.
+		everRoutedToolCall = true;
+		if (onPark) {
+			try {
+				onPark(info);
+			} catch (err) {
+				log.error({ err: err instanceof Error ? err.message : String(err), piId }, "router: onPark callback threw");
+			}
+		}
 
 		const result = await new Promise<ToolResult>((resolve) => {
 			// Early-result race: pi delivered before the shim's call was parked.
@@ -227,6 +257,9 @@ export function createRouter(opts: RouterOptions = {}): Router {
 		},
 		getCaptureStash: () => captureStash,
 		listParkedCalls: () => Array.from(parked.values()),
+		get everRoutedToolCall() {
+			return everRoutedToolCall;
+		},
 		stop: () => ipc.close(),
 	};
 }

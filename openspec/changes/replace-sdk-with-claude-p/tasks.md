@@ -52,7 +52,7 @@ vendored claude-p fork (T4.10) is in place. **G2 is non-negotiable** (constituti
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "SCENARIO_RESULTS.md"]
   - allow_new_files: true
-- [ ] 0b.G5 Abort coherence (S7 + S8 + S13): prove cold-replay of pi history reproduces interrupted-partial recall. MUST cover (a) text-streaming abort (S7), (b) **abort-while-blocked-on-a-held-tool (S8)** where there is no in-flight text — define what is preserved (prior tool_use blocks + "interrupted" marker) so "did the sleep finish? — no" holds, (c) that pi cold-replay actually INCLUDES the content of an aborted/error AssistantMessage (the SDK got the partial from session-resume, NOT pi history — this is unproven). ALSO decide the post-abort cache-shape for S7/S8/S9/S13: test whether `claude-p --resume` of a SIGINT-aborted session yields warm reads (→ keep cache on abort, rows stay "read") OR pre-record "read OR creation (cold-replay)" exemptions in SCENARIO_RESULTS.md. If coherence insufficient, escalate (more context, or documented exemption).
+- [ ] 0b.G5 **NOT CLEARED (2026-06-02) — blocked by warm-resume RE-ECHO bug:** mechanics pass (T1.13/T1.14) but claude-p drains the full replayed transcript on `--resume` → stream.ts re-emits prior assistant text → committed partial is a stale echo (S7 recall fails, S8 sometimes fabricates). General multi-turn bug (corrupts S0/S6/S12 too). Fix: bridge-side stream filtering OR claude-p fork (see design + `.spike-notes/claude-p-gate/g5-warmresume-reecho.md`). Abort coherence (S7 + S8 + S13): prove cold-replay of pi history reproduces interrupted-partial recall. MUST cover (a) text-streaming abort (S7), (b) **abort-while-blocked-on-a-held-tool (S8)** where there is no in-flight text — define what is preserved (prior tool_use blocks + "interrupted" marker) so "did the sleep finish? — no" holds, (c) that pi cold-replay actually INCLUDES the content of an aborted/error AssistantMessage (the SDK got the partial from session-resume, NOT pi history — this is unproven). ALSO decide the post-abort cache-shape for S7/S8/S9/S13: test whether `claude-p --resume` of a SIGINT-aborted session yields warm reads (→ keep cache on abort, rows stay "read") OR pre-record "read OR creation (cold-replay)" exemptions in SCENARIO_RESULTS.md. If coherence insufficient, escalate (more context, or documented exemption).
   - intent: infra
   - files_allowed: [".spike-notes/claude-p-gate/**", "tests/int-claude-p-abort-coherence.mjs", "SCENARIO_RESULTS.md"]
   - allow_new_files: true
@@ -163,12 +163,12 @@ default until Phase 3.
   - files_allowed:
       - tests/int-claude-p-tool-isolation.sh
       - tests/int-claude-p-tool-isolation.mjs
-- [ ] 1.13 Integration test: abort mid-turn (claude-p-driver.abort-propagates-to-the-claude-p-subprocess, .abort-lifecycle-is-decoupled-from-claude-p-completion) — SIGINT the subprocess, assert clean teardown + `done(aborted)` even with no terminal `result`
+- [x] 1.13 **PASS:** abort mid-turn — clean SIGINT to group, turn resolves aborted in 7–12ms without terminal result, no orphan. Integration test: abort mid-turn (claude-p-driver.abort-propagates-to-the-claude-p-subprocess, .abort-lifecycle-is-decoupled-from-claude-p-completion) — SIGINT the subprocess, assert clean teardown + `done(aborted)` even with no terminal `result`
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-abort.sh
       - tests/int-claude-p-abort.mjs
-- [ ] 1.14 Integration test: abort mid-tool-round preserves late-tool-result coherence (claude-p-driver.abort-preserves-late-tool-result-coherence-with-pi)
+- [x] 1.14 **PASS (mechanics):** late-tool-result Case-1 capture exercised post-abort, no crash, next turn fresh-dispatches. (Coherence depends on the G5 re-echo fix.) Integration test: abort mid-tool-round preserves late-tool-result coherence (claude-p-driver.abort-preserves-late-tool-result-coherence-with-pi)
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-abort-late-tool-result.sh

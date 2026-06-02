@@ -177,3 +177,136 @@ SCENARIO_TIMEOUT=240 bash scripts/run-all-scenarios.sh
 5. **NEW: `buildColdStartPrompt` replays pi history** when no resume is available.
 6. **NEW: `detectHistoryDivergence` cold-starts** on `/tree` / `/fork` / `/compact`.
 7. **NEW: mid-flight `session_id` capture** in `consumeQuery` enables steer-then-resume.
+
+---
+
+## HARD GATE G5 — abort coherence (S7/S8/S13) + T1.13/T1.14 — 2026-06-02
+
+- Bridge commit: `0650d49` (branch `replan-driver-from-phase-0`)
+- Pi version: 0.75.5
+- Driver: `CLAUDE_BRIDGE_DRIVER=claude-p`; claude-p 0.1.0; model `claude-bridge/claude-haiku-4-5`
+- Concurrency 1; `CLAUDE_CONFIG_DIR`/`HOME` NOT overridden; nothing committed.
+- Tests: `tests/int-claude-p-abort.{sh,mjs}` (T1.13),
+  `tests/int-claude-p-abort-late-tool-result.{sh,mjs}` (T1.14),
+  `tests/int-claude-p-abort-coherence.mjs` (G5 / S7 / S8).
+
+### T1.13 — abort mid-turn (mechanics) — **PASS**
+
+- The driver SIGINTs the claude-p subprocess: debug log shows
+  `onAbort[claude-p]` → `claudeP.lifecycle.abort` ("aborting claude-p (SIGINT to
+  group)") → `finalizeClaudePFrame: caching session=… (aborted)`.
+- The pi turn resolves **promptly** as aborted **without** waiting for a
+  terminal claude-p `result`: measured `resolve-after-abort` = **7–12 ms** across
+  runs (the 600 s `CLAUDE_P_TIMEOUT_SECONDS` is never approached).
+- **No orphan** claude-p / claude process after the abort (ps diff vs baseline,
+  20×500 ms grace).
+- Stable across 2+ runs.
+
+### G5(a) / S7 — interrupted text-partial recall — **MECHANICS PASS; PARTIAL-RECALL ESCALATED (design gap, NOT a quick fix)**
+
+The literal S7 claim — *next turn recalls the interrupted TEXT partial (the
+number it reached)* — is **NOT exercisable on the claude-p driver**. Two
+empirically-pinned causes:
+
+1. **claude-p buffers text.** `claude -p --output-format stream-json` emits the
+   ENTIRE assistant turn text in ~one buffered burst. A "count to 5000" turn
+   yields `highest=5000` even when aborted **0 ms after the first `text_delta`**;
+   aborting at a fixed wall-clock **before** the first delta yields `highest=0`
+   (empty). There is **no middle ground** — you cannot capture "reached 42 of
+   500". (Probe: only **3** `text_delta` lines for a 5000-number count.) The SDK
+   era streamed token-by-token, so `interrupt()` truncated a genuine partial;
+   claude-p cannot.
+2. **Warm-resume re-echo.** On `--resume`, claude-p replays the prior assistant
+   message(s) as fresh `assistant` lines. `src/driver/stream.ts`
+   `handleAssistant()` turns every `assistant`-line `text` block into a
+   `text-delta` (stream.ts ~L291-295) and **cannot distinguish a replayed-history
+   line from the new turn's line**, so the bridge prepends stale prior text to the
+   new turn (observed: `T1="READY"`, `T2="READYNoted: 137…"`, …). When an aborted
+   turn is then warm-resumed, the committed "partial" is the **stale prior text**
+   (e.g. `"READY."`), and the model frequently emits `"No response requested."` /
+   declines — corrupting any partial-recall probe.
+
+The load-bearing `commitAbortedPartial` mechanism itself is **correct and
+unit-proven** (`tests/unit-abort-partial.mjs`, T1.14a) and works end-to-end for
+the held-TOOL case (S8). What does NOT carry over from the SDK era is
+*interrupted-TEXT-partial recall via session-resume*.
+
+The S7 test verifies the abort **mechanics that ARE achievable** for a text turn:
+clean SIGINT, prompt resolves aborted (the abort itself is solid EVERY run),
+next turn fresh-dispatches a marker, no orphan, no crash. The unachievable
+partial-recall assertion is kept VISIBLE as a `it.skip(... [ESCALATED] ...)` so
+it is not silently dropped. **Mostly-stable but occasionally flaky** (~1/4 runs
+the post-abort *marker* turn hits the same warm-resume "No response requested"
+degeneracy / "Agent is already processing" race and exhausts its retries) —
+again the same re-echo root cause; the abort mechanics underneath never fail.
+
+> **ESCALATION:** post-abort interrupted-TEXT-partial recall is a genuine
+> capability regression vs the SDK era, rooted in (1) claude-p print-mode
+> buffering and (2) the warm-resume re-echo in `src/driver/stream.ts`. A fix
+> would require the driver to stream text incrementally AND to suppress the
+> replayed-history assistant lines on `--resume` (or to force a **cold-replay**
+> on the turn following an abort instead of warm-resuming the SIGINT-killed
+> session). This is a design decision for the main agent, not a test fix.
+
+### G5(b) / S8 — abort while blocked on a held tool — **FLAKY: ~2/3 of runs PASS, fails OUTRIGHT otherwise — shares S7's escalation**
+
+Observed over 6 runs: **4 PASS / 2 FAIL**. Do NOT read a green S8 as
+"abort-coherence is solid".
+
+- The held-tool abort is **deterministic**: the wall-clock delay lives in pi's
+  `SlowTool` (sleep 10 s), so the SIGINT lands while the model is genuinely
+  blocked, no text in flight. `stopReason=aborted`, `sawToolExec=true`. **No
+  orphan**; `claudeP.lifecycle.abort` present. The *mechanics* are solid every
+  run — only the next-turn *coherence* is flaky.
+- When it PASSes, the model conveys **non-completion** — e.g. *"No, the tool
+  never ran because I did not actually invoke it."*, *"SlowTool did not
+  complete—I called WaitForMcpServers instead."*, *"SlowTool is not available …
+  so it never ran."*
+- When it FAILs (~1/3 of runs), the warm-resume re-echo makes the model
+  **FABRICATE** completion — e.g. *"SlowTool completed successfully after 10
+  seconds. … SlowTool finished and returned a result after 10 seconds."* — often
+  with a self-correcting clause later. The test's `fabricated` check catches this
+  and fails the attempt (no fake-pass); the 5-attempt internal retry lands a
+  clean attempt ~2/3 of the time and otherwise the whole test FAILS. Same root
+  cause as S7 (warm-resume re-echo). Recorded as part of the G5 escalation —
+  the proposed cold-replay-after-abort src fix (option b) is expected to
+  stabilize this.
+
+### T1.14 — late tool-result after abort — **PASS**
+
+- Abort mid-tool-round (SlowTool held), then pi delivers the real tool_result via
+  the next `streamSimple()`. The **Case-1 late-delivery capture** path (index.ts
+  ~L1033–L1099) **was exercised** (log marker observed: the aborted-frame
+  resolver matched / stream closed with "real tool result captured for next-turn
+  resume").
+- The capture path **does not crash** (no stack trace in the bridge log), and the
+  **next user turn fresh-dispatches** and produces its marker.
+- **No orphan**. Stable across 2+ runs.
+
+### G5 cache-shape disposition (acceptance-bar record)
+
+**Disposition: "read OR creation (cold-replay)" exemption — documented.**
+
+On the turn following a SIGINT abort, the bridge KEEPS `cachedSessionId`
+(`onAbort` deliberately does not drop it) and the next turn issues
+`--resume <aborted-session-id>`. Observed: the resume **does** reuse the session
+(debug: `streamSimple[claude-p]: fresh spawn … resume=<id>` with
+`cache_read_input_tokens > 0` on the probe turns), i.e. it **stays warm** at the
+prompt-cache level. HOWEVER, warm-resuming a SIGINT-aborted session is
+**semantically degenerate** (the re-echo / "No response requested" behavior
+above): the cache stays warm but the *content* is corrupted. The acceptance-bar
+disposition is therefore the documented **"read OR creation (cold-replay)"
+exemption**: a clean post-abort turn would require forcing a cold-replay
+(cache-creation) instead of warm-resuming the aborted session — which is exactly
+the escalation fix proposed for S7/S8. No unexplained cache-creation occurred;
+no bridge writes to `~/.claude/sessions/`.
+
+### How to reproduce
+
+```bash
+cd /Volumes/Workshop/git/pi-claude-bridge
+npm run build
+bash tests/int-claude-p-abort.sh                      # T1.13
+bash tests/int-claude-p-abort-late-tool-result.sh     # T1.14
+node --test tests/int-claude-p-abort-coherence.mjs    # G5 / S7 / S8
+```

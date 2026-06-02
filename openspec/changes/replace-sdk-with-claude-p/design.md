@@ -60,7 +60,7 @@ real claude-p 0.1.0 + claude 2.1.159, model claude-haiku-4-5):**
 - **G6 S5 mid-stream steer — ⏳ pending (non-blocking)** — abort+respawn satisfies coherence + no duplicated-essay-tail (see D-S5).
 - **G7 `--timeout` semantics — ✅ RESOLVED.** claude-p's `--timeout` DOES count wall-time blocked on a held MCP call. A too-slow held tool → `claude-p: StopTimeout` (exit **2**, not 124) AFTER the call routed → D33 forbids respawn → turn-fatal `error` to pi. IMPLICATION: `CLAUDE_P_TIMEOUT_SECONDS=600` is a generous BACKSTOP only; primary cancellation MUST be pi's AbortSignal (D31, wired), never claude-p's wall-timer. If any pi turn can approach 600s wall-clock (sum of held tools + boot + generation), raise/derive it. Fixture `g7-timeout-results.md`.
 - **G8 parallel tool-call routing — ✅ PASS.** Distinct-tool AND same-tool-different-args parallel calls route via distinct minted piIds with NO cross-wiring (D32). **F-serialize:** `claude`'s MCP client dispatches parallel `tool_use` SEQUENTIALLY over the single stdio connection, so the router holds at most ONE call at a time within a turn — intra-turn park collision is structurally impossible; D32 keying still exercised across the sequential pair. Fixture `g8-parallel-stream.jsonl`.
-- **G9 concurrent spawns (S25 + S14) — ⏳ pending** — two claude-p subprocesses alive at once (capture-during-main AND nested main+main), each with an isolated shim/socket/router. Watch item: concurrent-boot contention (the suspected flakiness trigger; D33).
+- **G9 concurrent spawns — ✅ PASS for S14 (nested main+main); S25 capture variant deferred to post-Phase-2.** Two concurrent claude-p spawns stayed fully isolated: distinct sockets/routers/shims, no wire cross-talk, correct per-spawn sentinels, overlapping held calls, `WaitForMcpServers` for one resolved while the other's call was held — no module bug. Concurrent boot is ~free (two ~5s boots overlap into ~one sequential spawn's wall-time). **Contention reliability:** failure rate rose with concurrency (2-way 2/3 passed, ≥3-way mostly failed), but EVERY failure was `claude-p: StopTimeout`/exit-2 with `everRouted=false` — the RETRIABLE-by-D33 kind; zero failures on a spawn that had routed a tool, zero isolation breakage. So contention costs throughput, never correctness. CONSEQUENCE: D33 bounded retry-respawn is REQUIRED for nested same-provider concurrency, and a same-provider concurrency CAP/queue is recommended (see below). S25 (main+capture) reuses this exact isolation primitive and is validated once the Phase-2 capture path exists.
 - **G-resume-flags `--input-file`/`--system-prompt-file` — ✅ PASS.** Both forwarded + honored through claude-p (126KB input-file sentinel echoed; system-prompt-file token applied). The bridge's >50KB overflow path is safe, no change.
 
 ### G4 resolution (2026-06-01) — single-shot interactive caching WORKS; D26 intact
@@ -87,6 +87,17 @@ calls could cache. Investigating those questions OVERTURNED the FAIL:
 minimum and be byte-stable across spawns (no per-spawn-varying content at the head) so
 the prefix caches. The pi system prompt + MCP tool defs satisfy this; T4.x should assert
 the assembled system prompt is non-trivial in size.
+
+### Same-provider concurrency cap (G9 follow-up; recommended)
+
+G9 showed claude-p `StopTimeout` rates climb steeply with concurrent boots (2-way
+tolerable, ≥3-way mostly failing) — all retriable, none correctness-affecting, but a
+deep S14 nest (claude-bridge calling claude-bridge as a subagent, recursively) could
+spawn enough concurrent claude-p to make D33 retries thrash. RECOMMENDATION: add a
+bridge-wide semaphore/queue bounding concurrent claude-p spawns (e.g. ≤2–3), so nested
+same-provider turns queue rather than contend. D33 retry remains the per-spawn safety
+net; the cap reduces how often it fires. Implement during Phase-4 hardening (or sooner
+if S14 testing thrashes); track as a follow-up, not a cut-over blocker.
 
 ### Long-session reliability risk (tracked; not a cut-over blocker)
 

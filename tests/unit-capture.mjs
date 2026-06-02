@@ -19,7 +19,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, before, afterEach } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Type } from "@sinclair/typebox";
 
@@ -31,7 +31,6 @@ process.env.CLAUDE_BRIDGE_DEBUG = "1";
 const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
-	__setDriverForTests,
 	__setCaptureSpawnForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
@@ -119,13 +118,8 @@ function makeMockSpawn(opts = {}) {
 	return factory;
 }
 
-let restoreDriver = null;
 let restoreApi = null;
 let restoreSpawn = null;
-
-before(() => {
-	restoreDriver = __setDriverForTests("claude-p");
-});
 
 afterEach(() => {
 	restoreApi?.(); restoreApi = null;
@@ -196,24 +190,17 @@ describe("capture classification + strict-call-shape (claude-p)", () => {
 		restoreSpawn = __setCaptureSpawnForTests(() => { captureSpawned = true; throw new Error("should not be called"); });
 		const REG_A = { name: "regA", description: "r", parameters: Type.Object({}) };
 
-		// All-executable falls through to the main claude-p path; the main path uses
-		// the resilience spawn factory (NOT the capture factory). We only assert the
-		// capture factory was never consulted. (We don't drive the full main turn
-		// here — that needs the resilience spawn mock, covered by other suites.)
-		// To avoid spawning a real binary, restore the driver to sdk for this one
-		// and use an empty-prompt to short-circuit before any spawn. Simpler: just
-		// assert that the capture factory is untouched by classification.
-		const restoreSdk = __setDriverForTests("sdk");
-		try {
-			const result = await streamClaudeAgentSdk(MODEL, {
-				systemPrompt: "",
-				messages: [],
-				tools: [REG_A],
-			}).result();
-			void result;
-		} finally {
-			restoreSdk();
-		}
+		// All-executable falls through to the main claude-p turn (NOT the capture
+		// factory). We only assert the capture factory is never consulted by the
+		// classification gate. To avoid spawning a real binary we use an empty
+		// prompt (empty systemPrompt + no messages), which hits the main path's
+		// empty-prompt guard and short-circuits to done:stop before any spawn.
+		const result = await streamClaudeAgentSdk(MODEL, {
+			systemPrompt: "",
+			messages: [],
+			tools: [REG_A],
+		}).result();
+		void result;
 		assert.equal(captureSpawned, false, "capture spawn must not run for an all-executable shape");
 	});
 });

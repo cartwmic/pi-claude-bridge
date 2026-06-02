@@ -14,7 +14,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, before, after, afterEach } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
 const LOG_DIR = mkdtempSync(join(tmpdir(), "bridge-int-cap-error-"));
@@ -24,7 +24,6 @@ process.env.CLAUDE_BRIDGE_DEBUG = "1";
 const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
-	__setDriverForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
 import { submitDigestTool } from "./fixtures/submit-digest-schema.js";
@@ -47,12 +46,9 @@ async function runNoCall() {
 }
 
 describe("claude-p capture absent-call error (T2.5)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
-	let restoreDriver = null;
 	let restoreApi = null;
 
-	before(() => { restoreDriver = __setDriverForTests("claude-p"); });
 	afterEach(() => { restoreApi?.(); restoreApi = null; __resetCachedSessionForTests(); });
-	// after-suite restore handled by process exit (driver override is module-scoped)
 
 	it("model never calls the capture tool → stopReason error", { timeout: TIMEOUT }, async () => {
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
@@ -76,6 +72,4 @@ describe("claude-p capture absent-call error (T2.5)", { skip: !ENABLED ? "set RU
 		assert.match(result.errorMessage ?? "", /did not call capture tool|abnormally/i);
 		console.log(`  absent-call error surfaced: "${result.errorMessage}"`);
 	});
-
-	after(() => { restoreDriver?.(); });
 });

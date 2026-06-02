@@ -2,13 +2,16 @@
  * Unit tests for output-capture call-shape validation (tasks 2.5 and 2.6).
  *
  * Covers:
- *  - validateCaptureCallShape() pure-function cases
- *  - classifyToolsForCapture() pure-function cases
- *  - streamClaudeAgentSdk() end-to-end shape-gate: rejection, acceptance, fallthrough
+ *  - validateCaptureCallShape() pure-function cases (driver-agnostic)
+ *  - classifyToolsForCapture() pure-function cases (driver-agnostic)
+ *  - streamClaudeAgentSdk() end-to-end shape-gate: rejection, acceptance,
+ *    fallthrough — driven against the claude-p driver (the sole driver). The
+ *    classification + strict-call-shape gate is driver-agnostic; the accept
+ *    path dispatches to the claude-p forced-toolcall capture executor and the
+ *    fall-through (all-executable) path goes to the claude-p main turn.
  *  - Tool-result delivery is NOT classified (task 2.5)
  *  - piApiRef === null fallback (task 2.5)
- *  - Log assertion: "streamSimple: rejected capture-shape" present on rejection,
- *    no "streamSimple: fresh query" (without mode=capture) for the same call (task 2.6)
+ *  - Log assertion: "streamSimple: rejected capture-shape" present on rejection.
  *
  * Uses dynamic import so CLAUDE_BRIDGE_DEBUG_PATH is set before the logger initialises.
  */
@@ -16,6 +19,7 @@
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Type } from "@sinclair/typebox";
@@ -33,10 +37,12 @@ const {
 	classifyToolsForCapture,
 	getActiveToolNameSet,
 	cleanSchemaForSdk,
-	__setQueryFactoryForTests,
 	__setPiApiRefForTests,
+	__setSpawnClaudePForTests,
+	__setCaptureSpawnForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
+import { connectIpcClient } from "../src/mcp/ipc.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,34 +87,60 @@ async function collectEvents(stream) {
 	return events;
 }
 
-/** Mock factory that immediately throws when called — used to assert no factory call. */
-function makeBombFactory(label) {
-	function bomb() {
-		throw new Error(`BUG: ${label} factory should not have been called`);
-	}
-	bomb.calls = [];
-	return bomb;
+/** Parse the router socket path out of a spawn cfg's --mcp-config JSON. */
+function socketFromCfg(cfg) {
+	const parsed = JSON.parse(cfg.mcpConfig);
+	const server = Object.values(parsed.mcpServers)[0];
+	const args = server.args;
+	return args[args.indexOf("--socket") + 1];
 }
 
-/** Factory that records calls and returns a result immediately (for capture path). */
-function makeRecordingCaptureFactory(structuredOutput = { body: "x".repeat(50), headline: "h", topics: [] }) {
-	const calls = [];
-	function factory(params) {
-		calls.push(params);
-		async function* gen() {
-			yield {
-				type: "result",
-				subtype: "success",
-				structured_output: structuredOutput,
-				usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-			};
-		}
-		return {
-			[Symbol.asyncIterator]: gen,
-			async interrupt() {},
-			close() {},
-		};
-	}
+/** Read the shim --mode out of a spawn cfg ("main" | "capture"). */
+function modeFromCfg(cfg) {
+	const parsed = JSON.parse(cfg.mcpConfig);
+	const server = Object.values(parsed.mcpServers)[0];
+	const args = server.args;
+	return args[args.indexOf("--mode") + 1];
+}
+
+/** Mock claude-p CAPTURE spawn: stashes structured args via the real router. */
+function makeCaptureSpawn(structuredOutput = { body: "x".repeat(50), headline: "h", topics: [] }, calls = []) {
+	const factory = (cfg, spawnOpts) => {
+		calls.push(cfg);
+		let resolveDone;
+		const done = new Promise((res) => { resolveDone = res; });
+		(async () => {
+			spawnOpts.onEvent({ kind: "usage", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 } });
+			try {
+				const client = await connectIpcClient(socketFromCfg(cfg));
+				await client.request({ kind: "capture-stash", id: randomUUID(), arguments: structuredOutput });
+				client.close();
+			} catch (err) {
+				spawnOpts.onEvent({ kind: "error", errorMessage: `mock stash failed: ${err}` });
+			}
+			spawnOpts.onEvent({ kind: "done", reason: "result" });
+			resolveDone({ stopReason: "result", sessionId: cfg.session.sessionId, exitCode: 0, signal: null });
+		})();
+		return { get pid() { return 12345; }, abort() { resolveDone({ stopReason: "aborted", sessionId: cfg.session.sessionId, exitCode: null, signal: "SIGINT" }); }, done };
+	};
+	factory.calls = calls;
+	return factory;
+}
+
+/** Mock claude-p MAIN (resilience) spawn: emits text then ends with stopReason result. */
+function makeMainSpawn(calls = []) {
+	const factory = (cfg, spawnOpts) => {
+		calls.push(cfg);
+		let resolveDone;
+		const done = new Promise((res) => { resolveDone = res; });
+		queueMicrotask(() => {
+			spawnOpts.onEvent({ kind: "usage", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 } });
+			spawnOpts.onEvent({ kind: "text-delta", text: "ok" });
+			spawnOpts.onEvent({ kind: "done", reason: "result" });
+			resolveDone({ stopReason: "result", sessionId: cfg.session.sessionId, exitCode: 0, signal: null });
+		});
+		return { get pid() { return 999; }, abort() { resolveDone({ stopReason: "aborted", sessionId: cfg.session.sessionId, exitCode: null, signal: "SIGINT" }); }, done };
+	};
 	factory.calls = calls;
 	return factory;
 }
@@ -247,27 +279,27 @@ describe("classifyToolsForCapture", () => {
 // 3. streamClaudeAgentSdk end-to-end shape gate
 // ────────────────────────────────────────────────────────────────────────────
 
-describe("streamClaudeAgentSdk — capture-shape gate", () => {
-	let restoreFactory = null;
+describe("streamClaudeAgentSdk — capture-shape gate (claude-p)", () => {
+	let restoreCapture = null;
+	let restoreMain = null;
 	let restoreApi = null;
 
 	afterEach(() => {
-		restoreFactory?.();
-		restoreFactory = null;
-		restoreApi?.();
-		restoreApi = null;
+		restoreCapture?.(); restoreCapture = null;
+		restoreMain?.(); restoreMain = null;
+		restoreApi?.(); restoreApi = null;
 		__resetCachedSessionForTests();
 	});
 
 	/**
 	 * Helper: drive a streamClaudeAgentSdk call through the shape gate with
-	 * two unregistered tools in ctx.tools. Confirms rejection events.
+	 * unregistered tools. Wires bomb spawns on BOTH the capture and main seams
+	 * so a rejection (which must short-circuit before any spawn) is provable.
 	 */
-	async function driveRejection(tools) {
-		// Bomb factory: if called, it's a bug (rejection should short-circuit before any query)
-		restoreFactory = __setQueryFactoryForTests(makeBombFactory("rejection"));
-		// piApiRef returns no active tools → all tools are capture tools
-		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
+	async function driveRejection(tools, activeTools = []) {
+		restoreCapture = __setCaptureSpawnForTests(() => { throw new Error("BUG: capture spawn should not run on a rejected shape"); });
+		restoreMain = __setSpawnClaudePForTests(() => { throw new Error("BUG: main spawn should not run on a rejected shape"); });
+		restoreApi = __setPiApiRefForTests({ getActiveTools: () => activeTools });
 
 		const stream = streamClaudeAgentSdk(MOCK_MODEL, ctx({ tools }));
 		const events = await collectEvents(stream);
@@ -276,7 +308,7 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 
 	// ── 3.1 Two unregistered tools: rejected ─────────────────────────────────
 
-	it("two unregistered tools → rejected (stream emits start+error; no factory call)", async () => {
+	it("two unregistered tools → rejected (stream emits start+error; no spawn)", async () => {
 		const preLogCount = readLogObjects().length;
 
 		const events = await driveRejection([objectTool("capA"), objectTool("capB")]);
@@ -290,24 +322,16 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 		assert.match(events[1].error.errorMessage, /capB/);
 		assert.equal(events[1].error.stopReason, "error");
 
-		// Log assertions (task 2.6): "rejected capture-shape" present, "fresh query" absent
+		// Log assertion (task 2.6): "rejected capture-shape" present for this call.
 		const newLines = readLogObjects().slice(preLogCount);
 		const hasRejected = newLines.some((l) => typeof l.msg === "string" && l.msg.includes("streamSimple: rejected capture-shape"));
-		const hasFreshQuery = newLines.some(
-			(l) => typeof l.msg === "string" && l.msg.includes("streamSimple: fresh query") && !l.mode,
-		);
 		assert.ok(hasRejected, `Expected 'streamSimple: rejected capture-shape' in log. New lines: ${JSON.stringify(newLines.map((l) => l.msg))}`);
-		assert.ok(!hasFreshQuery, `Expected no 'streamSimple: fresh query' (non-capture) in log for rejected call`);
 	});
 
 	// ── 3.2 Mixed: one registered + one unregistered → rejected ──────────────
 
 	it("mixed registered+unregistered → rejected", async () => {
-		restoreFactory = __setQueryFactoryForTests(makeBombFactory("mixed-rejection"));
-		restoreApi = __setPiApiRefForTests({ getActiveTools: () => ["regA"] });
-
-		const stream = streamClaudeAgentSdk(MOCK_MODEL, ctx({ tools: [objectTool("regA"), objectTool("capB")] }));
-		const events = await collectEvents(stream);
+		const events = await driveRejection([objectTool("regA"), objectTool("capB")], ["regA"]);
 
 		assert.equal(events.length, 2);
 		assert.equal(events[0].type, "start");
@@ -319,11 +343,7 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 	// ── 3.3 Single capture tool with non-object root → rejected ──────────────
 
 	it("single capture tool with array root → rejected", async () => {
-		restoreFactory = __setQueryFactoryForTests(makeBombFactory("array-root-rejection"));
-		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
-
-		const stream = streamClaudeAgentSdk(MOCK_MODEL, ctx({ tools: [arrayTool("capArr")] }));
-		const events = await collectEvents(stream);
+		const events = await driveRejection([arrayTool("capArr")]);
 
 		assert.equal(events.length, 2);
 		assert.equal(events[0].type, "start");
@@ -334,9 +354,11 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 
 	// ── 3.4 Single capture tool with object root → accepted (capture path) ───
 
-	it("single capture tool with object root → accepted (capture path runs)", async () => {
-		const captureFactory = makeRecordingCaptureFactory();
-		restoreFactory = __setQueryFactoryForTests(captureFactory);
+	it("single capture tool with object root → accepted (claude-p capture path runs)", async () => {
+		const captureSpawn = makeCaptureSpawn();
+		restoreCapture = __setCaptureSpawnForTests(captureSpawn);
+		// Main spawn must NOT run on the accept path.
+		restoreMain = __setSpawnClaudePForTests(() => { throw new Error("BUG: main spawn ran on capture accept path"); });
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
 
 		const stream = streamClaudeAgentSdk(
@@ -349,81 +371,54 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 		assert.equal(result.content.length, 1);
 		assert.equal(result.content[0].type, "toolCall");
 		assert.equal(result.content[0].name, "capObj");
-		// Capture path factory was called once with outputFormat
-		assert.equal(captureFactory.calls.length, 1);
-		assert.ok(captureFactory.calls[0].options?.outputFormat, "Capture call must have outputFormat");
+		// Capture spawn was called once, in capture mode.
+		assert.equal(captureSpawn.calls.length, 1);
+		assert.equal(modeFromCfg(captureSpawn.calls[0]), "capture", "spawn must be a --mode capture shim invocation");
 	});
 
-	// ── 3.5 Empty ctx.tools → falls through to fresh-query path ─────────────
+	// ── 3.5 Empty ctx.tools → falls through to fresh main-turn path ──────────
 
-	it("empty ctx.tools → falls through (fresh query, not capture)", async () => {
-		const freshFactory = makeRecordingCaptureFactory(); // will NOT be called with outputFormat
-		restoreFactory = __setQueryFactoryForTests(freshFactory);
+	it("empty ctx.tools → falls through (main turn, not capture)", async () => {
+		const mainSpawn = makeMainSpawn();
+		restoreMain = __setSpawnClaudePForTests(mainSpawn);
+		restoreCapture = __setCaptureSpawnForTests(() => { throw new Error("BUG: capture spawn ran for empty-tools fall-through"); });
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
-
-		// Minimal fresh query mock: just end without yielding tool_use
-		function emptyFreshFactory(params) {
-			freshFactory.calls.push(params);
-			async function* gen() {
-				yield { type: "stream_event", event: { type: "message_start", message: { usage: { input_tokens: 1 } } } };
-				// end without tool_use → finalizer pushes done:stop
-			}
-			return {
-				[Symbol.asyncIterator]: gen,
-				async interrupt() {},
-				close() {},
-			};
-		}
-		emptyFreshFactory.calls = freshFactory.calls; // share the calls array
-		restoreFactory = __setQueryFactoryForTests(emptyFreshFactory);
 
 		const stream = streamClaudeAgentSdk(MOCK_MODEL, ctx({ tools: [] }));
 		const result = await stream.result();
 
-		// Should NOT go to capture path: no outputFormat on the factory call
-		assert.ok(emptyFreshFactory.calls.length > 0, "Factory should be called for fresh query");
-		const call = emptyFreshFactory.calls[0];
-		assert.ok(!call.options?.outputFormat, "Fresh query should NOT have outputFormat set");
-		// Result is stop (no tool_use in mock)
+		// Falls through to the main claude-p turn (NOT capture).
+		assert.equal(mainSpawn.calls.length, 1, "main spawn should run for fall-through");
+		assert.equal(modeFromCfg(mainSpawn.calls[0]), "main", "fall-through spawn must be a --mode main shim invocation");
 		assert.equal(result.stopReason, "stop");
 	});
 
-	// ── 3.6 All-registered tools → falls through (fresh query, not capture) ──
+	// ── 3.6 All-registered tools → falls through (main turn, not capture) ────
 
 	it("all-registered tools → falls through (no capture path)", async () => {
+		const mainSpawn = makeMainSpawn();
+		restoreMain = __setSpawnClaudePForTests(mainSpawn);
+		restoreCapture = __setCaptureSpawnForTests(() => { throw new Error("BUG: capture spawn ran for all-registered fall-through"); });
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => ["regA", "regB"] });
-
-		const calls = [];
-		function trackingFactory(params) {
-			calls.push(params);
-			async function* gen() {
-				yield { type: "stream_event", event: { type: "message_start", message: { usage: {} } } };
-			}
-			return {
-				[Symbol.asyncIterator]: gen,
-				async interrupt() {},
-				close() {},
-			};
-		}
-		trackingFactory.calls = calls;
-		restoreFactory = __setQueryFactoryForTests(trackingFactory);
 
 		const stream = streamClaudeAgentSdk(
 			MOCK_MODEL,
 			ctx({ tools: [objectTool("regA"), objectTool("regB")] }),
 		);
-		const result = await stream.result();
+		await stream.result();
 
-		assert.ok(calls.length > 0, "Factory should be called");
-		assert.ok(!calls[0].options?.outputFormat, "All-registered path should not set outputFormat");
+		assert.equal(mainSpawn.calls.length, 1, "main spawn should run");
+		assert.equal(modeFromCfg(mainSpawn.calls[0]), "main", "all-registered path uses the main turn");
 	});
 
 	// ── 3.7 Tool-result delivery with non-empty ctx.tools: NOT classified ────
 
 	it("tool-result delivery (lastMsg.role=toolResult, no active frame) → Case 2, not classified", async () => {
 		// If classification ran on this call, it would reject (two capture tools).
-		// But Case 2 (orphaned tool result) should fire BEFORE classification.
-		restoreFactory = __setQueryFactoryForTests(makeBombFactory("tool-result-classified-erroneously"));
+		// But Case 2 (orphaned tool result) should fire BEFORE classification, so
+		// neither spawn seam runs.
+		restoreCapture = __setCaptureSpawnForTests(() => { throw new Error("BUG: tool-result delivery was classified"); });
+		restoreMain = __setSpawnClaudePForTests(() => { throw new Error("BUG: tool-result delivery spawned a main turn"); });
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
 
 		// Context where the LAST message is a toolResult — triggers Case 2 (no frame on stack)
@@ -470,8 +465,9 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 	// ── 3.8 piApiRef === null fallback → all tools treated as capture ─────────
 
 	it("piApiRef === null → all tools treated as capture (object-root accepted)", async () => {
-		const captureFactory = makeRecordingCaptureFactory();
-		restoreFactory = __setQueryFactoryForTests(captureFactory);
+		const captureSpawn = makeCaptureSpawn();
+		restoreCapture = __setCaptureSpawnForTests(captureSpawn);
+		restoreMain = __setSpawnClaudePForTests(() => { throw new Error("BUG: main spawn ran with null piApiRef capture tool"); });
 		// Set piApiRef to null — getActiveToolNameSet() returns empty set
 		restoreApi = __setPiApiRefForTests(null);
 
@@ -482,7 +478,7 @@ describe("streamClaudeAgentSdk — capture-shape gate", () => {
 		const result = await stream.result();
 
 		assert.equal(result.stopReason, "toolUse");
-		assert.equal(captureFactory.calls.length, 1);
-		assert.ok(captureFactory.calls[0].options?.outputFormat, "With null piApiRef, tool should be classified as capture");
+		assert.equal(captureSpawn.calls.length, 1);
+		assert.equal(modeFromCfg(captureSpawn.calls[0]), "capture", "With null piApiRef, tool should be classified as capture");
 	});
 });

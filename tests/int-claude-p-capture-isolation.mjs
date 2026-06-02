@@ -31,7 +31,6 @@ process.env.CLAUDE_BRIDGE_DEBUG = "1";
 const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
-	__setDriverForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
 import { submitDigestTool } from "./fixtures/submit-digest-schema.js";
@@ -68,15 +67,13 @@ async function captureCall() {
 }
 
 describe("claude-p capture isolation (T2.4)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
-	let restoreDriver = null;
 	let restoreApi = null;
 
 	before(() => {
-		restoreDriver = __setDriverForTests("claude-p");
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
 		__resetCachedSessionForTests();
 	});
-	after(() => { restoreApi?.(); restoreDriver?.(); __resetCachedSessionForTests(); });
+	after(() => { restoreApi?.(); __resetCachedSessionForTests(); });
 
 	it("capture between two main turns does not pollute cachedSessionId", { timeout: TIMEOUT }, async () => {
 		// ── Main turn A: warm the cache ──

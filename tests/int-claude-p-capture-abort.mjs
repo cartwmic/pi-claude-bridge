@@ -26,7 +26,6 @@ process.env.CLAUDE_BRIDGE_DEBUG = "1";
 const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
-	__setDriverForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
 import { submitDigestTool } from "./fixtures/submit-digest-schema.js";
@@ -45,14 +44,12 @@ function countClaudeP() {
 }
 
 describe("claude-p capture abort (T2.6)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
-	let restoreDriver = null;
 	let restoreApi = null;
 
 	before(() => {
-		restoreDriver = __setDriverForTests("claude-p");
 		restoreApi = __setPiApiRefForTests({ getActiveTools: () => [] });
 	});
-	after(() => { restoreApi?.(); restoreDriver?.(); __resetCachedSessionForTests(); });
+	after(() => { restoreApi?.(); __resetCachedSessionForTests(); });
 
 	it("AbortSignal mid-capture → stopReason aborted, no orphan subprocess", { timeout: TIMEOUT }, async () => {
 		const before = countClaudeP();

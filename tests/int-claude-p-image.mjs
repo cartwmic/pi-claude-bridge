@@ -36,7 +36,6 @@ process.env.CLAUDE_BRIDGE_DEBUG = "1";
 const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
-	__setDriverForTests,
 	__setSpawnClaudePForTests,
 	__setCaptureSpawnForTests,
 	__resetCachedSessionForTests,
@@ -110,7 +109,6 @@ before(() => {
 describe("T1.16b — main-provider path with image content (claude-p)", () => {
 	it("strips image blocks, warn-logs the drop, and STILL spawns text-only", async () => {
 		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] }));
-		restore.push(__setDriverForTests("claude-p"));
 
 		let seenCfg = null;
 		let spawnCount = 0;
@@ -177,7 +175,6 @@ describe("T1.16b — capture path with image content (claude-p)", () => {
 
 	it("rejects PRE-SPAWN with stopReason error; the capture spawn is NEVER called", async () => {
 		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] })); // tool is unregistered → capture
-		restore.push(__setDriverForTests("claude-p"));
 
 		let captureSpawned = false;
 		restore.push(
@@ -201,7 +198,6 @@ describe("T1.16b — capture path with image content (claude-p)", () => {
 
 	it("emits exactly [start, error] (no done, no intermediate events)", async () => {
 		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] }));
-		restore.push(__setDriverForTests("claude-p"));
 		restore.push(__setCaptureSpawnForTests(() => { throw new Error("must not spawn"); }));
 
 		const stream = streamClaudeAgentSdk(MODEL, {

@@ -2,11 +2,13 @@
 // Extracted so they can be tested without pulling in the full extension runtime.
 
 import type { Message as PiMessage } from "@mariozechner/pi-ai";
-import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { pascalCase } from "change-case";
 
-// Use Anthropic SDK's MessageParam directly — same shape as cc-session-io's Message.
-type SessionMessage = MessageParam;
+// Anthropic-API-shaped message: { role, content } where content is either a
+// string or an array of content blocks. Kept as a local structural type so this
+// pure converter has no dependency on the Anthropic SDK (removed in the claude-p
+// cut-over). The shape matches what `claude` consumes when replaying history.
+type SessionMessage = { role: "user" | "assistant"; content: string | unknown[] };
 
 export const PROVIDER_ID = "claude-bridge";
 

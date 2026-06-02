@@ -7,8 +7,7 @@
     "pi-package",
     "pi",
     "extension",
-    "claude-code",
-    "claude-agent-sdk"
+    "claude-code"
   ],
   "author": "Eli Dickinson",
   "license": "MIT",
@@ -42,8 +41,6 @@
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
-    "@anthropic-ai/sdk": "^0.73.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "change-case": "^5.4.4",
     "claude-p": "0.1.0",

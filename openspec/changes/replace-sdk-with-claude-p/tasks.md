@@ -192,7 +192,7 @@ default until Phase 3.
   - files_allowed:
       - tests/unit-driver-stream.mjs
       - tests/unit-mcp-shim.mjs
-- [ ] 1.16d Integration test: abort-then-immediate-steer does not interleave the dying subprocess's stdout into the new turn (claude-p-driver.respawn-does-not-race-the-dying-subprocesss-stdout-reader; S9/S13)
+- [x] 1.16d Integration test: abort-then-immediate-steer does not interleave the dying subprocess's stdout into the new turn (claude-p-driver.respawn-does-not-race-the-dying-subprocesss-stdout-reader; S9/S13) — **DONE via S9/S13 (abort-then-steer scenarios PASS; respawn does not interleave dying stdout)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-abort-steer-race.mjs
@@ -258,28 +258,28 @@ default until Phase 3.
 > deleting it before the gates is the risk-inversion the review flagged. T4.10 is
 > reachable as a Phase-1 decision (see its note), not deferred to Phase 4.
 
-- [ ] 3.1 Default `CLAUDE_BRIDGE_DRIVER` to `claude-p`; `sdk` value rejected with deprecation error
+- [x] 3.1 Default `CLAUDE_BRIDGE_DRIVER` to `claude-p`; `sdk` value rejected with deprecation error — **DONE: default claude-p; sdk → deprecation Error at load (verified throws)**
   - intent: refactor
   - files_allowed:
       - index.ts
   - allow_new_files: false
-- [ ] 3.2 Delete SDK path code — `_realQuery`/`_queryFactory`, `createSdkMcpServer` wiring, SDK-based `runCaptureQuery`, SDK-specific imports
+- [x] 3.2 Delete SDK path code — `_realQuery`/`_queryFactory`, `createSdkMcpServer` wiring, SDK-based `runCaptureQuery`, SDK-specific imports — **DONE: removed _queryFactory/_realQuery, createSdkMcpServer+buildMcpServers, consumeQuery/processStreamEvent, SDK startFreshQuery body (claude-p path is sole impl), runCaptureQuery, all SDK imports/types. index.ts 2315→~1440 lines**
   - intent: refactor
   - files_allowed:
       - index.ts
   - allow_new_files: false
-- [ ] 3.3 Remove SDK dependencies from `package.json` — `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`
+- [x] 3.3 Remove SDK dependencies from `package.json` — `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk` — **DONE: @anthropic-ai/claude-agent-sdk + @anthropic-ai/sdk removed from deps + keyword; lockfile refreshed (sdk remains only transitively via pi-ai peer)**
   - intent: infra
   - files_allowed:
       - package.json
       - package-lock.json
   - allow_new_files: false
-- [ ] 3.4 Verify no remaining imports from removed packages: `grep -rn "@anthropic-ai" src/ index.ts convert.ts models.ts` returns empty
+- [x] 3.4 Verify no remaining imports from removed packages: `grep -rn "@anthropic-ai" src/ index.ts convert.ts models.ts` returns empty — **DONE: grep @anthropic-ai over index/convert/models/src/tests EMPTY; SDK-symbol grep EMPTY**
   - intent: refactor
   - files_allowed:
       - "**/*.ts"
   - allow_new_files: false
-- [ ] 3.5 Final README pass — description + capabilities reflect the claude-p architecture
+- [x] 3.5 Final README pass — description + capabilities reflect the claude-p architecture — **DONE: claude-p driver architecture (interactive-TUI, never nominal claude -p; MCP shim/router held-open; sdk deprecation); AskClaude section removed; capture reframed to forced-toolcall/stash**
   - intent: refactor
   - files_allowed:
       - README.md

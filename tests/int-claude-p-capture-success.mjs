@@ -15,7 +15,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, before, afterEach } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "@sinclair/typebox/value";
 
@@ -26,7 +26,6 @@ process.env.CLAUDE_BRIDGE_DEBUG = "1";
 const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
-	__setDriverForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
 import { submitDigestTool, DigestArgs } from "./fixtures/submit-digest-schema.js";
@@ -56,10 +55,8 @@ async function runCapture() {
 }
 
 describe("claude-p capture success (T2.3)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
-	let restoreDriver = null;
 	let restoreApi = null;
 
-	before(() => { restoreDriver = __setDriverForTests("claude-p"); });
 	afterEach(() => { restoreApi?.(); restoreApi = null; __resetCachedSessionForTests(); });
 
 	it("model calls capture tool → synthesized toolCall block with valid structured content", { timeout: TIMEOUT }, async () => {

@@ -1,3 +1,5 @@
+> **[SUPERSEDED 2026-06-01]** This note concluded interactive claude-p forfeits caching. That was a TEST ARTIFACT (undersized ~1.26k-token system prompt below Anthropic's cache minimum). With a large stable prefix, single-shot interactive `--resume` DOES cache. See `g4-singleshot-caching.md` + design "G4 resolution". Retained for provenance.
+
 # G4 control — `--print --resume` warm-reads across spawns; interactive claude-p does NOT
 
 **Date:** 2026-06-01 · claude 2.1.159, model claude-haiku-4-5. Decisive apples-to-apples

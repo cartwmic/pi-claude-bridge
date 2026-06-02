@@ -80,7 +80,19 @@ A6: PASS — turn 2 warm-resumed on session=3e196239
 A7: PASS — turn 2 produced WARM-RESUME-S25
 ```
 
-## S26 — claude-p warm-resume cache shape (HARD GATE G4) — 2026-06-01 — **FAIL**
+## S26 — claude-p warm-resume cache shape (HARD GATE G4) — 2026-06-01 — **PASS** (this earlier FAIL run was a test artifact — see correction at end)
+
+> **CORRECTION (2026-06-01):** the FAIL below was caused by an UNDERSIZED ~1.26k-token
+> system prompt (the "~5KB" pinned prompt was ~1.26k tokens), BELOW Anthropic's minimum
+> cacheable prefix → `claude` set no `cache_control` breakpoint. With a realistically
+> LARGE stable prefix (the real bridge's pi system prompt + MCP tool defs), single-shot
+> interactive claude-p `--resume` DOES cache: `cache_creation=83090` cold, `cache_read=166344`
+> on a resume turn, recall OK. Control E3 (trivial prompt + tools) reproduces `cache_read=0`,
+> isolating prefix SIZE as the cause. S26 = PASS provided the bridge pins a large stable
+> system prompt (it does). Evidence: `.spike-notes/claude-p-gate/g4-singleshot-caching.md`.
+> The original FAIL analysis below is retained for provenance but SUPERSEDED.
+
+### [SUPERSEDED] original FAIL run (undersized prompt)
 - Branch: `replan-driver-from-phase-0`
 - Driver: claude-p 0.1.0 (interactive-PTY, design D26) · claude 2.1.159 · model claude-haiku-4-5
 - Method: 6 sequential claude-p spawns (concurrency 1), pinned ~5KB `--system-prompt`,

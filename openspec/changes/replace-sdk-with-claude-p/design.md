@@ -55,7 +55,7 @@ real claude-p 0.1.0 + claude 2.1.159, model claude-haiku-4-5):**
 - **G1 multi-round held blocking — ✅ PASS.** 3 sequential held tool rounds in one spawn, each blocked inline until `router.deliver`, `stopReason:result`. Fixture `g1-multiround-stream.jsonl`.
 - **G2 constitution IV — ✅ PASS (no fork).** Isolation mechanism honored through claude-p: (a) closed-set after completing the denylist (`system/init.tools`→[] natives; raw-`claude -p` introspection since claude-p surfaces no roster), (b) Bash emission refused (side-effect file never created), (c) bridged surface survives. `--disallowedTools`(space-joined)+`--strict-mcp-config`+`--setting-sources ""` all forward+honored. See D28. CAVEAT: claude-p times out under CLAUDE_CONFIG_DIR/HOME override (test-vehicle only). Denylist is version-fragile → T4.7 re-audit.
 - **G3 turn-end — ✅ PASS.** claude-p emits exactly ONE `result` per pi TURN (not per-segment); parser turn-end rule holds. (Cache-token cross-round aggregation rolls into G4.)
-- **G4 warm-resume cache-read — ❌ FAIL (STRUCTURAL, cut-over-BLOCKING; escalated to owner 2026-06-01).** Interactive claude-p forfeits Anthropic prompt caching ENTIRELY: across 6 sequential `--resume` turns, `cache_creation=0` AND `cache_read=0` every turn; `input` grows 3802→23494 (full uncached re-send each turn). Coherence PASSES (turn 2 recalls the fact) and the mechanism is clean — only caching is dead. **Root cause (controls in `g4-print-vs-interactive-control.md`):** the SAME `claude` 2.1.159 binary under `claude -p --print --resume` warm-reads ~90k cached tokens across spawns (creation ~600 delta), but under claude-p's INTERACTIVE PTY `--resume` it sets no `cache_control` breakpoints on the resumed prefix. The differentiator is interactive-vs-`--print` mode — NOT isolation flags, NOT per-spawn injections (the original hypothesis), NOT TTL. **`cache_control` is set by `claude` when it builds the API request, so a claude-p (T4.10) fork CANNOT fix this** — claude-p only drives the TUI. This forfeits the warm caching the SDK era had (S25: cache_read=5736) and imposes a full-context-reprocess cost+latency penalty on EVERY pi turn — unacceptable for a model provider. It directly conflicts with owner constraint D26 (interactive only, never nominal `claude -p`). Resolution requires an OWNER decision (re-open D26 / accept the regression / pursue a persistent-process approach) — see "G4 escalation" below.
+- **G4 warm-resume cache-read — ✅ PASS (2026-06-01; an earlier "FAIL" was a test artifact, now corrected).** Single-shot interactive claude-p `--resume` DOES hit Anthropic prompt caching — confirmed: turn 1 `cache_creation=83090` (breakpoints set), a later `--resume` turn `cache_read=166344` (massive warm read), recall works. **The earlier G4 "structural fail" was a size artifact:** the original probe pinned a ~1.26k-token system prompt, BELOW Anthropic's minimum cacheable prefix, so `claude` set NO `cache_control` breakpoint at all (`cache_creation=0`/`cache_read=0`). With a realistically LARGE stable prefix the cache activates; the trivial-prompt control (E3) reproduces `cache_read=0` exactly, isolating system-prompt SIZE — NOT interactive-vs-`--print`, NOT the tools block, NOT TTL — as the determinant. **Requirement:** the bridge MUST pin a system prompt large + stable enough to cross the cache minimum (the real pi system prompt + MCP tool defs do, by a wide margin). No fork, no `--print` needed; D26 intact. Evidence: `g4-singleshot-caching.md` (E1/E2/E3 tables) + the claude-p confirmation run. NOTE — two RESIDUAL concerns orthogonal to caching, possible future persistent-process optimization, NOT cut-over blockers: (1) per-turn PTY/claude boot tax ~1.7s; (2) claude-p `StopTimeout` reliability degrades as the replayed transcript grows on long `--resume` sessions (see "Long-session reliability risk" below).
 - **G5 abort coherence (S7/S8/S13) — ⏳ pending** — cold-replay reproduces the interrupted-partial recall the SDK got via session-resume (see D31; T1.14a `commitAbortedPartial` is the mechanism).
 - **G6 S5 mid-stream steer — ⏳ pending (non-blocking)** — abort+respawn satisfies coherence + no duplicated-essay-tail (see D-S5).
 - **G7 `--timeout` semantics — ✅ RESOLVED.** claude-p's `--timeout` DOES count wall-time blocked on a held MCP call. A too-slow held tool → `claude-p: StopTimeout` (exit **2**, not 124) AFTER the call routed → D33 forbids respawn → turn-fatal `error` to pi. IMPLICATION: `CLAUDE_P_TIMEOUT_SECONDS=600` is a generous BACKSTOP only; primary cancellation MUST be pi's AbortSignal (D31, wired), never claude-p's wall-timer. If any pi turn can approach 600s wall-clock (sum of held tools + boot + generation), raise/derive it. Fixture `g7-timeout-results.md`.
@@ -63,49 +63,44 @@ real claude-p 0.1.0 + claude 2.1.159, model claude-haiku-4-5):**
 - **G9 concurrent spawns (S25 + S14) — ⏳ pending** — two claude-p subprocesses alive at once (capture-during-main AND nested main+main), each with an isolated shim/socket/router. Watch item: concurrent-boot contention (the suspected flakiness trigger; D33).
 - **G-resume-flags `--input-file`/`--system-prompt-file` — ✅ PASS.** Both forwarded + honored through claude-p (126KB input-file sentinel echoed; system-prompt-file token applied). The bridge's >50KB overflow path is safe, no change.
 
-### G4 escalation (2026-06-01) — interactive caching is dead; OWNER decision required
+### G4 resolution (2026-06-01) — single-shot interactive caching WORKS; D26 intact
 
-The Phase-1 gate campaign passed G1, G2, G3, G7, G8, G-resume but G4 is a hard
-STRUCTURAL FAIL: interactive claude-p sets no prompt-cache breakpoints, so every pi
-turn re-bills the full conversation as uncached input — a cost+latency regression no
-fork can fix (the behavior lives in `claude`, not claude-p). This is mutually
-exclusive with owner constraint D26 (interactive surface only). The decision space:
+The Phase-1 gate campaign initially recorded a G4 "structural FAIL" (interactive
+claude-p forfeits caching) and escalated to the owner. Owner confirmed **D26 is a HARD
+line (no nominal `claude -p`)** and asked why the cache wasn't hit and whether single-shot
+calls could cache. Investigating those questions OVERTURNED the FAIL:
 
-1. **Re-open D26 → use `claude -p --print --resume`.** Restores warm caching (proven:
-   cache_read ~90k across spawns). Cost: uses the headless surface the owner wanted to
-   avoid; revisit whether that surface is actually restricted for this account/use.
-2. **Persistent interactive process (warm pool).** Keep ONE long-lived claude-p/`claude`
-   per pi session and feed turns into it (live session caches normally) instead of
-   per-turn spawn+`--resume`. **PREMISE NOW PROVEN** (`g4-intraspawn-caching-reframe.md`):
-   within one live claude-p spawn the agent loop's rounds warm-read ~14k cached tokens
-   each (cache_creation tiny) — interactive caching works fully intra-process; only the
-   per-turn-spawn+`--resume` pattern loses it. Cost: claude-p is "single-turn" → needs a
-   fork for persistent multi-turn feeding + per-turn result framing; feasibility under
-   investigation (2026-06-01, owner chose "investigate before deciding"); interacts with
-   abort/supersede/concurrency.
-3. **Accept the regression.** Ship interactive claude-p with no caching. Cost: every
-   turn reprocesses the full growing context (uncached) — likely unacceptable cost +
-   latency for a coding agent; quantify against the latency budget first.
+- The "FAIL" was a **test artifact** — the probe's ~1.26k-token system prompt was below
+  Anthropic's minimum cacheable prefix, so `claude` placed no `cache_control` breakpoint.
+- With a realistically LARGE stable pinned prefix, **single-shot interactive claude-p
+  `--resume` caches** — `cache_creation=83090` on the cold turn, `cache_read=166344` on a
+  resume turn (confirmed through claude-p, not `claude -p`). The trivial-prompt control
+  (E3) reproduces `cache_read=0`, isolating prefix SIZE as the cause.
+- **Decision:** keep the current design — interactive claude-p, single-shot per-turn
+  spawn + `--resume`, with a large stable pinned `--system-prompt` (the real pi prefix
+  qualifies). No persistent fork, no `--print`, no D26 compromise. The earlier
+  spike notes `g4-cache-results.md`, `g4-intraspawn-caching-reframe.md`, and the
+  `--print` conclusion in `g4-print-vs-interactive-control.md` are SUPERSEDED by
+  `g4-singleshot-caching.md`.
 
-**Investigation outcome (2026-06-01, `g4-investigation.md`):**
-- **Option 2 is FEASIBLE (no showstopper).** claude-p kills the interactive `claude`
-  via `session.terminate()` after the Stop hook; `claude` does NOT self-exit. Removing
-  that one kill leaves the TUI at its prompt, ready for the next turn (which caches —
-  proven intra-spawn). The fork delta is targeted: don't terminate, re-read per-turn
-  Stop, type the next prompt into the live PTY, frame one `result` per turn via a
-  transcript high-water mark — all PTY/Ink-probe/hook-FIFO/transcript machinery reused.
-  Bridge-side caveat: the persistent PTY must survive a pi abort (cancel turn, keep
-  session) or tear down + cold-reboot on supersede (design work, not a claude-p blocker).
-- **Numbers:** per-spawn boot tax ≈ 1.7s non-model overhead EVERY turn (persistent pays
-  it once); no-cache cumulative input-cost penalty 5.3× at 50k ctx / 6.9× at 100k
-  (~O(N²)); uncached prefix also grows TTFT. Persistent wins on BOTH cost and latency.
-- **Recommendation:** Option 2 if D26 is a hard line (strictly better technical outcome,
-  preserves the subscription surface); Option 1 (`claude -p --print`) only if "never -p"
-  was precautionary (less work, same caching, but reverses D26 and keeps the boot tax).
-  The hard-vs-precaution determination is the OWNER's (account/ToS/preference) — pending.
+**Requirement added:** the bridge's pinned system prompt must stay above the cache
+minimum and be byte-stable across spawns (no per-spawn-varying content at the head) so
+the prefix caches. The pi system prompt + MCP tool defs satisfy this; T4.x should assert
+the assembled system prompt is non-trivial in size.
 
-Until the owner picks a path, Phase-3 cut-over stays BLOCKED and the SDK path remains
-the default. G5/G9 are deferred (moot until the driver approach is settled).
+### Long-session reliability risk (tracked; not a cut-over blocker)
+
+The single-shot `--resume` model replays the full transcript into a fresh claude-p
+process every turn. The Phase-1 runs observed claude-p `StopTimeout` flakiness that
+WORSENS as the replayed transcript grows (some turns failed all 3 retry attempts at
+large transcript sizes). For very long pi sessions this could become a reliability wall
+that the D33 bounded-retry layer cannot clear (a retry re-hits the same slow replay).
+This is the strongest remaining motivation for a future **persistent-process
+optimization** (one live claude-p per pi session — premise proven, fork feasible per
+`g4-investigation.md`: drop claude-p's `session.terminate()`, feed turns into the live
+PTY), which also removes the ~1.7s/turn boot tax. Deferred as a follow-up change, NOT a
+blocker for cut-over at typical session lengths. Phase-4 should characterize the
+transcript size at which `StopTimeout` becomes frequent.
 
 ### Phase ordering (risk-inversion fix)
 

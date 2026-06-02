@@ -2,10 +2,23 @@
 // T1.13 — abort mid-turn (mechanics) through real pi + real claude-p.
 //
 // Drives pi (RPC mode, CLAUDE_BRIDGE_DRIVER=claude-p, model
-// claude-bridge/claude-haiku-4-5) with a long text-streaming turn, then aborts
-// mid-stream via the RPC `abort` command (pi's app.interrupt → AbortSignal →
+// claude-bridge/claude-haiku-4-5), parks a turn on a HELD TOOL, then aborts
+// mid-turn via the RPC `abort` command (pi's app.interrupt → AbortSignal →
 // bridge onAbort[claude-p] → claudeHandle.abort() → SIGINT to the claude-p
 // process group).
+//
+// WHY A HELD TOOL (not text streaming): claude-p (`--print --output-format
+// stream-json`) buffers turn text PER-BLOCK — a "count 1..100" turn is usually
+// emitted as ONE text block → ONE text_delta at turn-END, with no incremental
+// mid-stream. So "waitForMatch(text_delta) → sleep → abort" has no live window
+// to abort into: the turn finishes (~3s) before/as the abort lands, leaving
+// nothing to interrupt and a post-abort agent_end wait that times out. The
+// DETERMINISTIC mid-turn window on claude-p is a HELD TOOL CALL: pi parks on
+// SlowTool's promise for the full duration, so the abort reliably lands while
+// the turn is genuinely in-flight (mirrors the reliable S8 sub-test in
+// int-claude-p-abort-coherence.mjs and "abort during tool execution recovers
+// cleanly" in int-tool-message.mjs). The abort MECHANICS being asserted are
+// identical — only the trigger changed from text-streaming to a held tool.
 //
 // ASSERTIONS:
 //   1. The driver SIGINTs the claude-p subprocess — bridge debug log shows
@@ -35,7 +48,9 @@ const PATH_WITH_CLAUDE_P = `${BIN}:${cleanPath}`;
 
 const harness = createRpcHarness({
 	name: "claude-p-abort",
-	args: ["--model", "claude-bridge/claude-haiku-4-5"],
+	// Load the slow-tool extension so we can park a turn on a held tool — the
+	// deterministic mid-turn abort window on claude-p (see header note).
+	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
 	env: { CLAUDE_BRIDGE_DRIVER: "claude-p", PATH: PATH_WITH_CLAUDE_P },
 	defaultTimeout: TEST_TIMEOUT,
 });
@@ -70,41 +85,50 @@ describe("claude-p abort mid-turn mechanics (T1.13)", () => {
 		console.log(`  Debug log: ${DEBUG_LOG}`);
 	});
 
-	it("aborts mid-stream: SIGINT, prompt resolves aborted promptly, no orphan", { timeout: TEST_TIMEOUT }, async () => {
-		const { send, waitForEvent, waitForMatch, collectText, addListener } = harness;
+	it("aborts mid-turn (held tool): SIGINT, prompt resolves aborted promptly, no orphan", { timeout: TEST_TIMEOUT }, async () => {
+		const { send, waitForEvent, collectText, addListener } = harness;
 
 		const baseline = liveClaudeProcs();
+
+		// Warm-up text turn to clear cold-start MCP latency (so SlowTool is
+		// registered/surfaced before the held-abort attempt).
+		{
+			const c = collectText();
+			await send({ type: "prompt", message: "Reply with the single word READY." });
+			await waitForEvent("agent_end", 90_000);
+			c.stop();
+		}
 
 		let lastErr = null;
 		let ok = false;
 		for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
 			let aborted = false;
-			let sawTextDelta = false;
+			let sawToolExec = false;
 			const collector = collectText();
 			// Mark whether an `error`/`done` reason reached pi as "aborted".
 			let endReason = null;
 			const removeEnd = addListener((msg) => {
+				if (msg.type === "tool_execution_start") sawToolExec = true;
 				if (msg.type === "message_update") {
 					const ae = msg.assistantMessageEvent;
-					if (ae?.type === "text_delta") sawTextDelta = true;
 					if (ae?.type === "error" && ae.reason) endReason = ae.reason;
 				}
 				if (msg.type === "agent_end" && msg.reason) endReason = endReason ?? msg.reason;
 			});
 			try {
-				// Long text stream so the abort lands deterministically mid-turn.
+				// Park the turn on a long held tool (30s) — the deterministic
+				// mid-turn abort window on claude-p (see header note). pi blocks on
+				// SlowTool's promise, so the abort lands while the turn is genuinely
+				// in-flight, NOT after a buffered text burst already finished it.
 				await send({
 					type: "prompt",
-					message: "Count slowly from 1 to 100, one number per line. Do not call any tools.",
+					message: "Call SlowTool with seconds=30. Just call the tool, say nothing first.",
 				});
-				// Wait for streaming to actually start (first text delta) before aborting.
-				await waitForMatch(
-					(m) => m.type === "message_update" && m.assistantMessageEvent?.type === "text_delta",
-					"first text_delta",
-					30_000,
-				);
-				// Let a few numbers stream.
-				await new Promise((r) => setTimeout(r, 1500));
+				// Wait for the tool to actually start executing (the deterministic
+				// signal the turn is mid-flight and the tool is held) before aborting.
+				await waitForEvent("tool_execution_start", 40_000);
+				// Let the tool sit held for a beat, then abort while it is parked.
+				await new Promise((r) => setTimeout(r, 700));
 
 				const idle = waitForEvent("agent_end", 30_000); // MUST resolve well under claude-p's 600s timeout
 				const abortAt = Date.now();
@@ -113,7 +137,7 @@ describe("claude-p abort mid-turn mechanics (T1.13)", () => {
 				const resolveMs = Date.now() - abortAt;
 				aborted = true;
 
-				assert.ok(sawTextDelta, "expected text to have streamed before abort");
+				assert.ok(sawToolExec, "expected SlowTool to reach execution (held) before abort");
 				assert.ok(
 					resolveMs < 25_000,
 					`pi turn must resolve promptly after abort (no waiting for terminal result); took ${resolveMs}ms`,

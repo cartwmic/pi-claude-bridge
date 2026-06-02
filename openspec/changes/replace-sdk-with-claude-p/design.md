@@ -106,6 +106,23 @@ minimum and be byte-stable across spawns (no per-spawn-varying content at the he
 the prefix caches. The pi system prompt + MCP tool defs satisfy this; T4.x should assert
 the assembled system prompt is non-trivial in size.
 
+### Test-environment finding (2026-06-02) — concurrent-claude contention causes int-suite hangs
+
+While running the full `npm test` on the claude-p default, the real-claude-p integration
+tests (`int-smoke`, `int-cache`) intermittently HUNG to their timeouts (exit 124). Root
+cause was NOT a bridge bug: the machine had accumulated ~30 abandoned `claude`
+subprocesses from a stale 7-day-old `pi` session (the SUPERSEDED in-house-PTY/hook-relay
+design, `--mode hook`/`--tools-file`). That many concurrent `claude` processes saturate
+the account's concurrent-request capacity, so new claude-p spawns StopTimeout/hang —
+exactly the G9 contention failure mode at higher order. After reaping the abandoned
+processes, int-smoke passed 3/3 cleanly. IMPLICATIONS: (1) the int suite is reliable only
+in an environment without competing `claude` processes — CI runs the deterministic
+`test:unit` (no real claude-p) for this reason; (2) this is concrete evidence for the
+same-provider concurrency-cap follow-up below and the persistent-process follow-up
+(fewer, longer-lived spawns reduce contention); (3) SDK-era int-script timeouts were
+widened for claude-p's boot-tax (smoke 60→150s, multi-turn/cache 180→420s, tool-message
+30→90s) so normal slowness no longer trips exit-124.
+
 ### Same-provider concurrency cap (G9 follow-up; recommended)
 
 G9 showed claude-p `StopTimeout` rates climb steeply with concurrent boots (2-way

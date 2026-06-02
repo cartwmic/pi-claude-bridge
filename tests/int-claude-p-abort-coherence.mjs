@@ -100,12 +100,15 @@ async function fullTurn(h, message, timeout = 90_000) {
 	return { text: collector.stop(), stopReason };
 }
 
-// Drive one abortable turn. Two modes:
-//   - { abortAfterSendMs }: abort at a FIXED wall-clock after send. Reliable for
-//     TEXT turns (claude-p buffers text, so aborting before the buffered burst
-//     deterministically yields an aborted turn — no completion race).
+// Drive one abortable turn. The deterministic mode on claude-p:
 //   - { waitFor, runMs }: wait for `waitFor` (e.g. tool_execution_start), let it
-//     run `runMs`, then abort. Used for the held-TOOL case (deterministic).
+//     run `runMs`, then abort. Used for the held-TOOL case — the ONLY reliable
+//     mid-turn abort window on claude-p (it buffers turn text per-block, so a
+//     fixed-wall-clock text abort flaky-races the buffered burst). Both S7 and
+//     S8 use this mode.
+//   - { abortAfterSendMs }: abort at a FIXED wall-clock after send. Retained as a
+//     generic option but NOT reliable for claude-p text turns (buffered text →
+//     completion race); prefer the held-tool { waitFor, runMs } mode.
 async function abortableTurn(h, message, { waitFor, runMs, abortAfterSendMs }) {
 	const collector = h.collectText();
 	let stopReason = null;
@@ -164,42 +167,63 @@ describe("claude-p abort coherence — G5 (S7/S8)", () => {
 	// HELD-TOOL case (G5(b)/S8 below), where the wall-clock delay lives in pi's
 	// tool execution and the abort lands deterministically mid-round.
 	//
-	// This test therefore verifies the ABORT MECHANICS that ARE achievable for a
-	// text turn — clean SIGINT, prompt resolves promptly as aborted, no orphan,
-	// next turn proceeds without crash — and records the partial-recall gap as an
-	// ESCALATION (it.skip below makes the unachievable assertion visible without
-	// fake-passing).
-	it("G5(a)/S7: aborting a text turn is clean and the next turn proceeds (mechanics)", { timeout: TEST_TIMEOUT }, async () => {
-		const h = makeHarness("claude-p-abort-coherence-s7", ["--model", "claude-bridge/claude-haiku-4-5"]);
+	// This test therefore verifies the ABORT MECHANICS — clean SIGINT, prompt
+	// resolves promptly as aborted, no orphan, next turn proceeds without crash —
+	// and records the partial-recall gap as an ESCALATION (it.skip below makes the
+	// unachievable assertion visible without fake-passing).
+	//
+	// MECHANICS TRIGGER = HELD TOOL (not text streaming): the abort point here is
+	// a parked SlowTool, NOT a mid-text-stream moment. claude-p buffers turn text
+	// per-block (a "count to 5000" turn arrives as one buffered burst), so a
+	// fixed-wall-clock text abort is non-deterministic — the turn flaky-completes
+	// before the abort lands. The deterministic mid-turn window on claude-p is a
+	// HELD TOOL CALL: pi parks on SlowTool's promise for the full duration, so the
+	// abort reliably lands while the turn is genuinely in-flight (same pattern as
+	// the reliable S8 sub-test below). The MECHANICS asserted are identical — only
+	// the trigger changed from text-streaming to a held tool.
+	it("G5(a)/S7: aborting a turn is clean and the next turn proceeds (mechanics)", { timeout: TEST_TIMEOUT }, async () => {
+		const h = makeHarness("claude-p-abort-coherence-s7", [
+			"-e",
+			"./tests/fixtures/slow-tool-extension.ts",
+			"--model",
+			"claude-bridge/claude-haiku-4-5",
+		]);
 		h.start();
 		await sleep(2000);
 		const baseline = liveClaudeProcs();
 		try {
 			await fullTurn(h, "Reply with the single word READY.", 90_000);
 
-			// Abort a long text turn. We accept either outcome (full buffered text
-			// or empty partial) — the point is the abort path is clean.
+			// Abort while parked on a long held tool — the deterministic mid-turn
+			// window on claude-p. Retry until SlowTool actually executes (proves the
+			// turn is genuinely mid-flight when we abort).
 			let aborted = false;
 			let lastErr = null;
 			for (let attempt = 1; attempt <= 3 && !aborted; attempt++) {
+				let sawToolExec = false;
+				const removeExec = h.addListener((m) => {
+					if (m.type === "tool_execution_start") sawToolExec = true;
+				});
 				try {
-					// Abort at a fixed wall-clock after send — before claude-p's buffered
-					// text burst arrives — so the abort deterministically lands on an
-					// in-flight (not-yet-completed) turn.
 					const t1 = await abortableTurn(
 						h,
-						"Count from 1 to 5000, one number per line. Output only the numbers. Do not call any tools.",
-						{ abortAfterSendMs: 900 },
+						"Call SlowTool with seconds=30. Do not say anything before calling it — just call the tool.",
+						{
+							waitFor: () => h.waitForEvent("tool_execution_start", 40_000),
+							runMs: 700, // abort WHILE held (30s >> 0.7s)
+						},
 					);
-					console.log(`  S7 text-abort stopReason=${t1.stopReason}`);
-					if (t1.stopReason === "aborted") aborted = true;
-					else lastErr = new Error(`stopReason=${t1.stopReason} (turn completed before abort)`);
+					console.log(`  S7 held-abort stopReason=${t1.stopReason} sawToolExec=${sawToolExec}`);
+					if (sawToolExec && t1.stopReason === "aborted") aborted = true;
+					else lastErr = new Error(`sawToolExec=${sawToolExec} stopReason=${t1.stopReason} (turn not aborted mid-tool)`);
 				} catch (err) {
 					lastErr = err;
+				} finally {
+					removeExec();
 				}
 				if (!aborted) await sleep(800);
 			}
-			assert.ok(aborted, `could not land a clean text abort after 3 attempts: ${lastErr?.message}`);
+			assert.ok(aborted, `could not land a clean held-tool abort after 3 attempts: ${lastErr?.message}`);
 
 			// Next turn must proceed without crash and produce a marker (proves the
 			// post-abort dispatch path is functional even if partial-recall isn't).
@@ -209,7 +233,7 @@ describe("claude-p abort coherence — G5 (S7/S8)", () => {
 				if (/kiwi-?s7/i.test(t2.text)) marker = t2.text;
 				else await sleep(800);
 			}
-			assert.ok(marker, "next turn after text abort did not produce marker (post-abort dispatch broken)");
+			assert.ok(marker, "next turn after abort did not produce marker (post-abort dispatch broken)");
 
 			const dbg = readFileSync(h.DEBUG_LOG, "utf8");
 			assert.match(dbg, /claudeP\.lifecycle\.abort|onAbort\[claude-p\]/, "expected claude-p abort lifecycle in S7");
@@ -223,7 +247,7 @@ describe("claude-p abort coherence — G5 (S7/S8)", () => {
 			}
 			assert.equal(orphans.length, 0, `orphan process(es) survived S7 abort:\n${orphans.join("\n")}`);
 
-			console.log("  G5(a)/S7 MECHANICS PASS — clean text abort, next turn dispatched, no orphan.");
+			console.log("  G5(a)/S7 MECHANICS PASS — clean held-tool abort, next turn dispatched, no orphan.");
 			console.log("  G5(a)/S7 PARTIAL-RECALL: NOT achievable on claude-p (buffered text + warm-resume re-echo) — ESCALATED as design gap (see SCENARIO_RESULTS.md).");
 		} finally {
 			await h.stop();

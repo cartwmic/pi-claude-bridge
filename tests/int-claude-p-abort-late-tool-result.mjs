@@ -94,6 +94,12 @@ describe("claude-p late tool-result after abort (T1.14)", () => {
 		}
 
 		// Drive the held-tool abort, retrying until SlowTool actually executes.
+		// The abort trigger is `tool_execution_start` (NOT a text_delta): on
+		// claude-p the deterministic mid-turn window is a HELD TOOL — pi parks on
+		// SlowTool's promise for the full duration, so the abort reliably lands
+		// while the turn is genuinely in-flight. (claude-p buffers turn text
+		// per-block, so a text_delta is not a reliable mid-stream signal.) We use
+		// a long hold (30s) so the park window is generously sustained.
 		let toolAborted = false;
 		let lastErr = null;
 		for (let attempt = 1; attempt <= 3 && !toolAborted; attempt++) {
@@ -102,7 +108,7 @@ describe("claude-p late tool-result after abort (T1.14)", () => {
 				if (m.type === "tool_execution_start") sawToolExec = true;
 			});
 			try {
-				await sendFreshPrompt("Call SlowTool with seconds=15. Just call the tool, say nothing first.");
+				await sendFreshPrompt("Call SlowTool with seconds=30. Just call the tool, say nothing first.");
 				await waitForEvent("tool_execution_start", 40_000);
 				await sleep(700); // tool held; abort while parked
 				const idle = waitForEvent("agent_end", 30_000);

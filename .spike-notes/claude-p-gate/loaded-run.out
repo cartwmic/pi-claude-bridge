@@ -1,0 +1,26 @@
+
+=== claude-p HANG repro ===
+model=claude-haiku-4-5 turns=12 timeout=45s bin=/Volumes/Workshop/git/pi-claude-bridge/node_modules/.bin/claude-p
+TMPDIR=/tmp/claude-501  debugDir=/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate/hang-repro-claude-haiku-4-5-2026-06-02T19-19-37-828Z
+
+[ok  ] turn  1  PASS         wall=3.1s exit=0 sig=null firstLine=1242ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  2  PASS         wall=3.1s exit=0 sig=null firstLine=1323ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  3  PASS         wall=2.9s exit=0 sig=null firstLine=1255ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  4  PASS         wall=3.3s exit=0 sig=null firstLine=1269ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  5  PASS         wall=3.4s exit=0 sig=null firstLine=1613ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  6  PASS         wall=3.1s exit=0 sig=null firstLine=1232ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  7  PASS         wall=3.2s exit=0 sig=null firstLine=1289ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  8  PASS         wall=3.5s exit=0 sig=null firstLine=1300ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  9  PASS         wall=3.0s exit=0 sig=null firstLine=1282ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 10  PASS         wall=3.7s exit=0 sig=null firstLine=1720ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 11  PASS         wall=3.1s exit=0 sig=null firstLine=1292ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 12  PASS         wall=3.5s exit=0 sig=null firstLine=1285ms user=Y asst=Y result=Y missed=n/a census=1->1
+
+=== SUMMARY (claude-haiku-4-5) ===
+failures: 0/12
+by verdict: {"PASS":12}
+failures by missed-hook: {}
+true-hangs (never exited past --timeout): 0
+
+full per-turn logs: /Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate/hang-repro-claude-haiku-4-5-2026-06-02T19-19-37-828Z
+summary ndjson: /Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate/hang-repro-claude-haiku-4-5-2026-06-02T19-19-37-828Z/summary.ndjson

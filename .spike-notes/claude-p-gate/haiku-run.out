@@ -1,0 +1,47 @@
+
+=== claude-p HANG repro ===
+model=claude-haiku-4-5 turns=30 timeout=45s bin=/Volumes/Workshop/git/pi-claude-bridge/node_modules/.bin/claude-p
+TMPDIR=/tmp/claude-501  debugDir=/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate/hang-repro-claude-haiku-4-5-2026-06-02T19-14-06-168Z
+
+[ok  ] turn  1  PASS         wall=5.0s exit=0 sig=null firstLine=1026ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  2  PASS         wall=3.1s exit=0 sig=null firstLine=1190ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  3  PASS         wall=2.8s exit=0 sig=null firstLine=1062ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  4  PASS         wall=3.1s exit=0 sig=null firstLine=1068ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  5  PASS         wall=4.5s exit=0 sig=null firstLine=1005ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  6  PASS         wall=2.8s exit=0 sig=null firstLine=936ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  7  PASS         wall=2.7s exit=0 sig=null firstLine=1026ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  8  PASS         wall=2.7s exit=0 sig=null firstLine=1017ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn  9  PASS         wall=2.8s exit=0 sig=null firstLine=987ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 10  PASS         wall=2.7s exit=0 sig=null firstLine=1020ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 11  PASS         wall=3.9s exit=0 sig=null firstLine=1070ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 12  PASS         wall=3.4s exit=0 sig=null firstLine=1045ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 13  PASS         wall=3.1s exit=0 sig=null firstLine=963ms user=Y asst=Y result=Y missed=n/a census=1->2
+        LEAK? census grew. after-lines:
+        28619 67016       00:01 /bin/zsh -c source /Users/cartwmic/.claude/shell-snapshots/snapshot-zsh-1780281000923-a8z7fa.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'echo "=== g9 concurrent results ===" && sed -n '"'"'1,60p'"'"' .spike-notes/claude-p-gate/g9-concurrent-results.md' < /dev/null && pwd -P >| /tmp/claude-457b-cwd
+        67016 96864 01-16:45:31 claude --dangerously-skip-permissions -c
+[ok  ] turn 14  PASS         wall=3.1s exit=0 sig=null firstLine=975ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 15  PASS         wall=2.8s exit=0 sig=null firstLine=993ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 16  PASS         wall=3.6s exit=0 sig=null firstLine=945ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 17  PASS         wall=2.8s exit=0 sig=null firstLine=1011ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 18  PASS         wall=3.1s exit=0 sig=null firstLine=1043ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 19  PASS         wall=2.9s exit=0 sig=null firstLine=1034ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 20  PASS         wall=3.0s exit=0 sig=null firstLine=1034ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 21  PASS         wall=3.1s exit=0 sig=null firstLine=1049ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 22  PASS         wall=3.1s exit=0 sig=null firstLine=1060ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 23  PASS         wall=2.9s exit=0 sig=null firstLine=980ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 24  PASS         wall=2.9s exit=0 sig=null firstLine=1044ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 25  PASS         wall=2.9s exit=0 sig=null firstLine=1096ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 26  PASS         wall=3.4s exit=0 sig=null firstLine=1048ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 27  PASS         wall=3.0s exit=0 sig=null firstLine=1147ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 28  PASS         wall=2.9s exit=0 sig=null firstLine=1072ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 29  PASS         wall=3.0s exit=0 sig=null firstLine=976ms user=Y asst=Y result=Y missed=n/a census=1->1
+[ok  ] turn 30  PASS         wall=2.8s exit=0 sig=null firstLine=1004ms user=Y asst=Y result=Y missed=n/a census=1->1
+
+=== SUMMARY (claude-haiku-4-5) ===
+failures: 0/30
+by verdict: {"PASS":30}
+failures by missed-hook: {}
+true-hangs (never exited past --timeout): 0
+
+full per-turn logs: /Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate/hang-repro-claude-haiku-4-5-2026-06-02T19-14-06-168Z
+summary ndjson: /Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate/hang-repro-claude-haiku-4-5-2026-06-02T19-14-06-168Z/summary.ndjson

@@ -123,6 +123,38 @@ same-provider concurrency-cap follow-up below and the persistent-process follow-
 widened for claude-p's boot-tax (smoke 60→150s, multi-turn/cache 180→420s, tool-message
 30→90s) so normal slowness no longer trips exit-124.
 
+### Hang root cause — CONFIRMED (2026-06-02, `hang-rootcause.md`, 132-turn diagnosis)
+
+The intermittent int-suite "hangs" are claude-p's **missed `Stop`-hook** failure mode.
+claude-p gates emission of the terminal `result` (and exit 0) on a `Stop` hook event
+delivered over a per-invocation named FIFO (generated relay script via `--settings`).
+When the event is missed, claude-p waits until `--timeout` then exits **code 2
+`StopTimeout`** with NO `result` (the bridge's `stream.ts` classifies that as a driver
+error → D33 retry). Because `CLAUDE_P_TIMEOUT_SECONDS=600` » the ~150s test timeouts, a
+wedged turn READS as a hang (the test's `timeout` kills pi first → exit 124). Evidence
+that resolves the prior ambiguity:
+- **The trigger is concurrent claude-p BOOT contention** (Ink-probe/hook/FIFO timings
+  racing the scheduler), not concurrency count per se; it is load-window-dependent.
+- **At concurrency 1: 0 failures in 72 turns** (haiku + sonnet, even under 2× CPU
+  saturation). No haiku/sonnet reliability difference; no fd/process leak; failure rate
+  does not climb with turn count.
+- **claude-p always EXITS (code 2 at `--timeout`), never truly hangs forever** — so the
+  choice is only WHEN to give up, not whether the process is unkillable.
+- Dominant missed event is `Stop` (not `SessionStart`). A second `--debug`-only gate
+  exists (Ink-quiescence typing + transcript-tail open with retries) that can fail the
+  same way.
+
+CONSEQUENCE for the test suite: serializing the int files (`--test-concurrency=1`,
+already applied) removes the concurrent-boot trigger — the suite is reliable at c1. The
+proper ROOT-CAUSE fixes are follow-ups: the **persistent-process model** (pays boot +
+hook registration ONCE per session, removing the per-turn boot race — primary), and
+optionally a **claude-p fork** adding a transcript-tail turn-end fallback for a missed
+`Stop`. A bridge **idle-watchdog** (no-output-for-N-sec while not parked → abort → D33
+retry, held-round-aware) + a modest `--timeout` trim are an optional resilience/UX
+mitigation (caps a production Stop-miss hang at N seconds instead of 600s) — NOT a
+root-cause fix and NOT required for this change. `--timeout` cannot be globally short
+(G7: it counts held-tool wall-time).
+
 ### Same-provider concurrency cap (G9 follow-up; recommended)
 
 G9 showed claude-p `StopTimeout` rates climb steeply with concurrent boots (2-way

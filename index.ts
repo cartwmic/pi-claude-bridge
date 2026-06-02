@@ -1564,6 +1564,12 @@ function updateUsageFromDriver(frame: QueryFrame, usage: { input: number; output
 	output.usage.cacheWrite = usage.cacheWrite;
 	output.usage.totalTokens = usage.totalTokens;
 	calculateCost(frame.model, output.usage);
+	// Mirror the SDK path's usage log line (index.ts updateUsage) so observability +
+	// cache-shape assertions work identically across both drivers.
+	frame.log.info(
+		{ in: output.usage.input, out: output.usage.output, cacheRead: output.usage.cacheRead, cacheWrite: output.usage.cacheWrite },
+		`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} model=${frame.model.id}`,
+	);
 }
 
 /**

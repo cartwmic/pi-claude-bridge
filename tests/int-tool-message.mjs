@@ -7,7 +7,10 @@ import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const TEST_TIMEOUT = 30_000;
+// claude-p adds ~5s interactive-boot per spawn (steer/abort tests do 2 spawns) +
+// possible D33 StopTimeout retry, so the SDK-era 30s is too tight. Override via
+// TOOL_MSG_TIMEOUT.
+const TEST_TIMEOUT = Number(process.env.TOOL_MSG_TIMEOUT ?? 90_000);
 
 const harness = createRpcHarness({
 	name: "tool-message",
@@ -77,7 +80,7 @@ describe("tool-message integration", () => {
 	// index.ts. Validation of the new semantics is via the tmux scenario
 	// harness, not these unit-style tests.
 
-	it("steer during text response (no tool call) completes both turns", { timeout: 30_000 }, async () => {
+	it("steer during text response (no tool call) completes both turns", { timeout: TEST_TIMEOUT }, async () => {
 		// Steer during text-only streaming: the assistant is generating text (no tool
 		// calls), a steer arrives, and pi delivers it after the current turn ends.
 		// Risk: if activeQuery hasn't been cleared by the time pi calls streamSimple
@@ -102,7 +105,7 @@ describe("tool-message integration", () => {
 		assert.match(text.toLowerCase(), /pineapple/);
 	});
 
-	it("steer during tool execution is visible to assistant", { timeout: 20_000 }, async () => {
+	it("steer during tool execution is visible to assistant", { timeout: TEST_TIMEOUT }, async () => {
 		// Bug: when a steer arrives during tool execution, pi drains it at the turn
 		// boundary and injects it into context alongside the tool result. The bridge
 		// sees activeQuery=true, enters tool-result-delivery mode, extracts the tool

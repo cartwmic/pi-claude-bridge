@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke tests for pi-claude-bridge provider.
-# Requires: pi CLI, Claude Code (for Agent SDK subprocess).
+# Requires: pi CLI, the `claude` + `claude-p` binaries (claude-p drives the turn).
 
 source "$(dirname "$0")/lib/bash-setup.sh"
 
@@ -8,7 +8,10 @@ echo "=== smoke-test.sh ==="
 
 setup_test_env "smoke-test"
 
-TIMEOUT=60
+# claude-p adds ~5s interactive-boot per turn vs the old SDK path and may retry a
+# transient StopTimeout (D33), so a single provider turn needs more headroom than the
+# SDK's 60s. Override via SMOKE_TEST_TIMEOUT.
+TIMEOUT="${SMOKE_TEST_TIMEOUT:-150}"
 PASS=0
 FAIL=0
 

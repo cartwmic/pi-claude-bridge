@@ -11,7 +11,10 @@ require_command jq
 
 setup_test_env "multi-turn" ".ndjson"
 
-TIMEOUT=180
+# claude-p adds ~5s interactive-boot per turn + possible D33 StopTimeout retry; a
+# multi-turn + tool conversation needs more headroom than the SDK's 180s. Override via
+# MULTI_TURN_TIMEOUT.
+TIMEOUT="${MULTI_TURN_TIMEOUT:-420}"
 PASS=0
 FAIL=0
 EXPECTED_VERSION=$(jq -r .version "$DIR/package.json")

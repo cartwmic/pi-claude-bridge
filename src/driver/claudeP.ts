@@ -307,6 +307,14 @@ export interface SpawnClaudePOptions {
 	signal?: AbortSignal;
 	/** Override the abort grace window (ms) — tests use a tight value. */
 	graceMs?: number;
+	/**
+	 * Warm-resume RE-ECHO suppression (G5). When true, the parser emits ONLY the
+	 * live turn (final segment after the last user-prompt line), discarding the
+	 * replayed transcript prefix claude-p drains on `--resume`. Default/false → no
+	 * suppression (fresh turns unaffected). See
+	 * ClaudePStreamParserOptions.suppressResumeReplay. Only set on warm-resume turns.
+	 */
+	suppressResumeReplay?: boolean;
 }
 
 export interface ClaudePLogger extends StreamLogger {
@@ -384,6 +392,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			opts.onEvent(event);
 		},
 		logger,
+		suppressResumeReplay: opts.suppressResumeReplay,
 	});
 
 	// If binPath points at a JS launcher (claude-p ships its bin as bin/claude-p.js),

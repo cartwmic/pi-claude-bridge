@@ -87,6 +87,25 @@ function resultLine(usage) {
 	return { type: "result", subtype: "success", is_error: false, usage };
 }
 
+// A real user PROMPT line: claude-p renders the prompt content as a STRING.
+function userPrompt(text) {
+	return { type: "user", message: { role: "user", content: text } };
+}
+// Inter-segment / lifecycle noise claude-p flushes around replayed turns.
+function noiseLine(type) {
+	return { type };
+}
+function lastPromptLine(lastPrompt) {
+	return { type: "last-prompt", lastPrompt, leafUuid: "x", sessionId: "s" };
+}
+function turnLifecycleNoise() {
+	return [
+		line(noiseLine("mode")),
+		line({ type: "system", subtype: "stop_hook_summary" }),
+		line({ type: "system", subtype: "turn_duration" }),
+	].join("\n");
+}
+
 // ── 1. Real fixture replay ─────────────────────────────────────────────────
 
 describe("real fixture replay (expC-claude-p-stream.jsonl)", () => {
@@ -450,5 +469,192 @@ describe("thinking blocks", () => {
 		const th = events.filter((e) => e.kind === "thinking-delta");
 		assert.equal(th.length, 1);
 		assert.equal(th[0].text, "let me think");
+	});
+});
+
+// ── 10. warm-resume RE-ECHO suppression (G5) ───────────────────────────────
+//
+// On a `--resume` turn claude-p drains the FULL replayed transcript to stdout
+// before the live turn. With suppressResumeReplay:true the parser emits ONLY the
+// LIVE turn — the final segment after the last user-prompt line, incl. its tool
+// rounds + final text + terminal usage/done. Default/false → no suppression. The
+// "last segment" rule is robust to prior-prompt-count drift (abort) and to the
+// SAME prompt text recurring across turns (both break a count/text boundary).
+
+function newParserSuppressed(logger) {
+	const events = [];
+	const parser = new ClaudePStreamParser({
+		logger: logger ?? makeLogger(),
+		onEvent: (e) => events.push(e),
+		suppressResumeReplay: true,
+	});
+	return { parser, events };
+}
+
+// Synthetic --resume stream: 2 replayed prompt turns, then a LIVE turn that runs a
+// tool round (assistant text → bridged tool_use → tool_result user line → final
+// text) and ends with the terminal result. Mirrors the verified schema in
+// g4-singleshot-raw/e1.raw.txt (user-string prompts, last-prompt + noise between
+// segments) plus the tool-round shape from g1-multiround-stream.jsonl.
+function resumeStream() {
+	return [
+		// ── replayed turn 1 ──
+		line(noiseLine("mode")),
+		line(userPrompt("My favorite number is 4242. Acknowledge with just 'ok'.")),
+		line(assistantBlocks(thinkingBlock("hmm"))),
+		line(assistantBlocks(textBlock("ok"))),
+		turnLifecycleNoise(),
+		line(lastPromptLine("My favorite number is 4242. Acknowledge with just 'ok'.")),
+		// ── replayed turn 2 ──
+		line(userPrompt("What is my favorite number? Reply with just the number.")),
+		line(assistantBlocks(textBlock("4242"))),
+		turnLifecycleNoise(),
+		line(lastPromptLine("What is my favorite number? Reply with just the number.")),
+		// ── LIVE turn (3rd prompt) with a tool round ──
+		line(userPrompt("Use the step tool then tell me the result.")),
+		line(assistantBlocks(textBlock("LIVE: let me call the tool"))),
+		line(assistantBlocks(toolUseBlock("toolu_live", "mcp__custom-tools__step", { n: 1 }))),
+		userToolResult("toolu_live", "stepped"),
+		line(assistantBlocks(textBlock("LIVE: done, result is 1"))),
+		turnLifecycleNoise(),
+		line(resultLine({ input_tokens: 10, output_tokens: 3 })),
+	].join("\n") + "\n";
+}
+
+describe("warm-resume RE-ECHO suppression (G5)", () => {
+	it("suppresses replayed history, emits ONLY the live turn (text + tool + final + usage/done)", () => {
+		const { parser, events } = newParserSuppressed();
+		parser.write(resumeStream());
+
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		// Replayed assistant text ("ok", "4242") MUST NOT re-echo.
+		assert.ok(!texts.includes("ok"), 'replayed "ok" must be suppressed');
+		assert.ok(!texts.includes("4242"), 'replayed "4242" must be suppressed');
+		// Only the live-turn text survives, in order.
+		assert.deepEqual(texts, ["LIVE: let me call the tool", "LIVE: done, result is 1"]);
+
+		// The live tool_use IS observed (suppression must not break live tool obs).
+		const tools = events.filter((e) => e.kind === "tool-use");
+		assert.equal(tools.length, 1);
+		assert.equal(tools[0].toolUseId, "toolu_live");
+		assert.equal(tools[0].name, "mcp__custom-tools__step");
+
+		// Live events are flushed BEFORE the terminal usage/done, preserving order.
+		const kinds = events.map((e) => e.kind);
+		assert.deepEqual(kinds, ["text-delta", "tool-use", "text-delta", "usage", "done"]);
+
+		// Terminal usage + done are NEVER suppressed.
+		const usage = events.find((e) => e.kind === "usage");
+		assert.ok(usage, "terminal usage emitted");
+		assert.equal(usage.usage.input, 10);
+		assert.equal(usage.usage.output, 3);
+		assert.ok(events.some((e) => e.kind === "done" && e.reason === "result"), "terminal done emitted");
+	});
+
+	it("tool_result user lines within the live turn do NOT discard live content (text before tool_result kept)", () => {
+		const { parser, events } = newParserSuppressed();
+		parser.write(resumeStream());
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		// "LIVE: let me call the tool" precedes the tool_result and MUST be present.
+		assert.ok(texts.includes("LIVE: let me call the tool"));
+		assert.equal(texts.length, 2);
+	});
+
+	it("suppressResumeReplay false (default) → NO suppression: fresh-turn behavior unchanged", () => {
+		const { parser, events } = newParser(makeLogger());
+		parser.write(resumeStream());
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		assert.deepEqual(texts, ["ok", "4242", "LIVE: let me call the tool", "LIVE: done, result is 1"]);
+		assert.equal(events.filter((e) => e.kind === "tool-use").length, 1);
+		assert.ok(events.some((e) => e.kind === "done" && e.reason === "result"));
+	});
+
+	it("robust to DUPLICATE prompt text recurring across turns (the S8 retry case)", () => {
+		// The SAME recall prompt is sent on turn 1 (replayed) and the live turn. A
+		// first-match-text or count boundary would mis-fire on the replayed copy and
+		// re-echo turn-1's answer; the "last segment" rule cannot.
+		const dup = "Did the SlowTool finish? Answer in one sentence.";
+		const stream = [
+			line(userPrompt("Call SlowTool with seconds=10.")),
+			line(assistantBlocks(textBlock("calling..."))),
+			turnLifecycleNoise(),
+			line(lastPromptLine("Call SlowTool with seconds=10.")),
+			line(userPrompt(dup)),                                  // replayed copy
+			line(assistantBlocks(textBlock("It completed successfully."))), // STALE fabrication
+			turnLifecycleNoise(),
+			line(lastPromptLine(dup)),
+			line(userPrompt(dup)),                                  // LIVE copy (identical text)
+			line(assistantBlocks(textBlock("It did not complete; I never called it."))),
+			turnLifecycleNoise(),
+			line(resultLine({ input_tokens: 2, output_tokens: 2 })),
+		].join("\n") + "\n";
+		const { parser, events } = newParserSuppressed();
+		parser.write(stream);
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		// The stale "It completed successfully." re-echo MUST be gone.
+		assert.ok(!texts.some((t) => /completed successfully/i.test(t)), "stale fabrication must not re-echo");
+		assert.deepEqual(texts, ["It did not complete; I never called it."]);
+		assert.ok(events.some((e) => e.kind === "done" && e.reason === "result"));
+	});
+
+	it("robust to prompt-count drift (abort off-by-one): emits the live segment regardless of prior count", () => {
+		// Resume transcript persisted 1 prior prompt; whatever pi's history count is,
+		// the parser emits the segment after the LAST prompt — no count needed.
+		const stream = [
+			line(userPrompt("First persisted prior prompt.")),
+			line(assistantBlocks(textBlock("ok"))),
+			turnLifecycleNoise(),
+			line(lastPromptLine("First persisted prior prompt.")),
+			line(userPrompt("KIWI-LIVE marker prompt")),
+			line(assistantBlocks(textBlock("LIVE answer"))),
+			turnLifecycleNoise(),
+			line(resultLine({ input_tokens: 1, output_tokens: 1 })),
+		].join("\n") + "\n";
+		const { parser, events } = newParserSuppressed();
+		parser.write(stream);
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		assert.deepEqual(texts, ["LIVE answer"]);
+		assert.ok(events.some((e) => e.kind === "done" && e.reason === "result"));
+	});
+
+	it("aborted warm-resume (no terminal result): live partial flushed on endOfStream, replay prefix discarded", () => {
+		// SIGINT abort mid live turn → no `result`. The buffered LIVE partial must be
+		// flushed (for commitAbortedPartial) and the replayed prefix discarded.
+		const stream = [
+			line(userPrompt("Prior prompt.")),
+			line(assistantBlocks(textBlock("PRIOR-DONE"))),
+			turnLifecycleNoise(),
+			line(lastPromptLine("Prior prompt.")),
+			line(userPrompt("Live prompt — count slowly.")),
+			line(assistantBlocks(textBlock("LIVE partial 1, 2, 3"))),
+			// NO turn lifecycle / result — aborted here.
+		].join("\n") + "\n";
+		const { parser, events } = newParserSuppressed();
+		parser.write(stream);
+		// Nothing emitted yet (buffered) until endOfStream.
+		assert.equal(events.length, 0, "live content stays buffered until terminal/endOfStream");
+		parser.endOfStream({ aborted: true });
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		assert.ok(!texts.includes("PRIOR-DONE"), "replayed prior text must be discarded on abort");
+		assert.deepEqual(texts, ["LIVE partial 1, 2, 3"], "live partial flushed on abort");
+	});
+
+	it("single prior prompt (warm 2nd turn, no tools) → emits only the 2nd turn's text", () => {
+		const { parser, events } = newParserSuppressed();
+		const stream = [
+			line(noiseLine("mode")),
+			line(userPrompt("My favorite number is 4242. Acknowledge with just 'ok'.")),
+			line(assistantBlocks(textBlock("ok"))),
+			turnLifecycleNoise(),
+			line(lastPromptLine("My favorite number is 4242. Acknowledge with just 'ok'.")),
+			line(userPrompt("What is my favorite number?")),
+			line(assistantBlocks(textBlock("4242"))),
+			turnLifecycleNoise(),
+			line(resultLine({ input_tokens: 4, output_tokens: 2 })),
+		].join("\n") + "\n";
+		parser.write(stream);
+		const texts = events.filter((e) => e.kind === "text-delta").map((e) => e.text);
+		assert.deepEqual(texts, ["4242"], 'turn-1 "ok" suppressed, only live "4242" emitted');
+		assert.ok(events.some((e) => e.kind === "done" && e.reason === "result"));
 	});
 });

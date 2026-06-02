@@ -1867,9 +1867,19 @@ async function startFreshQueryClaudeP(
 
 	// Spawn via the resilience wrapper. POLICY: retry only while no tools/call
 	// has been routed to pi (router.everRoutedToolCall) — D33 idempotency gate.
+	// G5 warm-resume RE-ECHO suppression: on a `--resume` spawn claude-p drains the
+	// FULL replayed transcript to stdout before the live turn, so without this the
+	// parser would re-emit every prior assistant block, prepending the whole prior
+	// conversation to pi's new turn. The parser instead emits ONLY the live turn —
+	// the final segment after the last user-prompt line. This "last segment" rule is
+	// robust to (a) the resumed transcript holding a different prior-prompt count
+	// than pi's history (e.g. after an aborted turn), and (b) identical prompt text
+	// recurring across turns. Fresh (cold) turns pass false → no suppression.
+	const suppressResumeReplay = useResume;
+
 	const handle = _spawnClaudePFactory(
 		cfg,
-		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any, binPath: resolveClaudePBin() },
+		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay },
 		{
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,

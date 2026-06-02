@@ -107,6 +107,35 @@ export interface ClaudePStreamParserOptions {
 	onEvent: (event: DriverStreamEvent) => void;
 	/** Optional logger for warn-level drift/malformed notices. Defaults to no-op. */
 	logger?: StreamLogger;
+	/**
+	 * Warm-resume RE-ECHO suppression (G5). On a `--resume` turn, claude-p 0.1.0
+	 * drains the FULL replayed transcript to stdout before the live turn, so without
+	 * this every prior assistant text/tool block would be re-emitted as a new event,
+	 * corrupting pi's turn output (the whole transcript prepended to the new turn).
+	 *
+	 * When `true`, the parser emits ONLY the LIVE turn: the segment of content
+	 * AFTER the LAST real user-PROMPT line, up to the terminal `result`. It does so
+	 * by buffering content events and DISCARDING the buffer each time a new real
+	 * user-prompt line arrives — so whatever survives at the terminal `result` is
+	 * exactly the final (live) turn's content, which is then flushed in order,
+	 * followed by usage + done.
+	 *
+	 * A "real user-PROMPT line" is a `type:"user"` line whose `message.content` is a
+	 * string OR an array carrying NO `tool_result` blocks. A tool_result `user` line
+	 * (content = array of `tool_result` blocks) is NOT a prompt boundary — it does
+	 * not discard the buffer — so a live turn's tool rounds are preserved intact.
+	 *
+	 * This "emit only the last segment" rule is robust where a prompt-count or
+	 * prompt-text boundary is not: it is immune to (a) the resumed transcript
+	 * persisting a different number of prior prompts than pi's history (e.g. after
+	 * an aborted turn), and (b) the SAME prompt text recurring across turns (a count
+	 * or first-match-text boundary would mis-fire; "last segment" cannot).
+	 *
+	 * Default `false`/undefined → suppression DISABLED: events emit live as they are
+	 * parsed (byte-for-byte identical to pre-G5 behavior). Fresh turns and all
+	 * existing callers are unaffected. Only warm-resume turns should pass `true`.
+	 */
+	suppressResumeReplay?: boolean;
 }
 
 /** Information about how the claude-p subprocess ended. */
@@ -139,9 +168,24 @@ export class ClaudePStreamParser {
 	/** True once the stream has been finalized (endOfStream called). */
 	private ended = false;
 
+	/**
+	 * Warm-resume RE-ECHO suppression (G5). When true, content events are buffered
+	 * and the buffer is DISCARDED on each new real user-prompt line, so only the
+	 * LIVE turn (the final segment after the last prompt) survives to be flushed at
+	 * the terminal `result`. False → events emit live (fresh / default behavior).
+	 */
+	private readonly suppressResumeReplay: boolean;
+	/**
+	 * Buffer of live-turn content events held back during warm-resume suppression.
+	 * Reset to [] whenever a new real user-prompt line arrives (discarding any
+	 * replayed prior-turn content), then flushed in order at the terminal `result`.
+	 */
+	private liveTurnBuffer: DriverStreamEvent[] = [];
+
 	constructor(opts: ClaudePStreamParserOptions) {
 		this.onEvent = opts.onEvent;
 		this.logger = opts.logger ?? NOOP_LOGGER;
+		this.suppressResumeReplay = opts.suppressResumeReplay === true;
 	}
 
 	/**
@@ -176,6 +220,16 @@ export class ClaudePStreamParser {
 		this.buffer = "";
 		if (tail.length > 0) {
 			this.handleLine(tail);
+		}
+
+		// Warm-resume suppression: if the stream ends with no terminal `result`
+		// (premature exit OR abort), flush whatever live-turn content was buffered
+		// so the aborted partial is the LIVE turn's text — NOT lost, and NOT the
+		// replayed prefix. (On a clean turn the result handler already flushed.)
+		if (this.suppressResumeReplay && !this.resultSeen && this.liveTurnBuffer.length > 0) {
+			const buffered = this.liveTurnBuffer;
+			this.liveTurnBuffer = [];
+			for (const ev of buffered) this.onEvent(ev);
 		}
 
 		this.ended = true;
@@ -266,16 +320,81 @@ export class ClaudePStreamParser {
 				this.handleAssistant(rec);
 				return;
 			case "user":
-				// `user` lines carry tool_result blocks (and the initial prompt
-				// echo). The held-call round-trip is owned by the shim+router
-				// (D32), so we emit NO event for tool_result here — it is purely
-				// observational and would duplicate the shim's authoritative view.
-				// Surfacing nothing keeps the turn in flight without side effects.
+				// `user` lines carry either a real user PROMPT or tool_result blocks.
+				// Classify: a real prompt advances the warm-resume suppression gate
+				// (and on the live prompt, releases it); a tool_result line does not.
+				// The held-call round-trip is owned by the shim+router (D32), so we
+				// emit NO event for tool_result here — it is purely observational and
+				// would duplicate the shim's authoritative view. Surfacing nothing
+				// keeps the turn in flight without side effects.
+				this.handleUser(rec);
 				return;
 			case "result":
 				this.handleResult(rec);
 				return;
 		}
+	}
+
+	/**
+	 * Emit a content event. With warm-resume suppression OFF (fresh/default), this
+	 * passes straight through (live, byte-for-byte unchanged). With suppression ON,
+	 * the event is BUFFERED instead — it will be flushed only if it is still in the
+	 * buffer at the terminal `result` (i.e. it belongs to the live turn, the final
+	 * segment after the last user-prompt line). Replayed prior-turn content is
+	 * discarded when the next user-prompt line resets the buffer (see handleUser).
+	 */
+	private emit(event: DriverStreamEvent): void {
+		if (!this.suppressResumeReplay) {
+			this.onEvent(event);
+			return;
+		}
+		this.liveTurnBuffer.push(event);
+	}
+
+	/**
+	 * Classify a `user` line. With warm-resume suppression ON, a real user-PROMPT
+	 * line marks a (possibly replayed) turn boundary: DISCARD the buffer so any
+	 * content accumulated for a prior replayed turn is dropped, and start fresh for
+	 * the segment that follows. Whatever segment is in the buffer at the terminal
+	 * `result` is the LIVE turn. A tool_result `user` line (array of tool_result
+	 * blocks) is NOT a prompt boundary — it must NOT discard the live turn's content
+	 * accumulated so far (the live turn may include tool rounds).
+	 *
+	 * We emit NO event for either kind here: the held-call round-trip is owned by
+	 * the shim+router (D32), so tool_result is purely observational and would
+	 * duplicate the shim's authoritative view.
+	 */
+	private handleUser(rec: Record<string, unknown>): void {
+		if (!this.suppressResumeReplay) return; // fresh/default: nothing to track
+		if (!this.isUserPromptLine(rec)) return; // tool_result line — not a boundary
+		// New prompt boundary → discard any buffered (replayed) prior-turn content.
+		this.liveTurnBuffer = [];
+	}
+
+	/**
+	 * A real user PROMPT line vs a tool_result line. claude-p renders a prompt's
+	 * `message.content` as a STRING, and a tool_result's as an ARRAY of blocks
+	 * whose `type` is `tool_result`. We treat content as a prompt unless it is an
+	 * array containing at least one `tool_result` block (robust: an array prompt
+	 * with text/image blocks but no tool_result still counts as a prompt).
+	 */
+	private isUserPromptLine(rec: Record<string, unknown>): boolean {
+		const message = rec.message;
+		if (message === null || typeof message !== "object") {
+			// No message object: treat as a non-prompt (do not advance the gate).
+			return false;
+		}
+		const content = (message as Record<string, unknown>).content;
+		if (typeof content === "string") return true;
+		if (Array.isArray(content)) {
+			for (const block of content) {
+				if (block && typeof block === "object" && (block as Record<string, unknown>).type === "tool_result") {
+					return false; // a tool_result block → this is a tool-result line
+				}
+			}
+			return true; // array with no tool_result blocks → a prompt
+		}
+		return false;
 	}
 
 	private handleAssistant(rec: Record<string, unknown>): void {
@@ -291,14 +410,14 @@ export class ClaudePStreamParser {
 				case "text": {
 					const text = b.text;
 					if (typeof text === "string" && text.length > 0) {
-						this.onEvent({ kind: "text-delta", text });
+						this.emit({ kind: "text-delta", text });
 					}
 					break;
 				}
 				case "thinking": {
 					const thinking = b.thinking;
 					if (typeof thinking === "string" && thinking.length > 0) {
-						this.onEvent({ kind: "thinking-delta", text: thinking });
+						this.emit({ kind: "thinking-delta", text: thinking });
 					}
 					break;
 				}
@@ -308,7 +427,7 @@ export class ClaudePStreamParser {
 					// the bridged mcp__* namespace is surfaced (D32 observational).
 					if (!isBridgedToolName(name)) break;
 					const id = typeof b.id === "string" ? b.id : "";
-					this.onEvent({
+					this.emit({
 						kind: "tool-use",
 						toolUseId: id,
 						name,
@@ -325,7 +444,17 @@ export class ClaudePStreamParser {
 	}
 
 	private handleResult(rec: Record<string, unknown>): void {
-		// Terminal marker (claude-p emits NO stop_reason; `result` itself ends the turn).
+		// Terminal marker (claude-p emits NO stop_reason; `result` itself ends the
+		// turn). There is exactly one `result` per spawn and it follows the live
+		// turn. With warm-resume suppression ON, FLUSH the buffered live-turn content
+		// now (everything accumulated since the last user-prompt line — i.e. the live
+		// turn's text/thinking/tool_use in order), then emit usage + done directly so
+		// the terminal pair is NEVER buffered/suppressed.
+		if (this.suppressResumeReplay && this.liveTurnBuffer.length > 0) {
+			const buffered = this.liveTurnBuffer;
+			this.liveTurnBuffer = [];
+			for (const ev of buffered) this.onEvent(ev);
+		}
 		const usage = this.mapUsage(rec.usage);
 		this.onEvent({ kind: "usage", usage });
 		this.resultSeen = true;

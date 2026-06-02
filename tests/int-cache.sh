@@ -23,7 +23,10 @@ TMPFILE="$LOGDIR/cache-test-scratch.txt"
 rm -f "$TMPFILE" "$CLAUDE_BRIDGE_DEBUG_PATH"
 
 echo "Running 5-turn conversation (text + tool use)..."
-timeout 180 pi --no-session -ne -e "$DIR" \
+# claude-p adds ~5s interactive-boot per turn vs the SDK + may retry a StopTimeout
+# (D33), so the 5-turn conversation needs more wall-clock headroom than the SDK path.
+# Override via CACHE_TEST_TIMEOUT if needed.
+timeout "${CACHE_TEST_TIMEOUT:-420}" pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-haiku-4-5" \
   --mode json \
   -p "The secret number is 42. Acknowledge briefly." \
@@ -62,6 +65,7 @@ EXPECTED_CASE1=1
 TURN=0
 FAIL=0
 PREV_CACHE_READ=0
+ZERO_USAGE_TURNS=0
 
 while IFS= read -r line; do
   TURN=$((TURN + 1))
@@ -79,17 +83,38 @@ while IFS= read -r line; do
 
   printf "%-6s  %8s  %8s  %8s  %8s  %s%%\n" "$TURN" "$INPUT" "$CACHE_READ" "$CACHE_WRITE" "$OUTPUT" "$HIT_PCT"
 
+  # claude-p reports usage ONCE PER SPAWN (on the terminal `result` line), unlike the
+  # SDK which reported per assistant message. So the held-tool-round CONTINUATION
+  # streamSimple calls (Case-1 tool-result delivery, which resolve a parked call in the
+  # SAME spawn rather than spawning) surface a `turn_end` with an ALL-ZERO usage object
+  # (input=output=cacheRead=cacheWrite=0). These are accounting artifacts of the
+  # held-round model, NOT empty turns and NOT cache misses (the cache is consolidated
+  # into the spawn's terminal `result`, attributed to the prompt turn). Skip them and do
+  # NOT let a zero perturb PREV_CACHE_READ (compare the next real turn against the last
+  # turn that actually reported usage).
+  if [ "$INPUT" -eq 0 ] && [ "$CACHE_READ" -eq 0 ] && [ "$CACHE_WRITE" -eq 0 ] && [ "$OUTPUT" -eq 0 ]; then
+    echo "  (turn $TURN: claude-p reported zero usage — skipped, not a cache regression)"
+    ZERO_USAGE_TURNS=$((ZERO_USAGE_TURNS + 1))
+    continue
+  fi
+
   # Assertions
   if [ "$TURN" -ge 3 ]; then
-    # Turn 3+: cache read should be >= turn 2's (system prompt + history cached).
-    # It can stay flat when the prior turn's response was short.
+    # Turn 3+: cache read should be >= the last real turn's (system prompt + history
+    # cached). It can stay flat when the prior turn's response was short.
     if [ "$CACHE_READ" -lt "$PREV_CACHE_READ" ]; then
-      echo "  FAIL: Turn $TURN cacheRead ($CACHE_READ) decreased from turn $((TURN - 1)) ($PREV_CACHE_READ)"
+      echo "  FAIL: Turn $TURN cacheRead ($CACHE_READ) decreased from prior real turn ($PREV_CACHE_READ)"
       FAIL=$((FAIL + 1))
     fi
-    # Cache hit rate should be high
-    if [ "$HIT_PCT" -lt $MIN_CACHE_HIT_PCT ]; then
-      echo "  FAIL: Turn $TURN cache hit rate ${HIT_PCT}% < ${MIN_CACHE_HIT_PCT}%"
+    # The meaningful "warm caching works" signal: cacheRead must DOMINATE fresh input
+    # (the conversation prefix is read from cache, not re-sent uncached). We do NOT gate
+    # on a >90% hit RATE: claude-p single-shot `--resume` re-CREATES the per-spawn-varying
+    # tail of the prefix each turn (cacheWrite ~30k), so the read/(read+write+input) rate
+    # sits ~65-80% even though the bulk of the prefix is warm-read. That re-creation is a
+    # documented single-shot cost (the persistent-process follow-up — design "Fork
+    # decision (T4.10)" — would eliminate it); it is NOT a cache failure.
+    if [ "$CACHE_READ" -lt $((INPUT * 5)) ]; then
+      echo "  FAIL: Turn $TURN cacheRead ($CACHE_READ) does not dominate fresh input ($INPUT) — prefix not warm-read"
       FAIL=$((FAIL + 1))
     fi
   fi
@@ -121,18 +146,24 @@ RESUME_COUNT=0
 declare -a SESSION_IDS=()
 
 while IFS= read -r line; do
-  if echo "$line" | grep -qE 'streamSimple: fresh query.*resume=no'; then
+  # Match BOTH driver dialects: SDK `streamSimple: fresh query ... resume=` and
+  # claude-p `streamSimple[claude-p]: fresh spawn ... resume=`.
+  if echo "$line" | grep -qE 'streamSimple(\[claude-p\])?: fresh (query|spawn).*resume=no'; then
     COLD_COUNT=$((COLD_COUNT + 1))
-  elif echo "$line" | grep -qE 'streamSimple: fresh query.*resume=[a-f0-9]'; then
+  elif echo "$line" | grep -qE 'streamSimple(\[claude-p\])?: fresh (query|spawn).*resume=[a-f0-9]'; then
     RESUME_COUNT=$((RESUME_COUNT + 1))
   fi
   sid=$(echo "$line" | sed -nE 's/.*caching session=([a-f0-9-]+).*/\1/p')
   if [ -n "$sid" ]; then
     SESSION_IDS+=("$sid")
   fi
-done < <(grep -E "streamSimple:" "$CLAUDE_BRIDGE_DEBUG_PATH" 2>/dev/null || true)
+# Pre-filter must include BOTH the per-turn dispatch line (`streamSimple`/
+# `streamSimple[claude-p]`) AND the session-capture line, which on the claude-p path is
+# `finalizeClaudePFrame: caching session=<sid>` (SDK logged `streamSimple: caching
+# session=`). Matching only "streamSimple" misses the claude-p caching-session lines.
+done < <(grep -E "streamSimple|caching session=" "$CLAUDE_BRIDGE_DEBUG_PATH" 2>/dev/null || true)
 
-UNIQUE_SIDS=$(printf "%s\n" "${SESSION_IDS[@]}" 2>/dev/null | sort -u | grep -c . || echo 0)
+UNIQUE_SIDS=$(printf "%s\n" "${SESSION_IDS[@]+"${SESSION_IDS[@]}"}" | sort -u | sed '/^$/d' | wc -l | tr -d ' ')
 UNIQUE_SIDS=${UNIQUE_SIDS:-0}
 
 echo "  cold-start (resume=no): $COLD_COUNT"

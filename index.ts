@@ -1481,6 +1481,23 @@ function resolveShimPath(): string {
 	}
 }
 
+/**
+ * Resolve the claude-p binary the driver spawns. Returns the package's JS launcher
+ * (`claude-p/bin/claude-p.js`) so resolution does NOT depend on `claude-p` being on
+ * PATH — the pi runtime may strip `node_modules/.bin`. The driver spawns a `.js`
+ * binPath via the current node executable. Falls back to the bare name `claude-p`
+ * (PATH lookup) if the package can't be resolved (surfaces as a missing-binary error
+ * at first turn, never at bridge load).
+ */
+function resolveClaudePBin(): string {
+	const req = createRequire(import.meta.url);
+	try {
+		return req.resolve("claude-p/bin/claude-p.js");
+	} catch {
+		return "claude-p";
+	}
+}
+
 /** Spill large/multiline content to a tmpfile under os.tmpdir() (NEVER ~/.claude). */
 function writeOverflowTmp(prefix: string, content: string): string {
 	const p = join(tmpdir(), `${prefix}-${randomBytes(8).toString("hex")}.txt`);
@@ -1852,7 +1869,7 @@ async function startFreshQueryClaudeP(
 	// has been routed to pi (router.everRoutedToolCall) — D33 idempotency gate.
 	const handle = _spawnClaudePFactory(
 		cfg,
-		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any },
+		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any, binPath: resolveClaudePBin() },
 		{
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,

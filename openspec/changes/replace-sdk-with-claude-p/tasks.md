@@ -142,12 +142,12 @@ default until Phase 3.
   - files_allowed:
       - src/driver/claudeP.ts
       - tests/unit-driver-resilience.mjs
-- [ ] 1.10 Integration test: end-to-end main-provider turn via claude-p (text-only) — spawns real claude-p, asserts coherent assistant text + usage
+- [x] 1.10 Integration test: end-to-end main-provider turn via claude-p (text-only) — spawns real claude-p, asserts coherent assistant text + usage — **PASS via pi rpc-harness (CLAUDE_BRIDGE_DRIVER=claude-p): returned 'READY', usage threaded; full stream path validated; no wiring bug**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-main-turn.sh
       - tests/int-claude-p-main-turn.mjs
-- [ ] 1.11 Integration test: tool-round via claude-p (model calls bridged tool → shim holds open → pi delivers result → model continues). Asserts the held-open round-trip end-to-end.
+- [x] 1.11 Integration test: tool-round via claude-p (model calls bridged tool → shim holds open → pi delivers result → model continues). Asserts the held-open round-trip end-to-end. — **PASS: SlowTool result threaded back, exactly 1 execution; piId↔toolResult.id resolution confirmed in debug log (onRouterPark→Case-1 resolve); single spawn continued to final text**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-tool-round.sh

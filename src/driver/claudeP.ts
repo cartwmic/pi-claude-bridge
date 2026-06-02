@@ -386,9 +386,18 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 		logger,
 	});
 
+	// If binPath points at a JS launcher (claude-p ships its bin as bin/claude-p.js),
+	// spawn it via the current node executable so resolution does NOT depend on the
+	// claude-p bin being on PATH (it lives in node_modules/.bin, which the pi runtime
+	// may strip). A bare name or an OS executable is spawned directly. This mirrors how
+	// the bridge spawns the shim (node + resolved dist/.../shim.js).
+	const isJsLauncher = /\.[cm]?js$/.test(bin);
+	const command = isJsLauncher ? process.execPath : bin;
+	const spawnArgs = isJsLauncher ? [bin, ...args] : args;
+
 	// detached:true → child becomes a process-group leader (pgid === pid), so a
 	// signal to -pid reaches claude-p AND its descendant claude/zmux PTY group.
-	const child: ChildProcess = spawn(bin, args, {
+	const child: ChildProcess = spawn(command, spawnArgs, {
 		detached: true,
 		stdio: ["ignore", "pipe", "pipe"],
 	});

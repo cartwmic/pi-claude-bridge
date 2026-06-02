@@ -76,12 +76,33 @@ exclusive with owner constraint D26 (interactive surface only). The decision spa
    avoid; revisit whether that surface is actually restricted for this account/use.
 2. **Persistent interactive process (warm pool).** Keep ONE long-lived claude-p/`claude`
    per pi session and feed turns into it (live session caches normally) instead of
-   per-turn spawn+`--resume`. Cost: claude-p is "single-turn, multi-turn out of scope"
-   → needs a claude-p fork for persistent multi-turn stdin feeding + result framing;
-   feasibility unproven; interacts with abort/supersede/concurrency.
+   per-turn spawn+`--resume`. **PREMISE NOW PROVEN** (`g4-intraspawn-caching-reframe.md`):
+   within one live claude-p spawn the agent loop's rounds warm-read ~14k cached tokens
+   each (cache_creation tiny) — interactive caching works fully intra-process; only the
+   per-turn-spawn+`--resume` pattern loses it. Cost: claude-p is "single-turn" → needs a
+   fork for persistent multi-turn feeding + per-turn result framing; feasibility under
+   investigation (2026-06-01, owner chose "investigate before deciding"); interacts with
+   abort/supersede/concurrency.
 3. **Accept the regression.** Ship interactive claude-p with no caching. Cost: every
    turn reprocesses the full growing context (uncached) — likely unacceptable cost +
    latency for a coding agent; quantify against the latency budget first.
+
+**Investigation outcome (2026-06-01, `g4-investigation.md`):**
+- **Option 2 is FEASIBLE (no showstopper).** claude-p kills the interactive `claude`
+  via `session.terminate()` after the Stop hook; `claude` does NOT self-exit. Removing
+  that one kill leaves the TUI at its prompt, ready for the next turn (which caches —
+  proven intra-spawn). The fork delta is targeted: don't terminate, re-read per-turn
+  Stop, type the next prompt into the live PTY, frame one `result` per turn via a
+  transcript high-water mark — all PTY/Ink-probe/hook-FIFO/transcript machinery reused.
+  Bridge-side caveat: the persistent PTY must survive a pi abort (cancel turn, keep
+  session) or tear down + cold-reboot on supersede (design work, not a claude-p blocker).
+- **Numbers:** per-spawn boot tax ≈ 1.7s non-model overhead EVERY turn (persistent pays
+  it once); no-cache cumulative input-cost penalty 5.3× at 50k ctx / 6.9× at 100k
+  (~O(N²)); uncached prefix also grows TTFT. Persistent wins on BOTH cost and latency.
+- **Recommendation:** Option 2 if D26 is a hard line (strictly better technical outcome,
+  preserves the subscription surface); Option 1 (`claude -p --print`) only if "never -p"
+  was precautionary (less work, same caching, but reverses D26 and keeps the boot tax).
+  The hard-vs-precaution determination is the OWNER's (account/ToS/preference) — pending.
 
 Until the owner picks a path, Phase-3 cut-over stays BLOCKED and the SDK path remains
 the default. G5/G9 are deferred (moot until the driver approach is settled).

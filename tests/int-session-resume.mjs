@@ -4,9 +4,6 @@
 // preserves conversation context (all messages are flattened into
 // each query, so "missed" messages are automatically included).
 //
-// Also tests AskClaude shared mode (sees conversation history) vs
-// isolated mode (clean slate).
-//
 // Requires: pi CLI, Claude Code (for Agent SDK subprocess).
 // Requires: CLAUDE_BRIDGE_TESTING_ALT_PROVIDER (e.g. "minimax")
 // Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
@@ -36,9 +33,6 @@ const harness = createRpcHarness({
 
 const { DIR, start, stop, send, addListener, collectText, DEBUG_LOG, RPC_LOG } = harness;
 
-let lastToolResult = null;
-
-// Custom waitForIdle that captures last tool result (harness doesn't do this)
 function waitForIdle(timeout = TIMEOUT) {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error("Timeout waiting for idle")), timeout);
@@ -46,12 +40,6 @@ function waitForIdle(timeout = TIMEOUT) {
 			if (msg.type === "agent_end") {
 				clearTimeout(timer);
 				remove();
-				// Extract last tool result text for assertion
-				const toolResults = msg.messages?.filter((m) => m.role === "toolResult") ?? [];
-				if (toolResults.length > 0) {
-					const last = toolResults[toolResults.length - 1];
-					lastToolResult = last.content?.map((c) => c.text ?? "").join("") ?? "";
-				}
 				resolve(msg);
 			}
 		});
@@ -144,27 +132,6 @@ try {
   if (!lower6.includes(WORD_A)) finish(1, `FAIL: Turn 6 response missing '${WORD_A}': ${text6}`);
   if (!lower6.includes(WORD_B)) finish(1, `FAIL: Turn 6 response missing '${WORD_B}': ${text6}`);
   if (!lower6.includes(WORD_C)) finish(1, `FAIL: Turn 6 response missing '${WORD_C}': ${text6}`);
-
-  // Turn 7: AskClaude shared mode — should see WORD_C which was only told to the non-provider model
-  console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
-  await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
-
-
-  console.log("Turn 7: AskClaude shared mode (should see non-provider context)...");
-  const text7 = await promptAndWait(
-    'Use the AskClaude tool with prompt="What was the third word mentioned earlier? Reply with just the word."'
-  );
-  console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
-  if (!lastToolResult?.toLowerCase().includes(WORD_C)) finish(1, `FAIL: Turn 7 AskClaude tool result missing '${WORD_C}': ${lastToolResult}`);
-
-  // Turn 8: AskClaude isolated mode — should NOT see conversation history
-  console.log("Turn 8: AskClaude isolated mode (should not see context)...");
-  lastToolResult = null;
-  const text8 = await promptAndWait(
-    'Use the AskClaude tool with prompt="What was the third word mentioned earlier? If you don\'t know, say UNKNOWN." and isolated=true'
-  );
-  console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
-  if (lastToolResult?.toLowerCase().includes(WORD_C)) finish(1, `FAIL: Turn 8 isolated AskClaude should not know '${WORD_C}': ${lastToolResult}`);
 
   // sessionId stability: sessionId should stay stable across normal
   // rebuilds (Case 2 → Case 4 → Case 3). It's allowed to rotate exactly

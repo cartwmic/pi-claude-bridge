@@ -183,11 +183,11 @@ default until Phase 3.
   - files_allowed:
       - index.ts
       - tests/unit-abort-partial.mjs
-- [ ] 1.16b Integration test: image handling (claude-p-driver.image-content-handling-in-v1) — main-path image strip + warn; capture-path image reject pre-spawn with stopReason error
+- [x] 1.16b Integration test: image handling (claude-p-driver.image-content-handling-in-v1) — main-path image strip + warn; capture-path image reject pre-spawn with stopReason error — **DONE: tests/int-claude-p-image.mjs — main-path strips images+warns+proceeds text-only; capture-path rejects pre-spawn stopReason error ([start,error], no spawn)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-image.mjs
-- [ ] 1.16c Unit test: stream premature-exit error (transcript-stream.driver-exit-without-terminal-result-surfaces-as-error) + malformed/garbage MCP message handling (mcp-stdio-shim.malformed-mcp-messages-surface-as-errors)
+- [x] 1.16c Unit test: stream premature-exit error (transcript-stream.driver-exit-without-terminal-result-surfaces-as-error) + malformed/garbage MCP message handling (mcp-stdio-shim.malformed-mcp-messages-surface-as-errors) — **DONE: coverage already present (unit-driver-stream premature-exit §7; unit-mcp-shim malformed -32700 + invalid -32602)**
   - intent: feature
   - files_allowed:
       - tests/unit-driver-stream.mjs
@@ -232,7 +232,7 @@ default until Phase 3.
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-abort.mjs
-- [ ] 2.7 Remove `AskClaude` tool — delete `runAskClaude`, `wireAskClaudeTool`, config schema, env switch
+- [x] 2.7 Remove `AskClaude` tool — delete `runAskClaude`, `wireAskClaudeTool`, config schema, env switch — **DONE: deleted runAskClaude, registration, CLAUDE_BRIDGE_ASKCLAUDE_ENABLED env, config; removed dead imports; AskClaude tests pruned; grep-empty; pkg description updated; 294 unit tests green**
   - intent: refactor
   - files_allowed:
       - index.ts
@@ -294,7 +294,7 @@ default until Phase 3.
       - SCENARIO_RESULTS.md
       - openspec/changes/replace-sdk-with-claude-p/design.md
   - allow_new_files: true
-- [ ] 4.2 Audit constitution III — grep production code for any read/write under `~/.claude/`; assert the bridge opens NO file there (events come from claude-p stdout). Stronger than the prior exemption-based check.
+- [x] 4.2 Audit constitution III — grep production code for any read/write under `~/.claude/`; assert the bridge opens NO file there (events come from claude-p stdout). Stronger than the prior exemption-based check. — **DONE: tests/int-claude-dir-audit.mjs — static scan asserts NO ~/.claude/ fs access in production scope (+ self-check); all homedir bases target ~/.pi**
   - intent: infra
   - files_allowed:
       - scripts/**/*.sh
@@ -302,7 +302,7 @@ default until Phase 3.
       - .github/workflows/**/*.yml
       - tests/int-claude-dir-audit.mjs
   - allow_new_files: true
-- [ ] 4.3 Audit constitution IV — the BINDING assertion is the CLOSED-SET check: `tools/list` through claude-p shows EXACTLY `mcp__custom-tools__*` (catches any unknown re-enabled built-in), with the enumerated `--disallowedTools`/`--allowedTools` list as the mechanism (per D28(ii)); assert `--settings`/`-p`/`--print` are NEVER in the assembled claude-p argv; the runtime version-skew check (T4.7) re-audits the disallow set against `claude --help`'s tool list
+- [x] 4.3 Audit constitution IV — the BINDING assertion is the CLOSED-SET check: `tools/list` through claude-p shows EXACTLY `mcp__custom-tools__*` (catches any unknown re-enabled built-in), with the enumerated `--disallowedTools`/`--allowedTools` list as the mechanism (per D28(ii)); assert `--settings`/`-p`/`--print` are NEVER in the assembled claude-p argv; the runtime version-skew check (T4.7) re-audits the disallow set against `claude --help`'s tool list — **DONE: tests/unit-disallow-list.mjs (54 tests) — --disallowedTools always present/non-empty; argv never --settings/-p/--print (incl. adversarial + guard-throws); no Mcp token; full native set present**
   - intent: infra
   - files_allowed:
       - tests/unit-disallow-list.mjs

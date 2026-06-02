@@ -202,42 +202,42 @@ describe("classifyToolsForCapture", () => {
 
 	it("all tools in activeNames → all executable", () => {
 		const tools = [objectTool("regA"), objectTool("regB")];
-		const result = classifyToolsForCapture(ctxWith(tools), new Set(["regA", "regB"]), "AskClaude");
+		const result = classifyToolsForCapture(ctxWith(tools), new Set(["regA", "regB"]), "__excluded__");
 		assert.deepEqual(result.executable.map((t) => t.name), ["regA", "regB"]);
 		assert.deepEqual(result.capture, []);
 	});
 
 	it("no tools in activeNames → all capture", () => {
 		const tools = [objectTool("capA"), objectTool("capB")];
-		const result = classifyToolsForCapture(ctxWith(tools), new Set([]), "AskClaude");
+		const result = classifyToolsForCapture(ctxWith(tools), new Set([]), "__excluded__");
 		assert.deepEqual(result.executable, []);
 		assert.deepEqual(result.capture.map((t) => t.name), ["capA", "capB"]);
 	});
 
 	it("mixed: some in activeNames → split correctly", () => {
 		const tools = [objectTool("regA"), objectTool("capB")];
-		const result = classifyToolsForCapture(ctxWith(tools), new Set(["regA"]), "AskClaude");
+		const result = classifyToolsForCapture(ctxWith(tools), new Set(["regA"]), "__excluded__");
 		assert.deepEqual(result.executable.map((t) => t.name), ["regA"]);
 		assert.deepEqual(result.capture.map((t) => t.name), ["capB"]);
 	});
 
 	it("excludeName is skipped entirely", () => {
-		const tools = [objectTool("AskClaude"), objectTool("capA")];
-		const result = classifyToolsForCapture(ctxWith(tools), new Set([]), "AskClaude");
-		// AskClaude should be excluded from both arrays
+		const tools = [objectTool("__excluded__"), objectTool("capA")];
+		const result = classifyToolsForCapture(ctxWith(tools), new Set([]), "__excluded__");
+		// the excluded tool should be excluded from both arrays
 		const allNames = [...result.executable.map((t) => t.name), ...result.capture.map((t) => t.name)];
-		assert.ok(!allNames.includes("AskClaude"), "AskClaude should be excluded");
+		assert.ok(!allNames.includes("__excluded__"), "excluded tool should be excluded");
 		assert.deepEqual(result.capture.map((t) => t.name), ["capA"]);
 	});
 
 	it("empty ctx.tools → both arrays empty", () => {
-		const result = classifyToolsForCapture({ tools: [], messages: [], systemPrompt: "" }, new Set(["x"]), "AskClaude");
+		const result = classifyToolsForCapture({ tools: [], messages: [], systemPrompt: "" }, new Set(["x"]), "__excluded__");
 		assert.deepEqual(result.executable, []);
 		assert.deepEqual(result.capture, []);
 	});
 
 	it("undefined ctx.tools → both arrays empty", () => {
-		const result = classifyToolsForCapture({ messages: [], systemPrompt: "" }, new Set(["x"]), "AskClaude");
+		const result = classifyToolsForCapture({ messages: [], systemPrompt: "" }, new Set(["x"]), "__excluded__");
 		assert.deepEqual(result.executable, []);
 		assert.deepEqual(result.capture, []);
 	});

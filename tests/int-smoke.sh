@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 # Smoke tests for pi-claude-bridge provider.
 # Requires: pi CLI, Claude Code (for Agent SDK subprocess).
-# Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
 
 source "$(dirname "$0")/lib/bash-setup.sh"
 
 echo "=== smoke-test.sh ==="
 
 setup_test_env "smoke-test"
-
-ALT_MODEL=$(require_env CLAUDE_BRIDGE_TESTING_ALT_MODEL)
 
 TIMEOUT=60
 PASS=0
@@ -56,16 +53,6 @@ run "provider: --provider flag works" \
 
 run "provider: model list includes provider" \
   bash -c "pi --no-session -ne -e '$DIR' --list-models 2>&1 | grep claude-bridge"
-
-# AskClaude only registers when a non-claude-bridge provider is active
-run "tool: AskClaude registered" \
-  bash -c "pi --no-session -ne -e '$DIR' --mode json --model '$ALT_MODEL' -p 'list your tools' 2>&1 | grep -q AskClaude && echo ok"
-
-# AskClaude e2e: force a non-Claude model to call the tool and check for a tool result
-run "tool: AskClaude responds" \
-  bash -c "pi --no-session -ne -e '$DIR' --model '$ALT_MODEL' --mode json \
-    -p 'Use the AskClaude tool with prompt=\"What is 2+2? Reply with just the number.\" and then tell me the answer.' 2>&1 \
-    | grep -q '\"toolName\":\"AskClaude\"' && echo ok"
 
 # --- Summary ---
 

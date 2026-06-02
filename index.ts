@@ -14,7 +14,6 @@
 
 import {
 	calculateCost,
-	StringEnum,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type Context,
@@ -23,7 +22,7 @@ import {
 	type Tool,
 } from "@mariozechner/pi-ai";
 import * as piAi from "@mariozechner/pi-ai";
-import { keyHint, buildSessionContext, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
+import { keyHint, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
 import {
 	createSdkMcpServer,
 	query as _realQuery,
@@ -33,8 +32,6 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { z } from "zod";
-import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import pino from "pino";
 import { createStream } from "rotating-file-stream";
@@ -44,7 +41,7 @@ import { writeFileSync } from "fs";
 import { createRequire } from "module";
 import { dirname, join, resolve } from "path";
 import { pascalCase } from "change-case";
-import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
+import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import {
 	spawnClaudePWithResilience as _realSpawnClaudeP,
@@ -1007,7 +1004,8 @@ export function getActiveToolNameSet(): Set<string> {
 
 /**
  * Partition context.tools into executable (pi-registered) and capture
- * (unregistered) tools. Skips excludeName (e.g. AskClaude built-in).
+ * (unregistered) tools. Skips excludeName when a built-in tool must be
+ * filtered out of both partitions (pass "" to exclude nothing).
  */
 export function classifyToolsForCapture(
 	context: Context,
@@ -1187,7 +1185,7 @@ export function streamClaudeAgentSdk(
 	// call never supersedes an active user frame (Decision 4).
 	{
 		const activeNames = getActiveToolNameSet();
-		const { executable, capture } = classifyToolsForCapture(context, activeNames, askClaudeToolName);
+		const { executable, capture } = classifyToolsForCapture(context, activeNames, "");
 		const shape = validateCaptureCallShape({ executable, capture });
 
 		if (shape.kind === "rejected") {
@@ -1299,7 +1297,7 @@ function startFreshQuery(
 	}
 
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
+	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, "");
 
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	const promptText = extractUserPrompt(context.messages) ?? "";
@@ -1799,7 +1797,7 @@ async function startFreshQueryClaudeP(
 	stream: AssistantMessageEventStream,
 ): Promise<void> {
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
+	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, "");
 
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	const promptText = extractUserPrompt(context.messages) ?? "";
@@ -2239,90 +2237,6 @@ export async function runCaptureQuery(
 }
 
 // ---------------------------------------------------------------------------
-// AskClaude tool — Claude Code as a delegated agent for codebase Q&A.
-//
-// SEPARATE use of the SDK from the provider path. Uses its own one-shot query()
-// with full agentic capability (Read, Bash, etc.) and returns a summary.
-// Kept minimal vs. legacy; expand if needed.
-// ---------------------------------------------------------------------------
-
-let askClaudeToolName = "AskClaude";
-
-const ASKCLAUDE_DESCRIPTION =
-	"Ask Claude Code (with full file/bash access) to investigate or answer a question about the codebase. Returns a written summary.";
-
-async function runAskClaude(
-	prompt: string,
-	mode: "read" | "full" | "none",
-	signal: AbortSignal | undefined,
-	systemPrompt: string | undefined,
-	piContext: Context["messages"] | undefined,
-): Promise<{ text: string; error?: boolean }> {
-	const cwd = process.cwd();
-	const disallowed = mode === "none"
-		? [...DISALLOWED_BUILTIN_TOOLS]
-		: mode === "read"
-			? ["Write", "Edit", "Bash", "Agent", "NotebookEdit", "EnterWorktree", "ExitWorktree", "RemoteTrigger", "SendMessage"]
-			: [];
-
-	// Replay pi history (without images) as user-message context to Claude Code.
-	let promptArg: string | AsyncIterable<SDKUserMessage> = prompt;
-	if (piContext && piContext.length > 0) {
-		const { anthropicMessages } = convertPiMessages(piContext as any);
-		const blocks: ContentBlockParam[] = [{ type: "text", text: prompt }];
-		// Lightweight: just include text-only history as a header to the prompt.
-		const historyText = anthropicMessages
-			.map((m) => {
-				const c = typeof m.content === "string" ? m.content : (m.content as any[]).map((b: any) => b.text ?? "").join(" ");
-				return `[${m.role}] ${c}`.slice(0, 500);
-			})
-			.join("\n");
-		if (historyText) blocks.unshift({ type: "text", text: `Prior conversation:\n${historyText}\n\n---\nQuestion:` });
-		promptArg = wrapPromptStream(blocks);
-	}
-
-	const sdkQuery = _queryFactory({
-		prompt: promptArg,
-		options: {
-			cwd,
-			disallowedTools: disallowed,
-			permissionMode: "bypassPermissions",
-			settingSources: [],
-			systemPrompt: systemPrompt ?? "You are a helpful Claude Code assistant invoked by pi.",
-			...(cachedSessionId ? { resume: cachedSessionId } : {}),
-		},
-	});
-
-	const onAbort = () => { void sdkQuery.interrupt().catch(() => {}); try { (sdkQuery as any).close?.(); } catch {} };
-	if (signal) {
-		if (signal.aborted) onAbort();
-		else signal.addEventListener("abort", onAbort, { once: true });
-	}
-
-	let responseText = "";
-	let isError = false;
-	try {
-		for await (const m of sdkQuery) {
-			if (signal?.aborted) break;
-			if (m.type === "result") {
-				if ((m as any).subtype === "success" && (m as any).result) {
-					responseText = (m as any).result;
-				}
-			} else if (m.type === "assistant") {
-				const blocks = (m as any).message?.content ?? [];
-				for (const b of blocks) {
-					if (b.type === "text" && b.text) responseText += b.text;
-				}
-			}
-		}
-	} catch (err) {
-		isError = true;
-		responseText = err instanceof Error ? err.message : String(err);
-	}
-	return { text: responseText || "[Claude Code returned no text]", error: isError };
-}
-
-// ---------------------------------------------------------------------------
 // Pi extension entry point
 // ---------------------------------------------------------------------------
 
@@ -2392,57 +2306,6 @@ export default function (pi: ExtensionAPI) {
 	} else {
 		log.info(`provider: skipping re-registration (already active)`);
 	}
-
-	// AskClaude tool — keep behavior, much smaller surface than legacy.
-	//
-	// Opt-in via env: defaults to OFF. Set CLAUDE_BRIDGE_ASKCLAUDE_ENABLED=1
-	// (or "true") to register the tool. When unset/false the tool is not
-	// registered at all (won't appear in pi.getAllTools()).
-	const askClaudeEnabledRaw = (process.env.CLAUDE_BRIDGE_ASKCLAUDE_ENABLED ?? "").trim().toLowerCase();
-	const askClaudeEnabled = askClaudeEnabledRaw === "1" || askClaudeEnabledRaw === "true";
-	if (!askClaudeEnabled) {
-		log.info("AskClaude tool: disabled (set CLAUDE_BRIDGE_ASKCLAUDE_ENABLED=1 to enable)");
-		return;
-	}
-	log.info("AskClaude tool: enabled via CLAUDE_BRIDGE_ASKCLAUDE_ENABLED");
-	pi.registerTool({
-		name: askClaudeToolName,
-		label: "Ask Claude Code",
-		description: ASKCLAUDE_DESCRIPTION,
-		parameters: Type.Object({
-			prompt: Type.String({ description: "Question or task for Claude Code." }),
-			mode: Type.Optional(StringEnum(["read", "full", "none"] as const, {
-				description: '"read" (default): file access for analysis. "full": writes/bash. "none": no tools.',
-			})),
-			isolated: Type.Optional(Type.Boolean({ description: "true: clean session. false (default): include pi history." })),
-		}),
-		renderCall(args, theme) {
-			const text = theme.fg("mdLink", theme.bold("AskClaude ")) +
-				theme.fg("muted", `"${args.prompt.slice(0, 200)}${args.prompt.length > 200 ? "…" : ""}"`);
-			return new Text(text, 0, 0);
-		},
-		renderResult(result, _opts, theme) {
-			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
-			const details = result.details as { error?: boolean } | undefined;
-			const head = details?.error
-				? theme.fg("error", "✗ Claude Code error")
-				: theme.fg("mdLink", "✓ Claude Code");
-			return new Text(`${head}\n${theme.fg("toolOutput", body.slice(0, 1500))}`, 0, 0);
-		},
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (ctx.model?.baseUrl === "claude-bridge") {
-				return {
-					content: [{ type: "text" as const, text: "AskClaude cannot delegate to itself (active provider is claude-bridge)." }],
-					details: { error: true },
-				};
-			}
-			const mode = (params.mode ?? "read") as "read" | "full" | "none";
-			const isolated = params.isolated ?? false;
-			const piContext = isolated ? undefined : (buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"]);
-			const { text, error } = await runAskClaude(params.prompt, mode, signal, ctx.getSystemPrompt(), piContext);
-			return { content: [{ type: "text" as const, text }], details: { error } };
-		},
-	});
 }
 
 // Suppress unused-import lints in TS strict mode

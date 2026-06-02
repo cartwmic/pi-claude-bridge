@@ -80,6 +80,48 @@ A6: PASS — turn 2 warm-resumed on session=3e196239
 A7: PASS — turn 2 produced WARM-RESUME-S25
 ```
 
+## S26 — claude-p warm-resume cache shape (HARD GATE G4) — 2026-06-01 — **FAIL**
+- Branch: `replan-driver-from-phase-0`
+- Driver: claude-p 0.1.0 (interactive-PTY, design D26) · claude 2.1.159 · model claude-haiku-4-5
+- Method: 6 sequential claude-p spawns (concurrency 1), pinned ~5KB `--system-prompt`,
+  production isolation flags (`--strict-mcp-config`, `--setting-sources ""`,
+  `--disallowedTools …`), real env (CLAUDE_CONFIG_DIR/HOME NOT overridden). Turn 1
+  fresh `--session-id`; turns 2–6 `--resume` same id, only the new user msg each turn.
+  Built via real `buildClaudePArgs`; usage parsed by real `ClaudePStreamParser`.
+- **Mechanical: PASS** — 6/6 turns clean `result`, usage on every turn, zero flakes
+  (each turn succeeded on attempt 1; `--resume` 100% reliable here).
+- **Coherence: PASS** — turn 2 recalled `4242`; `--resume` restored the conversation.
+- **Cache: FAIL (the gate)** — `cache_creation`=0 AND `cache_read`=0 on EVERY turn;
+  `input_tokens` grew monotonically 3802→7656→11556→15496→19472→23494 (full
+  transcript re-sent uncached each turn).
+
+| turn | input | cache_creation | cache_read | output |
+|------|-------|----------------|------------|--------|
+| 1 (fresh)  | 3802  | 0 | 0 | 204 |
+| 2 (resume) | 7656  | 0 | 0 | 332 |
+| 3 (resume) | 11556 | 0 | 0 | 444 |
+| 4 (resume) | 15496 | 0 | 0 | 564 |
+| 5 (resume) | 19472 | 0 | 0 | 708 |
+| 6 (resume) | 23494 | 0 | 0 | 828 |
+
+- **Root cause (control experiments):** the SAME native `claude` binary engages
+  prompt caching when run as `claude -p`/`--print` — `cache_creation`=50015 with
+  `--model` only, and =26336 with the bridge's exact isolation flags + pinned
+  system prompt. It does NOT cache when driven by claude-p's **interactive PTY**
+  session. The differentiator is interactive-vs-`--print` mode — NOT the isolation
+  flags and NOT the per-spawn injections (attachment/ai-title/file-history-snapshot).
+- **Does NOT mandate the T4.10 fork** (strip/pin injections): injections are not the
+  cause, so stripping them won't restore caching. This is a **structural blocker**:
+  claude-p interactive mode emits no `cache_control` breakpoints. Fix requires
+  upstream/fork changes to claude-p, OR abandoning interactive-PTY for `claude -p`
+  (forbidden by D26 / constitution IV, and blocked by the T0.14 workspace-trust gate).
+- **Regression vs SDK era:** S25 (SDK path) showed warm `cache_read`=5736 / delta
+  `cache_creation`=94 on resume; the claude-p path loses that entirely → an O(N²)
+  token-cost + latency blow-up on long sessions. **G4 blocks the cut-over.**
+- Fixtures: `.spike-notes/claude-p-gate/g4-resume-cache-probe.mjs` (probe),
+  `g4-cache-results.md` (full analysis + control table), `g4-cache-stream.jsonl`
+  (raw 6-turn transcript with the `result.usage` lines).
+
 ## How to reproduce
 
 ```bash

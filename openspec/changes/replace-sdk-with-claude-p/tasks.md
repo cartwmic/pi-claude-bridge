@@ -316,7 +316,7 @@ default until Phase 3.
   - files_allowed:
       - tests/int-tarball-verify.sh
       - .github/workflows/**/*.yml
-- [ ] 4.5 Produce `verify.md` — canonical AC↔test mapping for EVERY AC ID in `specs/**/spec.md` (enumerate dynamically; do not hard-code a count)
+- [x] 4.5 **DONE: verify.md — 37 AC IDs (claude-p-driver 15, transcript-stream 8, mcp-stdio-shim 8, output-capture 6), 37/37 mapped to existing test/scenario/gate, Completion Decision GREEN, zero gaps.** Produce `verify.md` — canonical AC↔test mapping for EVERY AC ID in `specs/**/spec.md` (enumerate dynamically; do not hard-code a count)
   - intent: refactor
   - files_allowed:
       - openspec/changes/replace-sdk-with-claude-p/verify.md

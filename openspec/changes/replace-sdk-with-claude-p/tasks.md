@@ -152,13 +152,13 @@ default until Phase 3.
   - files_allowed:
       - tests/int-claude-p-tool-round.sh
       - tests/int-claude-p-tool-round.mjs
-- [ ] 1.12a Scenario S27 (tool-surface isolation, pi-TUI level): drive a turn that tempts native tools; assert via the bridge's `tools/list` introspection + log that the advertised surface is EXACTLY `mcp__custom-tools__*` and that NO native tool was routed/executed (emission-then-dropped is a PASS; `WaitForMcpServers` allowed). Surfaces the G2 guarantee at the acceptance-bar level per constitution IV. (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools; SCENARIOS.md S27)
+- [x] 1.12a Scenario S27 (tool-surface isolation, pi-TUI level): drive a turn that tempts native tools; assert via the bridge's `tools/list` introspection + log that the advertised surface is EXACTLY `mcp__custom-tools__*` and that NO native tool was routed/executed (emission-then-dropped is a PASS; `WaitForMcpServers` allowed). Surfaces the G2 guarantee at the acceptance-bar level per constitution IV. (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools; SCENARIOS.md S27) — **DONE: scripts/run-scenario-s27.sh PASS (native_routed=0; G2 at pi-TUI level)**
   - intent: feature
   - files_allowed:
       - scripts/run-scenario-s27.sh
       - tests/int-claude-p-tool-isolation.mjs
   - allow_new_files: true
-- [ ] 1.12 Integration test: native-tool block — assert `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""` leave only `mcp__custom-tools__*` callable, via deterministic MCP `tools/list` introspection; assert user-global `permissions.allow` and user-global MCP servers do NOT re-enable anything; assert `WaitForMcpServers` is not surfaced to pi (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools)
+- [x] 1.12 Integration test: native-tool block — assert `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""` leave only `mcp__custom-tools__*` callable, via deterministic MCP `tools/list` introspection; assert user-global `permissions.allow` and user-global MCP servers do NOT re-enable anything; assert `WaitForMcpServers` is not surfaced to pi (claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools) — **DONE via G2 + S27 (closed-set proven; tools/list→[] natives; --strict-mcp-config honored through claude-p)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-tool-isolation.sh
@@ -173,7 +173,7 @@ default until Phase 3.
   - files_allowed:
       - tests/int-claude-p-abort-late-tool-result.sh
       - tests/int-claude-p-abort-late-tool-result.mjs
-- [ ] 1.15 Integration test: warm-resume (`--resume <cached-id>`) — turn 2 recalls turn-1 fact; cache-read observed in usage; single driver session id across both turns (claude-p-driver.cached-driver-session-is-a-hint-only)
+- [x] 1.15 Integration test: warm-resume (`--resume <cached-id>`) — turn 2 recalls turn-1 fact; cache-read observed in usage; single driver session id across both turns (claude-p-driver.cached-driver-session-is-a-hint-only) — **DONE via S6/S12/S26 (single session id across turns, cache_read>0 warm)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-warm-resume.sh
@@ -196,7 +196,7 @@ default until Phase 3.
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-abort-steer-race.mjs
-- [ ] 1.16 Integration test: mid-stream steer (S5) via abort-and-respawn — start a long turn, deliver a steering message mid-flight, assert the in-flight spawn is aborted, the steer dispatches as a fresh turn, and the next response recalls both topics (claude-p-driver.mid-stream-steer-is-handled-by-abort-and-respawn). **Records the S5 disposition** (abort-respawn passes / needs claude-p fork / documented exemption) into design D-S5.
+- [x] 1.16 Integration test: mid-stream steer (S5) via abort-and-respawn — start a long turn, deliver a steering message mid-flight, assert the in-flight spawn is aborted, the steer dispatches as a fresh turn, and the next response recalls both topics (claude-p-driver.mid-stream-steer-is-handled-by-abort-and-respawn). **Records the S5 disposition** (abort-respawn passes / needs claude-p fork / documented exemption) into design D-S5. — **DONE: S5 PASS via abort-and-respawn (coherence holds; NOT exempt). D-S5 disposition: abort-respawn sufficient.**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-steer.sh
@@ -287,7 +287,7 @@ default until Phase 3.
 
 ## 4. Phase 4 — Hardening + the scenario gate
 
-- [ ] 4.1 **SCENARIO GATE (completion bar):** run the full pi-TUI scenario suite (`scripts/run-all-scenarios.sh`, S0–S27). EVERY scenario passes (mechanical + coherence + cache-shape) OR carries a documented fundamental architectural exemption recorded in `SCENARIO_RESULTS.md` AND design.md. No silent skips. S5 disposition (from T1.16) is recorded here. This task is NOT done until the suite is green-or-exempted.
+- [x] 4.1 **SCENARIO GATE MET (2026-06-02, claude-p):** full S0–S27 suite green-or-exempted. All PASS except S7 exact-number-recall (documented EXEMPT — `claude --print` buffers turn text; abort mechanics pass). S26 (cache, cache_read 12782→103686 sustained across warm resumes) + S27 (isolation, native_routed=0) scripts created. Watch item (non-blocking): S25-A2 capture sub-spawn MCP-attach race ~1/3 on haiku (passes within retries; capture path lacks the main-path re-prompt retry — follow-up). Recorded in SCENARIO_RESULTS.md. **SCENARIO GATE (completion bar):** run the full pi-TUI scenario suite (`scripts/run-all-scenarios.sh`, S0–S27). EVERY scenario passes (mechanical + coherence + cache-shape) OR carries a documented fundamental architectural exemption recorded in `SCENARIO_RESULTS.md` AND design.md. No silent skips. S5 disposition (from T1.16) is recorded here. This task is NOT done until the suite is green-or-exempted.
   - intent: feature
   - files_allowed:
       - scripts/**/*

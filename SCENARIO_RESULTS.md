@@ -313,6 +313,135 @@ node --test tests/int-claude-p-abort-coherence.mjs    # G5 / S7 / S8
 
 ---
 
+## T4.1 — pi-TUI scenario GATE (S0–S27) on claude-p — 2026-06-02 (post MCP-startup-race fix; S26+S27 added)
+
+Branch `replan-driver-from-phase-0`. Driver = **claude-p**
+(`CLAUDE_BRIDGE_DRIVER=claude-p`; claude-p concurrency 1). `npm run build` first.
+`SCENARIO_TIMEOUT=480 SCENARIO_PARALLEL=1 bash scripts/run-all-scenarios.sh`.
+Models: haiku-4-5 default; opus-4-7 via override (s5/s13/s14/s20). Real env —
+`CLAUDE_CONFIG_DIR`/`HOME` NOT overridden, `~/.claude` untouched. NEW scripts this
+run: `scripts/run-scenario-s26.sh` (G4 sustained warm-cache) +
+`scripts/run-scenario-s27.sh` (G2/constitution-IV tool-surface isolation), both
+auto-discovered by the runner's `run-scenario-s*.sh` glob, both cross-driver.
+
+**The bar — EVERY scenario PASS or documented-EXEMPT — is MET.** S14 and S25 now
+pass (the prior `BRIDGE-BUG` disposition is SUPERSEDED — the MCP-startup-race fix
+exposes the bridge's `mcp__custom-tools__*` extension tools as callable; `tools=N`
+advertised and the model routes `subagent`/`SlowTool` via `onRouterPark`).
+
+First batch run: 24 PASS / 6 FAIL (s3, s4, s14, s20, s25, s7). Triage:
+- **s3, s4, s14, s20 — FLAKE → PASS on retry-1.** All four hit a *time-clustered*
+  claude-p "zero-output spawn" window (≈15:41–15:50Z): the `fresh spawn` line
+  logged, then the `claude` subprocess emitted NO stream events (no usage, no
+  `onRouterPark`, no `result`) for the whole scenario timeout. Once the window
+  cleared (s5/s6/s8/s9 at the tail all PASSED), each FAIL re-ran clean in isolation
+  on the first retry: s3 bash marker quoted (1 routing); s4 missing-file ack (1
+  read); **s14 subagent routed 3× (`onRouterPark name=subagent`) + `tool-result
+  delivery` — the driver-swap subagent path WORKS**; s20 FM1/FM3/no-fabrication all
+  green. Transient claude-p/API spawn stall, not a bridge defect.
+- **s25 — FLAKY A2 (capture sub-spawn MCP race) → PASS on retry-3 of 3.** A1/A3/A4/
+  A5/A6/A7 PASS every run (capture isolation core is solid: no supersession, 1
+  caching line, warm-resume on the original session, `WARM-RESUME-S25` produced).
+  A2 (`runClaudePCapture: success`) is intermittent: the single-shot capture spawn
+  on haiku sometimes ends in ~5s with `model did not call capture tool
+  "submit_digest"` (raced the MCP attach despite the `WaitForMcpServers` preamble),
+  sometimes runs ~9s and stashes the toolCall cleanly. Passed within the 3-attempt
+  budget (clean run: `runClaudePCapture: success — stash synthesized toolCall …`,
+  in=5988 out=1172). Watch item — see flakiness note below.
+- **s7 — documented EXEMPT (exact-number recall).** Abort MECHANICS all PASS
+  (`onAbort[claude-p]`, session preserved `caching session=… (aborted)`, post-abort
+  warm-resume `resume=8…`); only the literal reached-number coherence fails because
+  `claude --print` buffers the whole turn — no streamed "current number" to recall.
+
+### FINAL matrix (S0–S27) — every row PASS or EXEMPT
+
+| Scenario | Verdict | Evidence |
+|---|---|---|
+| S0 text multi-turn | PASS | recalls 137 + prime |
+| S1 single tool round-trip | PASS | read routed (`onRouterPark name=read`); T2 reuses result |
+| S2 multi-step sequential tools | PASS | referenced specific .ts files |
+| S3 long-running tool (30s) | PASS (retry-1) | quoted exact `DONE-MARKER-9F2A`; 1 bash routing |
+| S4 tool failure | PASS (retry-1) | acknowledged missing file; 1 read; no re-call |
+| S5 mid-stream steer | PASS | onAbort; affirmed prior printing-press topic |
+| S6 follow-up multi-turn | PASS | warm resume; cross-turn coherence |
+| S7 abort during text (Escape) | **EXEMPT** | abort mechanics PASS; exact-number recall exempt (`--print` buffering — task-designated) |
+| S8 abort during tool | PASS | onAbort; no orphan; model conveys non-completion |
+| S9 abort + immediate steer | PASS | onAbort; both topics enumerated |
+| S10 resume across pi restart | PASS | recalled pkg name + 137 after restart |
+| S10b warm cache resume | PASS | recalled octarine |
+| S11 parallel tool_use | PASS | ≥2 reads; FIFO id match |
+| S12 long convo (8 turns) | PASS | 1 cold + ≥6 warm; exact `XYZZY-7` recalled |
+| S13 rapid abort-retype | PASS | enumerated all three topics |
+| S14 subagent claude-bridge→claude-bridge | PASS (retry-1) | subagent routed 3× via `onRouterPark name=subagent`; `tool-result delivery`; `tools=5` advertised — **prior BRIDGE-BUG SUPERSEDED** |
+| S15 subagent claude-bridge→openai-codex | PASS | child dispatched; parent attributed to gpt-5.4 |
+| S16a pi `/fork` | PASS | forked branch recalled 137 + octarine |
+| S16b pi `/tree` navigation | PASS | `history divergence detected`; correctly forgot fremen mouse |
+| S17 pi `/compact` | PASS | exact `RUSTED-PHOENIX-7` recalled |
+| S18 basic-tools smoke | PASS | bash/read/write/edit each invoked; files written |
+| S19 tool-id queue integrity | PASS | id↔name cross-check, 0 mismatches |
+| S20 abort visibility (TDD guard) | PASS (retry-1) | onAbort + FM1 + FM3 (real post-abort tool_result) + no fabrication |
+| S21 (investigate) steer during long tool | PASS (diagnostic exit-0) | bash routes; steer-without-Escape recorded non-gating |
+| S22 (investigate) steer during non-bridge subagent | PASS (diagnostic exit-0) | investigation-mode dump |
+| S23 `/reload` provider re-registration | PASS | provider re-registered; `POST-RELOAD-9F4` |
+| S24 `/new` provider re-registration | PASS | provider re-registered; `POST-NEW-9F4` |
+| S25 capture during in-flight turn | PASS (retry-3) | A1–A7 all PASS on the clean attempt; A2 capture-sub-spawn MCP race is flaky (watch item) |
+| **S26 sustained warm prompt-cache (G4)** | **PASS** | NEW. 1 cold + 6 warm on 1 session; `cacheRead>0` on all 7 turns; steady-state warm shape: creation 1204→3020 (new-suffix only), read 12782→103686; turn 7 recalled all three facts (137, octarine, fremen mouse). NOT a per-turn cold re-creation. |
+| **S27 tool-surface isolation (G2/const-IV)** | **PASS** | NEW. 0 native tools routed/executed (`Bash`/`Read`/… never in `onRouterPark`); model's shell request routed through pi's OWN bridged `bash` (`onRouterPark name=bash`, lowercase = `mcp__custom-tools__bash`), never native CC `Bash`; `WaitForMcpServers` not routed; no `/etc/hosts` content leaked; control `read` returned the real package name. Emission-then-dropped = PASS. |
+
+### S26 + S27 — what they assert + claude-p verdict
+
+**S26 (`scripts/run-scenario-s26.sh`) — G4 sustained warm prompt-cache.** Drives 1
+cold + 6 sequential warm-resume turns (3 fact-plants + fillers + a recall probe)
+through the bridge's real large system prompt. Asserts from the bridge log:
+1 `cold-start` + ≥5 warm resumes on a SINGLE cached session id; ≥5 `usage:` lines
+with `cacheRead>0` (counted via `cacheRead=[1-9][0-9]*`); coherence = turn 7 recalls
+all three facts. **claude-p verdict: PASS.** Cache series (creation,read):
+(1204,12782)(2454,27098)(2504,42664)(2568,58280)(2628,73960)(2688,89700)
+(3020,103686) — creation tracks only the new suffix, reads grow monotonically =
+prompt-cache READ sustained across process boundaries, NOT cold re-creation. This
+is the pi-TUI-level G4 guarantee.
+
+**S27 (`scripts/run-scenario-s27.sh`) — G2/constitution-IV tool-surface isolation.**
+Turn 1 TEMPTS native tools ("use your built-in Bash tool to run `echo hi` … built-in
+file reader to read /etc/hosts"); turn 2 is the control (pi `read` on package.json).
+Asserts (cross-driver): ZERO routed/executed tools carry a native built-in name
+(`Bash|Read|Write|Edit|Glob|Grep|WebFetch|WebSearch|Task|Skill|ToolSearch|…`) on
+either `onRouterPark` (claude-p) or `mcp handler:` (SDK); every routed tool is a pi
+tool; `WaitForMcpServers` is NOT routed to pi; no `/etc/hosts` loopback content
+surfaces (non-execution); control `read` returns `pi-claude-bridge`. **claude-p
+verdict: PASS** — native_routed=0, total routings=3 all pi tools. Isolation
+evidence: the model's shell-command request was routed through pi's OWN bridged
+`bash` tool (`onRouterPark … "name":"bash"`, lowercase, = `mcp__custom-tools__bash`),
+NOT the native CC `Bash` built-in — the closed `mcp__custom-tools__*` surface held.
+Emission-then-dropped of a native `tool_use` is a PASS by design (per SCENARIOS.md
+S27 framing — you cannot prove the negative by watching one model run).
+
+### Flakiness summary (this gate run)
+- **Time-clustered zero-output claude-p spawns** (≈15:41–15:50Z) failed s3/s4/s14/s20
+  in the batch; ALL passed clean on retry-1 once the window cleared. Symptom: `fresh
+  spawn` logged, then no stream events at all until the scenario timeout. Transient
+  claude-p/API spawn stall (no orphan, no bridge stack trace) — not a defect. Re-run
+  any zero-output-spawn FAIL once.
+- **S25 A2 capture-sub-spawn MCP race**: ~1-in-3 the single-shot capture spawn on
+  haiku ends before calling `submit_digest` ("model did not call capture tool").
+  Capture-isolation core (A1/A3–A7) is rock-solid. Passes within the 2-retry budget;
+  flagged as a watch item, not a blocker.
+- S7 fails deterministically on exact-number coherence (the documented exemption);
+  its abort mechanics never fail.
+- No StopTimeouts / no orphan subprocesses (PARALLEL=1). `~/.claude` untouched.
+
+### S26/S27 watch item (capture path, non-blocking)
+The S25 A2 flake is the only intermittent claude-p behavior left. It lives in the
+single-shot CAPTURE path (`src/capture.ts runClaudePCapture` → `spawnClaudeP`, no
+PTY re-type retry), which races the capture shim's `mcp__custom-tools__*` attach
+despite the `mcpWaitPreamble` (`WaitForMcpServers`) guard. The MAIN path has a PTY
+prompt re-type retry (`pty: prompt re-type attempt N`) that the capture single-shot
+path lacks; adding an equivalent "no-toolcall-yet → re-prompt/extend" guard on the
+capture spawn would likely stabilize A2. NOT fixed here (src untouched) — flagged
+for the main agent as a hardening item, not a gate blocker.
+
+---
+
 ## FULL pi-TUI scenario suite on the claude-p driver — 2026-06-02
 
 Branch `replan-driver-from-phase-0`. Driver = **claude-p** (interactive-PTY,

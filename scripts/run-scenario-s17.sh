@@ -55,8 +55,8 @@ else
 fi
 
 # After compaction, bridge sees changed history → expect at least one cold-start
-cold=$(grep -cE "streamSimple: fresh query.*resume=no" "$BRIDGE_LOG" || echo 0)
-warm=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" || echo 0)
+cold=$(scn_cold_count)
+warm=$(scn_warm_resume_count)
 echo "  cold-starts: $cold  warm-resumes: $warm"
 
 echo "Cache profile (last 8):"

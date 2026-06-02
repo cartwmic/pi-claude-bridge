@@ -86,6 +86,18 @@ export interface CaptureDeps {
 	execPath: string;
 	/** MCP server name (`custom-tools`). */
 	mcpServerName: string;
+	/**
+	 * Prepend the claude-p MCP-startup-race guard to the (verbatim) system prompt.
+	 * The capture shim is spawned + connected by `claude` ASYNCHRONOUSLY, exactly
+	 * like the main path, so the model's first turn can begin before the capture
+	 * tool's `mcp__custom-tools__*` roster entry exists. Without a wait instruction
+	 * the model (esp. haiku) declines ("I don't have access to <captureTool>; my
+	 * only tool is WaitForMcpServers"), no capture is stashed, and the call fails
+	 * spuriously. This guard makes the model call `WaitForMcpServers` first. It is
+	 * a purely operational preamble (NOT pi-UI material), so it does not violate
+	 * constitution V's "no semantic blending" rule. Index.ts owns the text.
+	 */
+	mcpWaitPreamble: (systemPrompt: string) => string;
 	/** >threshold bytes → tmpfile for system prompt / user prompt. */
 	promptFileThresholdBytes: number;
 	/** Per-spawn wall-clock timeout (seconds). */
@@ -214,10 +226,15 @@ export async function runClaudePCapture(
 		},
 	});
 
-	// System prompt: forwarded verbatim (constitution V; NO capture-only addendum).
-	const systemPrompt: SystemPromptSource = systemPromptText.length > deps.promptFileThresholdBytes
-		? { kind: "file", path: deps.writeOverflowTmp("pcb-cap-sysprompt", systemPromptText) }
-		: { kind: "text", text: systemPromptText };
+	// System prompt: the pi systemPrompt is forwarded verbatim (constitution V; NO
+	// semantic / capture-only addendum), but we PREPEND the MCP-startup-race guard
+	// so the model deterministically waits for the (async-connecting) capture shim
+	// before declaring the capture tool unavailable. The preamble is operational,
+	// not pi-UI material — see CaptureDeps.mcpWaitPreamble.
+	const systemPromptWithGuard = deps.mcpWaitPreamble(systemPromptText);
+	const systemPrompt: SystemPromptSource = systemPromptWithGuard.length > deps.promptFileThresholdBytes
+		? { kind: "file", path: deps.writeOverflowTmp("pcb-cap-sysprompt", systemPromptWithGuard) }
+		: { kind: "text", text: systemPromptWithGuard };
 
 	// Prompt: positional, or --input-file when large/multiline.
 	const promptSrc: PromptSource = promptString.length > deps.promptFileThresholdBytes

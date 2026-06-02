@@ -25,14 +25,14 @@ echo "==== S1 results ===="
 # must have fired. Both are valid (the SDK can call the handler before or after
 # pi delivers, both are handled architecturally).
 if grep -qE "tool-result delivery" "$BRIDGE_LOG" && \
-   grep -qE "mcp handler: read .*(awaiting pi|early result)" "$BRIDGE_LOG"; then
-	scn_pass "tool-handler/result handshake observed (awaiting or early-result path)"
+   grep -qE "mcp handler: read .*(awaiting pi|early result)|onRouterPark: routed tools/call" "$BRIDGE_LOG"; then
+	scn_pass "tool-handler/result handshake observed (awaiting/early-result or onRouterPark path)"
 else
 	scn_fail "tool-handler handshake missing in bridge log"
 fi
 
 # Tool count: T1 should have 1 read tool. T2 should NOT re-call read (cached result).
-read_calls=$(grep -cE "mcp handler: read " "$BRIDGE_LOG" || echo 0)
+read_calls=$(scn_tool_count_named read)
 echo "  read tool invocations: $read_calls"
 if [[ "$read_calls" -le "1" ]]; then
 	scn_pass "tool result reused (no re-call on Turn 2)"

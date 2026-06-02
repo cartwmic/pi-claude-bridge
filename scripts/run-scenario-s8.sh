@@ -30,16 +30,25 @@ scn_send "Did the sleep command actually finish and print anything? Be specific 
 
 echo "==== S8 results ===="
 
-if grep -qE "onAbort:" "$BRIDGE_LOG"; then
+if grep -qE "onAbort" "$BRIDGE_LOG"; then
 	scn_pass "bridge onAbort fired"
 else
 	scn_fail "no onAbort"
 fi
 
-# No fabricated tool subprocess left over
-sleep 2
-ps_after=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || echo 0)
-ps_after=${ps_after:-0}
+# No fabricated tool subprocess left over.
+# Abort teardown is asynchronous: pi propagates the interrupt, the driver
+# tears down (on claude-p, the PTY is killed) and the tool subprocess is
+# reaped. That can take a few seconds, so poll for up to ~12s for the
+# orphan count to drop back to baseline rather than asserting after a fixed
+# 2s (which races the reap and yields spurious "orphan" failures).
+ps_after=$ps_before
+for _ in 1 2 3 4 5 6; do
+	ps_after=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || true)
+	ps_after=${ps_after:-0}
+	(( ps_after <= ps_before )) && break
+	sleep 2
+done
 echo "  sleep 120 procs: before=$ps_before after=$ps_after"
 if (( ps_after <= ps_before )); then
 	scn_pass "no orphan sleep subprocesses"

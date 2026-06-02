@@ -26,8 +26,8 @@ scn_wait_for "octarine" 90 || scn_fail "Turn 2 — color not recalled"
 echo "==== S10b results ===="
 
 # Architectural: T1 cold-start, T2 warm-resume
-cold=$(grep -cE "streamSimple: fresh query.*resume=no" "$BRIDGE_LOG" || echo 0)
-warm=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" || echo 0)
+cold=$(scn_cold_count)
+warm=$(scn_warm_resume_count)
 echo "  cold-starts: $cold  warm-resumes: $warm"
 if (( cold == 1 && warm == 1 )); then
 	scn_pass "1 cold + 1 warm (correct shape)"

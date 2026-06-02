@@ -29,7 +29,7 @@ scn_send "Briefly: what did I originally ask, and what did I switch to? In one s
 
 echo "==== S9 results ===="
 
-if grep -qE "onAbort:" "$BRIDGE_LOG"; then
+if grep -qE "onAbort" "$BRIDGE_LOG"; then
 	scn_pass "onAbort fired"
 else
 	scn_fail "no onAbort"

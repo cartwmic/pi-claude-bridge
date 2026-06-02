@@ -51,14 +51,14 @@ scn_send "Use the subagent tool ONCE to dispatch a worker on claude-bridge/claud
 # concern is that subagent dispatch goes through correctly.
 deadline=$((SECONDS + 240))
 while (( SECONDS < deadline )); do
-	if grep -q "mcp handler: subagent " "$BRIDGE_LOG" 2>/dev/null; then break; fi
+	if grep -qE "mcp handler: subagent |onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null; then break; fi
 	sleep 2
 done
 
 echo "==== S14 results ===="
 
 # Subagent tool was invoked
-subagent_calls=$(grep -ciE "mcp handler: subagent " "$BRIDGE_LOG" || echo 0)
+subagent_calls=$(scn_tool_count_named subagent)
 echo "  subagent invocations: $subagent_calls"
 
 # Multiple distinct CC session_ids (parent + child each get one)
@@ -72,10 +72,9 @@ else
 fi
 
 # Architectural: subagent tool was actually invoked at least once
-subagent_calls_check=$(grep -ciE "mcp handler: subagent " "$BRIDGE_LOG" || true)
-subagent_calls_check=${subagent_calls_check:-0}
+subagent_calls_check=$(scn_tool_count_named subagent)
 if (( subagent_calls_check >= 1 )); then
-	scn_pass "subagent tool was invoked through the bridge (>=1 mcp handler call)"
+	scn_pass "subagent tool was invoked through the bridge (>=1 routed tool call)"
 else
 	scn_fail "subagent tool was never invoked"
 fi

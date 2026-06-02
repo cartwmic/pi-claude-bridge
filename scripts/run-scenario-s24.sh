@@ -31,7 +31,7 @@ scn_pi_start
 scn_send "Reply with exactly the single token PRE-NEW-7K2 and nothing else."
 scn_wait_for "PRE-NEW-7K2" 60 || scn_fail "T1: pre-/new turn never produced marker"
 
-pre_queries=$(scn_grep_count "streamSimple: fresh query" "$BRIDGE_LOG")
+pre_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries before /new: $pre_queries"
 
 # Issue /new as a slash command.
@@ -74,7 +74,7 @@ fi
 # T2: confirm inference actually works post-/new (silent-hang regression guard).
 scn_send "What's the capital of Germany? Reply with exactly the single token POST-NEW-9F4 and nothing else."
 
-post_queries=$(scn_grep_count "streamSimple: fresh query" "$BRIDGE_LOG")
+post_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries after /new: $post_queries"
 
 if (( post_queries > pre_queries )); then

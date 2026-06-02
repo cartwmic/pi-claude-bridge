@@ -29,8 +29,8 @@ scn_wait_for "XYZZY" 60 || scn_fail "Recall — token not returned"
 echo "==== S12 results ===="
 
 # Architectural: 1 cold-start, many warm-resumes
-cold=$(grep -cE "streamSimple: fresh query.*resume=no" "$BRIDGE_LOG" || echo 0)
-warm=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" || echo 0)
+cold=$(scn_cold_count)
+warm=$(scn_warm_resume_count)
 echo "  cold-starts: $cold  warm-resumes: $warm"
 if (( cold == 1 && warm >= 6 )); then
 	scn_pass "1 cold + >=6 warm (long-conversation cache contract)"

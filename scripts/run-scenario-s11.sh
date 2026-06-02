@@ -18,7 +18,7 @@ scn_wait_for "(package|convert|TypeScript|json)" 90 || scn_fail "Turn 1 — no f
 echo "==== S11 results ===="
 
 # Architectural: at least 2 read invocations
-reads=$(grep -cE "mcp handler: read " "$BRIDGE_LOG" || echo 0)
+reads=$(scn_tool_count_named read)
 echo "  read invocations: $reads"
 if (( reads >= 2 )); then
 	scn_pass ">=2 read tool calls observed"
@@ -27,7 +27,7 @@ else
 fi
 
 # tool-result deliveries (each tool yields one delivery line)
-deliveries=$(grep -cE "tool-result delivery" "$BRIDGE_LOG" || echo 0)
+deliveries=$(scn_grep_count "tool-result delivery" "$BRIDGE_LOG")
 echo "  tool-result deliveries: $deliveries"
 if (( deliveries >= 1 )); then
 	scn_pass "tool-result deliveries observed"

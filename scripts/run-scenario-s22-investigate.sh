@@ -91,7 +91,7 @@ echo "[$(ts_rel)] T1 pane snapshot after send:"
 deadline=$((SECONDS + 180))
 saw_awaiting=0
 while (( SECONDS < deadline )); do
-	if grep -qE "mcp handler: subagent .* awaiting pi" "$BRIDGE_LOG" 2>/dev/null; then
+	if grep -qE "mcp handler: subagent .* awaiting pi|onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null; then
 		saw_awaiting=1
 		# Confirm it's still pending (no matching "returning" line yet).
 		awaiting_id=$(grep -oE "mcp handler: subagent \[toolu_[A-Za-z0-9]+\] — awaiting pi" "$BRIDGE_LOG" | tail -1 | grep -oE "toolu_[A-Za-z0-9]+")
@@ -240,7 +240,7 @@ fi
 
 # Architectural: onAbort must log the deferred-drain marker — confirming
 # we took the Option H path and didn't pre-drain pendingResolvers.
-if grep -q "deferred drain — waiting for pi's next event" "$BRIDGE_LOG"; then
+if grep -qE "deferred drain" "$BRIDGE_LOG"; then
 	scn_pass "onAbort took deferred-drain path (Option H)"
 else
 	scn_fail "onAbort did NOT defer drain — pendingResolvers were drained synchronously"
@@ -250,7 +250,7 @@ fi
 # event with `1 resolvers waiting` (or similar non-zero) — proving the
 # resolver was still alive when pi delivered the real subagent result.
 post_abort_delivery=$(awk '
-	/onAbort:/ { seen_abort=1 }
+	/onAbort/ { seen_abort=1 }
 	seen_abort && /tool-result delivery.*[1-9][0-9]* resolvers waiting/ { print; exit }
 ' "$BRIDGE_LOG")
 if [[ -n "$post_abort_delivery" ]]; then

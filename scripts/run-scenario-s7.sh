@@ -22,8 +22,18 @@ scn_pi_start
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Count from 1 to 100. For EACH number write 2-3 sentences of meditative reflection in markdown. Do not skip any numbers. Take your time."
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
-# Poll the bridge log for streaming activity, then send Escape MID-stream.
+# Poll the bridge log for an in-flight turn, then send Escape MID-stream.
 # We want to abort BEFORE 'caching session=' appears (that's the turn-complete marker).
+#
+# Cross-driver mid-turn signal:
+#   - SDK path streams incrementally → a "usage:" line appears mid-stream
+#     while content is still flowing; that's the classic abort window.
+#   - claude-p path runs `claude --print`, which BUFFERS the whole turn and
+#     emits "usage:" only at completion. There is no mid-stream usage line.
+#     The only in-flight signal is the spawn line ("fresh spawn"/"fresh
+#     query"): once it appears the model is generating (this prompt runs
+#     ~50s on haiku), so we wait a few seconds after spawn and abort while
+#     the turn is still running (before caching session=).
 deadline=$((SECONDS + 30))
 sent_escape=0
 while (( SECONDS < deadline )); do
@@ -32,12 +42,23 @@ while (( SECONDS < deadline )); do
 		echo "WARN: model finished before abort window opened" >&2
 		break
 	fi
-	# Wait for the SDK to have started streaming (first usage line means content is flowing).
+	# SDK mid-stream usage line — abort immediately after a brief settle.
 	if grep -qE "\"msg\":\"usage:" "$BRIDGE_LOG" 2>/dev/null; then
 		sleep 2  # let some content actually appear
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
+		"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 		sent_escape=1
 		break
+	fi
+	# claude-p (or SDK pre-usage): turn has spawned and is generating but no
+	# usage line yet. Give it a few seconds of generation, then abort.
+	if grep -qE "fresh spawn|fresh query" "$BRIDGE_LOG" 2>/dev/null; then
+		sleep 5  # let the buffered turn accumulate content before interrupting
+		# Re-check we didn't already complete during the settle.
+		if ! grep -qE "caching session=" "$BRIDGE_LOG" 2>/dev/null; then
+			"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
+			sent_escape=1
+			break
+		fi
 	fi
 	sleep 0.5
 done
@@ -49,7 +70,7 @@ scn_send "What number did you reach before I interrupted you? Reply with just th
 echo "==== S7 results ===="
 
 # Architectural: bridge observed onAbort
-if grep -qE "onAbort:" "$BRIDGE_LOG"; then
+if grep -qE "onAbort" "$BRIDGE_LOG"; then
 	scn_pass "bridge onAbort fired"
 else
 	scn_fail "bridge onAbort never fired (abort signal didn't reach bridge)"
@@ -57,7 +78,7 @@ fi
 
 # Architectural: cachedSessionId preserved across abort (so resume works on T2)
 # Look for resume=<id> on a subsequent fresh query.
-post_abort_resumes=$(grep -cE "streamSimple: fresh query.*resume=[a-f0-9]" "$BRIDGE_LOG" 2>/dev/null || true)
+post_abort_resumes=$(scn_warm_resume_count)
 post_abort_resumes=${post_abort_resumes:-0}
 echo "  post-abort resumes: $post_abort_resumes"
 if (( post_abort_resumes >= 1 )); then

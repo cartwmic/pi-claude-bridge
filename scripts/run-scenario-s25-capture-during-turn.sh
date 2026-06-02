@@ -48,7 +48,7 @@ echo "  Waiting for SlowTool to reach awaiting-pi state..."
 deadline=$((SECONDS + 60))
 slowtool_waiting=0
 while (( SECONDS < deadline )); do
-	if grep -qE "mcp handler: SlowTool.*awaiting pi" "$BRIDGE_LOG" 2>/dev/null; then
+	if grep -qE "mcp handler: SlowTool.*awaiting pi|onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null; then
 		slowtool_waiting=1
 		break
 	fi
@@ -79,7 +79,7 @@ echo "  Waiting for capture call to complete..."
 deadline=$((SECONDS + 60))
 capture_done=0
 while (( SECONDS < deadline )); do
-	if grep -qE "runCaptureQuery: done" "$BRIDGE_LOG" 2>/dev/null; then
+	if grep -qE "runCaptureQuery: done|runClaudePCapture: success" "$BRIDGE_LOG" 2>/dev/null; then
 		capture_done=1
 		break
 	fi
@@ -143,7 +143,7 @@ scn_send "Reply with exactly the single token WARM-RESUME-S25 and nothing else."
 # A6: Turn 2 resumed on the same session_id (no cold-start caused by capture call).
 post_t2_resumes=0
 if [[ -n "$session_id" ]]; then
-	post_t2_resumes=$(scn_grep_count "streamSimple: fresh query.*resume=${session_id}" "$BRIDGE_LOG")
+	post_t2_resumes=$(scn_grep_count "(fresh query|fresh spawn).*resume=${session_id}" "$BRIDGE_LOG")
 fi
 echo "  warm-resume hits for session=${session_id}: $post_t2_resumes"
 
@@ -171,7 +171,7 @@ scn_cache_profile
 
 echo ""
 echo "Bridge log — capture-relevant lines:"
-grep -E "mode.*capture|runCaptureQuery|mcp handler: SlowTool" "$BRIDGE_LOG" 2>/dev/null || echo "  (none found)"
+grep -E "mode.*capture|runCaptureQuery|runClaudePCapture|mcp handler: SlowTool|onRouterPark" "$BRIDGE_LOG" 2>/dev/null || echo "  (none found)"
 
 echo ""
 echo "Session counts:"

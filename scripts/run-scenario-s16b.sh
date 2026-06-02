@@ -54,7 +54,7 @@ else
 fi
 
 # After divergence, post-tree turn should be a cold-start (resume=no)
-post_tree_cold=$(scn_grep_count "streamSimple: fresh query.*resume=no" "$BRIDGE_LOG")
+post_tree_cold=$(scn_cold_count)
 echo "  cold-starts in run: $post_tree_cold"
 if (( post_tree_cold >= 2 )); then
 	scn_pass "post-tree turn cold-started (>=2 cold-starts: initial + post-tree)"

@@ -32,7 +32,7 @@ scn_send "Earlier in this conversation, did I ever ask you about the printing pr
 echo "==== S5 results ===="
 
 # Architectural: onAbort fired
-if grep -qE "onAbort:" "$BRIDGE_LOG"; then
+if grep -qE "onAbort" "$BRIDGE_LOG"; then
 	scn_pass "onAbort fired (steer interrupted active turn)"
 else
 	scn_fail "no onAbort — steer didn't actually interrupt mid-stream"

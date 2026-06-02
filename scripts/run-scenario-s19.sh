@@ -98,8 +98,17 @@ for line in open("$latest_session"):
             if b.get("type") == "toolCall":
                 pi_id_to_name[b["id"]] = b.get("name")
 
-# 2) scan bridge log for `mcp handler: <name> [<id>]` lines
+# 2) scan bridge log for tool-routing lines on EITHER driver.
+#    SDK path:     `mcp handler: <name> [<toolu_...id>]` — id is the SDK
+#                  toolUseId, which pi also records as the toolCall id.
+#    claude-p path: `onRouterPark: routed tools/call ...` carrying JSON
+#                  fields {"piId":"pi-...","name":"<tool>"}. The piId is
+#                  the router-minted id that pi echoes back as toolResult.id,
+#                  so pi's JSONL records it as the toolCall id too.
+#    Either way the invariant is the same: handler/router (id → name) must
+#    agree with pi's (id → name). A disagreement = stale-id queue poisoning.
 mismatches = []
+matched_any = 0
 pat = re.compile(r"mcp handler: (\S+) \[(toolu_[A-Za-z0-9]+)\]")
 for line in open("$BRIDGE_LOG"):
     try:
@@ -107,10 +116,18 @@ for line in open("$BRIDGE_LOG"):
     except Exception:
         continue
     msg = rec.get("msg", "")
+    handler_name = handler_id = None
+    # SDK dialect.
     mo = pat.search(msg)
-    if not mo: continue
-    handler_name = mo.group(1)
-    handler_id = mo.group(2)
+    if mo:
+        handler_name, handler_id = mo.group(1), mo.group(2)
+    # claude-p dialect: structured fields on the onRouterPark line.
+    elif "onRouterPark: routed tools/call" in msg:
+        handler_name = rec.get("name")
+        handler_id = rec.get("piId")
+    if not handler_id:
+        continue
+    matched_any += 1
     pi_name = pi_id_to_name.get(handler_id)
     if pi_name is None:
         mismatches.append(("ORPHAN", handler_name, handler_id, "<not in pi JSONL>"))
@@ -119,6 +136,7 @@ for line in open("$BRIDGE_LOG"):
 
 for m in mismatches:
     print("  " + " | ".join(str(x) for x in m))
+print(f"  routed tool calls cross-checked: {matched_any}")
 print(f"COUNT={len(mismatches)}")
 EOF
 )

@@ -36,7 +36,7 @@ scn_send "List the three different things I asked you in this conversation, in o
 echo "==== S13 results ===="
 
 # Architectural: at least 2 onAbort events
-abort_count=$(scn_grep_count "onAbort:" "$BRIDGE_LOG")
+abort_count=$(scn_grep_count "onAbort" "$BRIDGE_LOG")
 echo "  onAbort events: $abort_count"
 if (( abort_count >= 2 )); then
 	scn_pass ">=2 onAbort events (both rapid aborts fired)"

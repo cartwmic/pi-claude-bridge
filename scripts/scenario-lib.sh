@@ -179,6 +179,47 @@ scn_session_count() {
 	echo "${n:-0}"
 }
 
+# Cross-driver tool-routing helpers.
+#
+# The SDK path logs `mcp handler: <tool> [...]` per tool invocation.
+# The claude-p path logs `onRouterPark: routed tools/call to pi (piId=...)`
+# with the tool name carried in the structured JSON field `"name":"<tool>"`
+# (the message string itself only carries piId). These helpers count tool
+# routings on EITHER driver so a single assertion passes on both.
+
+# scn_tool_count_any -> total tool routings across either driver.
+scn_tool_count_any() {
+	local sdk cp
+	sdk=$(scn_grep_count "mcp handler: [a-zA-Z0-9_]+ \[" "$BRIDGE_LOG")
+	cp=$(scn_grep_count "onRouterPark: routed tools/call" "$BRIDGE_LOG")
+	echo $(( sdk + cp ))
+}
+
+# scn_tool_count_named "<tool>" -> routings of a specific tool across either driver.
+# SDK: `mcp handler: <tool> [`. claude-p: onRouterPark line carrying `"name":"<tool>"`.
+scn_tool_count_named() {
+	local tool="$1"
+	local sdk cp
+	sdk=$(scn_grep_count "mcp handler: ${tool} \[" "$BRIDGE_LOG")
+	# Match the onRouterPark line AND the JSON name field on the same line.
+	cp=$(grep -E "onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null \
+		| grep -cE "\"name\":\"${tool}\"" 2>/dev/null || true)
+	cp=${cp:-0}
+	echo $(( sdk + cp ))
+}
+
+# scn_warm_resume_count -> number of warm-resume turns across either driver.
+# SDK: `streamSimple: fresh query ... resume=<hex>`.
+# claude-p: `streamSimple[claude-p]: fresh spawn ... resume=<hex>`.
+scn_warm_resume_count() {
+	scn_grep_count "(fresh query|fresh spawn).*resume=[a-f0-9]" "$BRIDGE_LOG"
+}
+
+# scn_cold_count -> number of cold-start turns across either driver (resume=no).
+scn_cold_count() {
+	scn_grep_count "(fresh query|fresh spawn).*resume=no" "$BRIDGE_LOG"
+}
+
 # Helper: count regex matches, sanitizing output to a single integer.
 scn_grep_count() {
 	# scn_grep_count "<regex>" "<file>"

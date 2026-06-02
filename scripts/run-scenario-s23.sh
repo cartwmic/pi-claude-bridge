@@ -29,7 +29,7 @@ scn_send "Reply with exactly the single token PRE-RELOAD-7K2 and nothing else."
 scn_wait_for "PRE-RELOAD-7K2" 60 || scn_fail "T1: pre-reload turn never produced marker"
 
 # Snapshot bridge-log query count before reload.
-pre_queries=$(scn_grep_count "streamSimple: fresh query" "$BRIDGE_LOG")
+pre_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries before reload: $pre_queries"
 
 # Issue /reload as a slash command.
@@ -67,7 +67,7 @@ sleep 2
 # scn_send times out (no `caching session=` ever appears).
 scn_send "What's the capital of France? Respond with exactly the single token POST-RELOAD-9F4 and nothing else."
 
-post_queries=$(scn_grep_count "streamSimple: fresh query" "$BRIDGE_LOG")
+post_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries after reload: $post_queries"
 
 if (( post_queries > pre_queries )); then

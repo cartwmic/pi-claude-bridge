@@ -109,7 +109,7 @@ synth = int((r2.stdout or "0").strip())
 print(f"Synthetic 'interrupted by user' drains: {synth}")
 
 # Was there a supersede + onAbort pair?
-r3 = subprocess.run(["grep", "-cE", "(superseding active frame|onAbort:)", bridge], capture_output=True, text=True)
+r3 = subprocess.run(["grep", "-cE", "(superseding active frame|onAbort)", bridge], capture_output=True, text=True)
 abort_events = int((r3.stdout or "0").strip())
 print(f"Supersede/onAbort events total: {abort_events}")
 EOF

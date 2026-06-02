@@ -22,7 +22,7 @@ scn_wait_for "(does not exist|not found|cannot|error|no such)" 60 || scn_fail "T
 echo "==== S4 results ===="
 
 # Tool invocation observed
-read_calls=$(grep -cE "mcp handler: read " "$BRIDGE_LOG" || echo 0)
+read_calls=$(scn_tool_count_named read)
 echo "  read invocations: $read_calls"
 if (( read_calls >= 1 )); then
 	scn_pass ">=1 read tool invocation"

@@ -310,3 +310,169 @@ bash tests/int-claude-p-abort.sh                      # T1.13
 bash tests/int-claude-p-abort-late-tool-result.sh     # T1.14
 node --test tests/int-claude-p-abort-coherence.mjs    # G5 / S7 / S8
 ```
+
+---
+
+## FULL pi-TUI scenario suite on the claude-p driver — 2026-06-02
+
+Branch `replan-driver-from-phase-0`. Driver = **claude-p** (interactive-PTY,
+`CLAUDE_BRIDGE_DRIVER=claude-p`). Models: haiku-4-5 default; opus-4-7 where the
+override file pins it (s5/s13/s20) or where reliable tool-calling is needed.
+`SCENARIO_PARALLEL=1`, real env (CLAUDE_CONFIG_DIR/HOME NOT overridden).
+Bridge logs: `.test-output/scenarios/<name>.bridge.log`.
+
+### Result matrix (S0–S27)
+
+| Scenario | claude-p status | What the model/probe actually did |
+|---|---|---|
+| S0 text multi-turn | **PASS** | recalls 137 + prime; 1 cached session; cacheRead surfaced (see cache note) |
+| S1 single tool round-trip | **PASS** | read routed via `onRouterPark` (name=read); T2 reused result; warm cache read=30628 |
+| S2 multi-step sequential tools | **PASS** | 3 tool routings in 1 turn; referenced specific .ts files |
+| S3 long-running tool (30s) | **PASS** | quoted exact `DONE-MARKER-9F2A`; no timeout |
+| S4 tool failure | **PASS** | acknowledged missing file; 1 read; no re-call |
+| S5 mid-stream steer | **PASS** | onAbort fired; model affirmed prior printing-press request ("Yes.") — NOT exempt; claude-p abort-and-respawn preserves the interrupted session and the model recalls the abandoned topic |
+| S6 follow-up multi-turn | **PASS** | warm resume; 1 read; cross-turn coherence |
+| S7 abort during text (Escape) | **EXEMPT (exact-number only)** | abort MECHANICS PASS: onAbort fired mid-turn, session preserved (`caching session=… (aborted)`), post-abort warm resume. Exact "what number did you reach" recall is exempt — claude-p `--print` buffers the whole turn into one burst, so the aborted partial has no streamed "current number" to recall |
+| S8 abort during tool | **PASS** | onAbort fired; no orphan sleep subprocs (poll-for-reap fix); model knew sleep aborted, no fabricated HELLO-S8 |
+| S9 abort + immediate steer | **PASS** | onAbort fired; enumerated both abandoned + current task |
+| S10 resume across pi restart | **PASS** | 2 cold-starts (initial + post-restart); recalled pkg name + 137 after `--session` restart |
+| S10b warm cache resume | **PASS** | 1 cold + 1 warm; recalled "octarine" |
+| S11 parallel tool_use | **PASS** | 2 reads; FIFO held; both files referenced |
+| S12 long convo (8 turns) | **PASS** | 1 cold + 7 warm; exact `XYZZY-7` recalled |
+| S13 rapid abort-retype | **PASS** | 2 onAbort events; enumerated all three topics (/etc, src, .ts) |
+| S14 subagent claude-bridge→claude-bridge | **BRIDGE-BUG** | model emits the subagent tool-call as *literal text JSON* instead of invoking it; bridge router never sees it (0 routings). Extension-registered tools not exposed as callable on claude-p (see Bridge Bug below). SDK path PASSES identically. |
+| S15 subagent claude-bridge→openai-codex | **PASS** | subagent dispatched (wrote /tmp/s15-summary.txt), parent attributed to gpt-5.4, bridge owned only the parent's 1 session. (Functionally works because the child ran outside the bridge.) |
+| S16a pi `/fork` | **PASS** | 2 session files; forked branch recalled BOTH 137 + octarine |
+| S16b pi `/tree` navigation | **PASS** | `history divergence detected` fired; ≥2 cold-starts; model correctly did NOT claim "fremen mouse" |
+| S17 pi `/compact` | **PASS** | exact `RUSTED-PHOENIX-7` recalled after compaction; no compaction-specific bridge code |
+| S18 basic-tools smoke | **PASS** | bash/read/write/edit each invoked once; files written; 1 session |
+| S19 tool-id queue integrity | **PASS** | 2 routed calls cross-checked against pi's id↔name JSONL (via `onRouterPark` piId+name); 0 mismatches |
+| S20 abort visibility (TDD guard) | **PASS** | onAbort + FM1 (`pushAbortedError[claude-p]: pi was awaiting tool result`) + FM3 (real post-abort tool_result) + no fabrication; coherence accepts the claude-p "command never ran" framing |
+| S21 (investigate) steer during long tool | **PASS (diagnostic, exit 0)** | investigation-mode timeline dump; bash tool (builtin) routes fine; steer-without-Escape produced no onAbort on claude-p (recorded, non-gating) |
+| S22 (investigate) steer during non-bridge subagent | **BLOCKED (setup)** | hits the same subagent custom-tool bug as S14 — parent can't dispatch the subagent through the bridge, so the repro setup never reaches `awaiting pi` and the script early-exits 0. Investigation-mode; assertions could not be exercised on claude-p |
+| S23 `/reload` provider re-registration | **PASS** | provider re-registered (count=2); post-reload turn produced `POST-RELOAD-9F4` |
+| S24 `/new` provider re-registration | **PASS** | provider re-registered; active provider still claude-bridge; produced `POST-NEW-9F4` |
+| S25 capture during in-flight turn | **BRIDGE-BUG (A1/A5)** | capture-isolation core PASSES on claude-p: A2 (`runClaudePCapture: success`), A3 (no supersession), A4 (1 caching line — cachedSessionId not mutated), A6 (warm-resume on original session), A7 (`WARM-RESUME-S25`). A1/A5 fail because the SlowTool (extension-registered) is not exposed as callable on claude-p — model reports "No SlowTool available" — same root cause as S14. SDK path PASSES all 7. |
+
+S26/S27 are not part of the scenario `scripts/` set (S26 documented separately above as the G4 cache gate). The script suite runs S0–S25 + s21/s22-investigate.
+
+### Tally
+- **PASS: 22** — S0,S1,S2,S3,S4,S5,S6,S8,S9,S10,S10b,S11,S12,S13,S15,S16a,S16b,S17,S18,S19,S20,S23,S24
+- **PASS (diagnostic exit-0): S21-investigate**
+- **EXEMPT (documented): S7** (exact-number recall only — abort mechanics pass)
+- **BRIDGE-BUG: S14, S25** (+ **S22-investigate** blocked by the same bug) — extension-registered custom tools not exposed as callable on the claude-p path
+
+### EXEMPTIONS (rationale)
+
+**S7 — exact-number recall after mid-text abort.** claude-p drives `claude --print`,
+which buffers the entire turn and emits it as one burst at completion (the bridge's
+`usage:` line appears only at turn-end, never mid-stream — confirmed in s7.bridge.log:
+the single `usage:` line lands ~56s after spawn, after out=11094 tokens). The abort
+MECHANICS work fully (onAbort fires mid-turn, the session is preserved as
+`caching session=… (aborted)`, and the next turn warm-resumes on it). But because the
+model never *streamed* an incremental "current number" to the user before the buffered
+burst was cut, there is no specific reached-number for it to recall on the resume turn.
+The "was I interrupted" coherence is acceptable; only the literal exact-number recall is
+exempt. This is a fundamental property of the `--print` buffering surface, not a bridge
+defect. (Task-designated exemption — confirmed.)
+
+**S5 — NOT exempt.** Although claude-p has no mid-turn injection (a steer = abort +
+respawn, no in-flight steering), the architectural assertions AND the coherence probe
+both PASS: onAbort fires, no deferred-replay, and the post-abort turn warm-resumes the
+interrupted session so the model affirms the abandoned printing-press topic. The
+abort-and-respawn model satisfies S5's acceptance bar on claude-p, so no exemption is
+needed.
+
+### Cache note (S0)
+On claude-p, cacheRead across separate `claude --resume` spawns is variable for *tiny*
+text turns (a small stable prefix can miss Anthropic's 5-min prompt-cache window across
+process boundaries — observed cacheRead=0 on one S0 run, 38035 on another). The bridge
+faithfully surfaces whatever claude reports (verified against the transcript's
+`cache_read_input_tokens`). Tool-using / larger-context turns reliably cache
+(S1 read=30628/45362, S0 warm run read=38035). S0's `cacheRead>0` assertion can flake on
+a cold prompt-cache; re-running warms it. Not a bridge plumbing defect.
+
+### BRIDGE BUG — extension-registered custom tools not callable on claude-p (blocks S14, S25; setup-blocks S22-investigate)
+
+**Symptom.** On the claude-p driver the model does NOT invoke pi tools that were
+registered by an *extension* (`pi.registerTool`) — specifically `SlowTool`
+(slow-tool-extension.ts) and `subagent` (pi-subagents). pi's *built-in* tools
+(bash/read/write/edit) work fine (they route via `mcp__custom-tools__<name>` → the
+bridge router → `onRouterPark`). On the **SDK** driver the very same scenarios, fixtures,
+and models invoke those tools correctly (S14 SDK: `mcp handler: subagent [toolu_…] —
+awaiting pi`, result delivered; S25 SDK: all 7 assertions PASS).
+
+**Evidence (reproducible, isolated to the driver):**
+- S14 claude-p (opus): 0 bridge routings; the model printed the tool call as *literal
+  text* —
+  `{"name":"subagent","arguments":{"agent":"builtin/general","model":"claude-bridge/claude-haiku-4-5",...}}` —
+  instead of issuing a real tool call. S14 SDK (opus): `subagent invocations: 1`, PASS.
+- S25 claude-p (haiku & opus): model responds "No SlowTool available. Tools I have:
+  bash, read, write, edit, subagent". S25 SDK (haiku): A1 `mcp handler: SlowTool … —
+  awaiting pi`, all 7 PASS.
+- Tool-visibility probe (claude-p, pi-subagents loaded): asking the model to list its
+  callable tools returns `mcp__custom-tools__{bash,edit,write,read,ls,grep,…}` PLUS
+  `mcp__pi-subagents__subagent` and `mcp__mcp-memory__*` — i.e. the model "sees"
+  extension tools under *foreign* MCP-server namespaces, not the bridge's
+  `mcp__custom-tools__` server, even though the bridge passes `--strict-mcp-config` +
+  `--setting-sources ""` (src/driver/claudeP.ts:209-210). Either (a) extension-registered
+  tools are not being collected into the bridge's `context.tools` / `resolveMcpTools`
+  toolDefs (index.ts:925-938, 1847-1851) the way the SDK collects them, so they never
+  reach the bridge's MCP server; and/or (b) `--strict-mcp-config` is not isolating
+  claude from the user's globally-configured MCP servers in interactive `--print` mode,
+  so the model partially "knows" about pi-subagents/mcp-memory but cannot reliably call
+  them through the bridge.
+
+**Suspected src locations (for the main agent — NOT touched here):**
+- `index.ts:925-938` `resolveMcpTools` / `index.ts:1847-1851` `toolDefs` construction
+  (claude-p path) — confirm extension-registered tools are present in `context.tools`
+  for the claude-p frame the same as the SDK frame.
+- `src/driver/claudeP.ts:209-210` `--strict-mcp-config` + `--setting-sources ""` — verify
+  these actually isolate interactive `--print` from `~/.claude` MCP servers; the probe
+  suggests foreign MCP namespaces are visible.
+- `index.ts:437` `extractAppendSystem` tool-notice hardcodes only
+  `bash/read/write/edit/subagent` as example bare names — if the model is relying on this
+  list (it echoed it verbatim as "tools I have"), the notice should enumerate the actual
+  advertised tool set rather than a fixed example list.
+
+This is the only blocker to an all-green claude-p suite. Built-in-tool, text, abort,
+resume, fork, tree, compact, reload/new, capture-isolation, and tool-id-queue behavior
+are all sound on claude-p.
+
+### Scenario-script edits made (cross-driver; SDK path preserved via alternation)
+- `scenario-lib.sh`: added `scn_tool_count_any`, `scn_tool_count_named <tool>`,
+  `scn_warm_resume_count`, `scn_cold_count` — count tool routings / cold / warm across
+  EITHER driver (SDK `mcp handler: <tool> [` ∪ claude-p `onRouterPark … "name":"<tool>"`;
+  SDK `fresh query … resume=` ∪ claude-p `fresh spawn … resume=`).
+- Tool-count asserts switched to the helpers: s1, s2, s3, s4, s6, s11, s14, s18.
+- Cold/warm asserts switched to helpers: s6, s10, s10b, s12, s16b, s17.
+- `onAbort:` greps → `onAbort` (matches both `onAbort:` and `onAbort[claude-p]:`): s5,
+  s7, s8, s9, s13, s20, s21-investigate, s22-investigate.
+- `fresh query` greps → `fresh (query|spawn)` alternation: s7, s23, s24, s25.
+- `pushAbortedError: …` → `pushAbortedError(\[claude-p\])?: …` (s20).
+- `runCaptureQuery: done` → `runCaptureQuery: done|runClaudePCapture: success` (s25, A2).
+- S20 coherence positive regex widened to accept truthful "never ran / not executed"
+  non-completion framing (valid for SDK too).
+- S7 abort window now triggers off `fresh spawn|fresh query` + settle when no mid-stream
+  `usage:` line exists (claude-p buffers), bailing if `caching session=` already landed.
+- S8 orphan-subprocess check polls up to ~12s for the async abort-teardown reap instead
+  of asserting after a fixed 2s (was racing the reap → spurious orphan FAIL).
+- `|| echo 0` shell-bug (`grep -c` → "0\n0" under pipefail) replaced with `scn_grep_count`
+  in: s1, s2, s3, s4, s6, s10, s10b, s11, s12, s14, s15, s17.
+- S19 Python id↔name cross-check extended to the claude-p dialect (reads `piId`+`name`
+  JSON fields off `onRouterPark` lines, in addition to SDK `mcp handler: <name> [<id>]`).
+
+All alternations keep the SDK path passing (verified: S14 + S25 still PASS on
+`CLAUDE_BRIDGE_DRIVER=sdk`).
+
+### Flakiness / retries
+- S0 cacheRead>0: flaked once (read=0 cold prompt-cache), passed on re-run (read=38035).
+- S1: first run scn_send timed out on a slow turn-1 spawn (read count 0); clean PASS on
+  re-run. Turn-1 cold-spawn latency on claude-p can exceed the warn threshold.
+- S25: retried 2× — A2/A6/A7 stabilized; A1/A5 remained blocked by the custom-tool bug.
+- S14: retried 1× — consistent (custom-tool bug, not a flake).
+- No contention StopTimeouts observed (PARALLEL=1).
+
+### Constraints honored
+Only `scripts/**` (+ this file) edited. No `src/**` or `index.ts` changes. No commits.
+`~/.claude` untouched (CLAUDE_CONFIG_DIR/HOME not overridden). `npm run build` run first.

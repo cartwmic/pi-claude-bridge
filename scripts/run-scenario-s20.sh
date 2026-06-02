@@ -55,7 +55,7 @@ S20_SENTINEL="S20-SENTINEL-A4F2K"
 deadline=$((SECONDS + 30))
 mid_tool=0
 while (( SECONDS < deadline )); do
-	if grep -q "mcp handler: bash .* awaiting pi" "$BRIDGE_LOG" 2>/dev/null; then
+	if grep -qE "mcp handler: bash .* awaiting pi|onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null; then
 		mid_tool=1
 		break
 	fi
@@ -74,7 +74,7 @@ scn_send "Did the sleep command actually complete and print anything? Be specifi
 echo "==== S20 results ===="
 
 # Architectural: bridge observed onAbort
-if grep -q "onAbort:" "$BRIDGE_LOG"; then
+if grep -qE "onAbort" "$BRIDGE_LOG"; then
 	scn_pass "bridge onAbort fired"
 else
 	scn_fail "no onAbort in bridge log"
@@ -83,7 +83,7 @@ fi
 # FM1 — Case C must produce an explicit error/aborted push to pi's stream.
 # The fix instruments this with the canonical message
 # `pushAbortedError: pi was awaiting tool result, surfacing aborted to pi stream`.
-if grep -q "pushAbortedError: pi was awaiting tool result" "$BRIDGE_LOG"; then
+if grep -qE "pushAbortedError(\[claude-p\])?: pi was awaiting tool result" "$BRIDGE_LOG"; then
 	scn_pass "FM1: aborted error pushed to pi stream during tool-execution window (Case C)"
 else
 	scn_fail "FM1: silent abort — bridge never pushed error/aborted to pi while pi was awaiting tool result"
@@ -140,11 +140,19 @@ else
 fi
 
 # COHERENCE: model must affirm the abort, not claim a tool failure or success.
+# Positive regex accepts EITHER framing of the (correct) outcome: explicit
+# user-interruption attribution (SDK incremental-stream framing) OR a
+# non-completion statement ("never ran", "not executed", "did not run") —
+# the claude-p `--print` path buffers the turn, so after abort+resume the
+# model often frames the aborted tool as "command never ran / not executed"
+# rather than "you interrupted me". Both are truthful and equally satisfy
+# the invariant (no fabricated success, no claimed tool error). The negative
+# regex still fails the test on any false success/error-completion claim.
 scn_assert_response \
 	"Did the sleep command actually complete and print anything" \
-	"(interrupted|aborted|cancel|stopped|did not (complete|finish|run)|never (printed|completed|finished)|you (interrupted|stopped|cancel))" \
+	"(interrupted|aborted|cancel|stopped|did not (complete|finish|run|execute)|never (printed|completed|finished|ran|run|executed|invoked|got to run)|not executed|command never|didn't (run|execute|complete|finish)|you (interrupted|stopped|cancel))" \
 	"(yes.*(completed|printed)|the command (completed|printed|succeeded)|tool (failed|errored|returned an error)|exit code [0-9]+)" \
-	"coherence: model attributes the stop to user interruption, not tool failure or completion"
+	"coherence: model reports the command did not complete (interruption or non-execution), not success/tool-failure"
 
 # No legacy abort surgery
 if grep -qE "(UUID rotation|pendingTruncate|truncating)" "$BRIDGE_LOG"; then

@@ -66,6 +66,50 @@ import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from ".
 const MCP_SERVER_NAME = "custom-tools";
 const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
+/**
+ * claude-p MCP-startup-race guard (system-prompt preamble).
+ *
+ * ROOT CAUSE this addresses: on the claude-p path the bridge's bridged tools are
+ * delivered by a stdio MCP server (`custom-tools`, the shim) that `claude` spawns
+ * and connects ASYNCHRONOUSLY. claude-p drives the interactive TUI and the model's
+ * first turn frequently begins BEFORE the shim has finished its MCP handshake, so
+ * the model's initial tool roster contains only the native `WaitForMcpServers`
+ * tool and NOT yet `mcp__custom-tools__*`. `claude` exposes `WaitForMcpServers`
+ * precisely so the model can block until pending servers connect — but USING it is
+ * left to the model's discretion, and smaller models (e.g. haiku) routinely
+ * DECLINE: they answer "I don't have access to <tool>; my only tool is
+ * WaitForMcpServers" and end the turn. That is the S14 (nested subagent) / S25
+ * (capture-during-turn) blocker: no `tools/call` is ever emitted, so the bridge's
+ * router never parks and the round never runs.
+ *
+ * The SDK path does NOT hit this: the SDK in-process MCP server is connected
+ * before the query starts, so its roster is complete on turn 1.
+ *
+ * The fix is deterministic and model-agnostic: tell the model, up front, that its
+ * tools arrive via a server that may still be connecting and that it MUST call
+ * `WaitForMcpServers` before ever concluding a bridged tool is unavailable. This
+ * converts the nondeterministic "model might wait" behavior into "model always
+ * waits", which is exactly what `WaitForMcpServers` is designed for. It is the
+ * minimal correct fix: it changes no isolation flags (G2 closed-set is untouched —
+ * the only tools that exist are still `mcp__custom-tools__*` + the native
+ * `WaitForMcpServers`, which the bridge already filters out of the observable
+ * tool-use stream) and adds no new subprocess plumbing.
+ */
+const CLAUDE_P_MCP_WAIT_PREAMBLE =
+	`Your tools are provided by an MCP server named "${MCP_SERVER_NAME}" that may still ` +
+	`be connecting when your turn begins. Tool names you can call therefore appear as ` +
+	`\`${MCP_TOOL_PREFIX}<name>\`. If a tool you need or were asked to use is not yet in ` +
+	`your available tools, you MUST first call the \`WaitForMcpServers\` tool and wait for ` +
+	`the server to finish connecting, THEN use the tool. Never tell the user a bridged ` +
+	`(\`${MCP_TOOL_PREFIX}*\`) tool is unavailable, and never decline a request, without ` +
+	`first calling \`WaitForMcpServers\`.`;
+
+/** Prepend the MCP-startup-race preamble to a claude-p system prompt (see CLAUDE_P_MCP_WAIT_PREAMBLE). */
+function withClaudePMcpWaitPreamble(systemPrompt: string): string {
+	const base = systemPrompt.trim();
+	return base ? `${CLAUDE_P_MCP_WAIT_PREAMBLE}\n\n${base}` : CLAUDE_P_MCP_WAIT_PREAMBLE;
+}
+
 // Pi sends lowercase tool names; the SDK uses PascalCase for built-ins.
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
@@ -1548,6 +1592,7 @@ function buildCaptureDeps(): CaptureDeps {
 		logger: logger.child({ piSessionId: getPiSessionId() }) as unknown as CaptureDeps["logger"],
 		execPath: process.execPath,
 		mcpServerName: MCP_SERVER_NAME,
+		mcpWaitPreamble: withClaudePMcpWaitPreamble,
 		promptFileThresholdBytes: PROMPT_FILE_THRESHOLD_BYTES,
 		timeoutSeconds: CLAUDE_P_TIMEOUT_SECONDS,
 		spawnClaudeP: (cfg, opts) => _captureSpawnFactory(cfg, opts),
@@ -1806,7 +1851,10 @@ async function startFreshQueryClaudeP(
 	const appendSystem = extractAppendSystem();
 	const appendParts = [agentsAppend, appendSystem, skillsAppend].filter((p): p is string => Boolean(p));
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
-	const staticSystemPrompt = systemPromptAppend ?? "You are a helpful coding assistant.";
+	// Prepend the MCP-startup-race guard so the model deterministically waits for
+	// the `custom-tools` shim to connect before declaring a bridged tool missing
+	// (root cause of S14/S25 on the claude-p path; see CLAUDE_P_MCP_WAIT_PREAMBLE).
+	const staticSystemPrompt = withClaudePMcpWaitPreamble(systemPromptAppend ?? "You are a helpful coding assistant.");
 
 	// Build the frame BEFORE the router (onPark closes over it).
 	const frame: QueryFrame = {

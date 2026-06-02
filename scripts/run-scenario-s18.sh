@@ -39,7 +39,7 @@ echo "==== S18 results ===="
 
 # Verify each tool's handler fired exactly once on first attempt.
 for tool in bash read write edit; do
-	count=$(scn_grep_count "mcp handler: ${tool} " "$BRIDGE_LOG")
+	count=$(scn_tool_count_named "$tool")
 	echo "  ${tool} invocations: $count"
 	if (( count >= 1 )); then
 		scn_pass "${tool} discovered and invoked"

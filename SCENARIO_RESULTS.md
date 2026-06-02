@@ -605,3 +605,28 @@ All alternations keep the SDK path passing (verified: S14 + S25 still PASS on
 ### Constraints honored
 Only `scripts/**` (+ this file) edited. No `src/**` or `index.ts` changes. No commits.
 `~/.claude` untouched (CLAUDE_CONFIG_DIR/HOME not overridden). `npm run build` run first.
+
+## S5 — mid-stream steering (G6 / D-S5 disposition) — 2026-06-02 — **PASS (not an exemption)**
+- Driver: claude-p (default). The in-flight spawn is aborted on the steer, the steering
+  message dispatches as a FRESH turn, and the next response recalls BOTH the abandoned
+  topic and the redirection (pi history retains both user messages). Verified in the
+  reworked `tests/int-claude-p-abort-coherence.mjs` / scenario run.
+- Disposition: **abort-and-respawn is sufficient** — no claude-p fork, no documented
+  exemption needed. (D-S5.) Cache-shape on the abandoned turn is creation (cold), which
+  is acceptable per the bar and inherent to abort-and-respawn.
+
+## Completion bar — reliability note (2026-06-02)
+- **Hard, deterministic gate: `npm run test:unit` (285 tests) — green, no real claude-p.**
+  This is the CI gate.
+- **Acceptance bar: the S0–S27 scenario suite — green-or-exempt** (S7 exact-number recall
+  is the one documented exemption; all else PASS). The scenario harness retries claude-p's
+  intermittent turns (`SCENARIO_PARALLEL=1` + retries), as designed.
+- **Each real-claude-p integration test passes in isolation.**
+- The full sequential `npm test` real-claude-p chain is subject to **claude-p 0.1.0's
+  documented runtime flakiness** (missed-`Stop`-hook → StopTimeout/empty-turn; root cause
+  in `.spike-notes/claude-p-gate/hang-rootcause.md`; trigger = concurrent boots, mitigated
+  by `--test-concurrency=1` + per-test retries). This is the RUNTIME's limitation, not a
+  bridge defect (the bridge faithfully surfaces what claude-p produces; D33 retries the
+  recoverable cases). The PROPER fix is the **persistent-process** follow-up (one
+  long-lived session → no per-turn boot/hook cycle); the idle-watchdog + concurrency-cap
+  are optional resilience mitigations. Tracked in design.md.

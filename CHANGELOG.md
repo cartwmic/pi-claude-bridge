@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-06-02
+
+- **BREAKING: inference now drives the interactive `claude` TUI via [`claude-p`](https://www.npmjs.com/package/claude-p), not the Claude Agent SDK.** The in-process `@anthropic-ai/claude-agent-sdk` `query()` path is gone; every turn is one `claude-p` spawn that drives the same interactive session a human would. The bridge **never** shells out to the nominal `claude -p` / `--print` surface. The `@anthropic-ai/*` dependencies are removed. `CLAUDE_BRIDGE_DRIVER` defaults to `claude-p` and is the only supported value — setting `CLAUDE_BRIDGE_DRIVER=sdk` (or anything other than `claude-p`) now fails fast with a deprecation error at load time instead of silently falling back. macOS and Linux only (`claude-p` requires `forkpty`).
+- **BREAKING: the `AskClaude` tool is removed.** Its config surface (`askClaude.*`) and the `CLAUDE_BRIDGE_ASKCLAUDE_ENABLED` switch are dropped, not migrated. Downstream users that called `AskClaude` will need to remove those references.
+- **Change: streaming is per-block, not per-token.** `claude-p` flushes its `--output-format stream-json` transcript live at content-block granularity (text, thinking, tool-use, tool-result), so deltas arrive per block rather than per token. `usage` (including cache-token accounting) and `cost` are reported once per spawn at turn end rather than incrementally.
+- **New: stdio MCP shim + in-process held-open router.** pi's tools are exposed to `claude` through a stdio MCP server the bridge spawns; an in-process router parks each `tools/call` open while pi computes the result and resolves it on the next turn. This held-open mechanism is what lets a single interactive spawn span an arbitrary number of pi-executed tool rounds. The bridge keeps the claude session id in memory only as a prompt-cache resume hint — it never reads or writes `~/.claude/sessions/`. Aborts SIGINT the `claude-p` process group; there is no session-file surgery.
+- **New: structured output / capture via a forced MCP tool-call.** The capture path (`piAi.complete` with `ctx.tools = [captureTool]`) is reimplemented on the driver: the capture tool is the sole advertised MCP tool, native tools are disallowed, schema enforcement happens at the shim, and the validated arguments are harvested over IPC. The external call shape and the v1 limitations from 0.4.0 are preserved; the SDK `outputFormat` mechanism it replaces is gone.
+
 ## 0.4.0 — 2026-05-05
 
 - **Add: structured output / output-capture tools** — pass `ctx.tools = [captureTool]` with a single unregistered tool to receive a validated `toolCall` content block in the returned `AssistantMessage`, matching the shape direct pi-ai providers return. Uses the SDK's `outputFormat: { type: "json_schema", schema }` option with built-in validation and retry.

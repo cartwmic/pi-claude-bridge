@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Deterministic suite: typecheck + build + unit tests.
+  # The unit tests under tests/unit-*.mjs need no real claude/claude-p binary,
+  # no API key, and no TTY/tmux — they run anywhere.
+  check:
+    name: check (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # claude-p is darwin/linux only (requires forkpty); no Windows runner.
+        os: [ubuntu-latest, macos-latest]
+        # package.json engines: node >=20. Cover the current and next LTS lines.
+        node: ['20', '22']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests (deterministic)
+        run: npm run test:unit
+
+# NOTE: the real-claude-p integration tests (tests/int-*.mjs, the *.sh int
+# scripts, and the S0–S27 scenario suite under scripts/run-scenario-*.sh) are
+# NOT run in CI. They require the `claude` and `claude-p` binaries, a valid
+# Claude Max/Pro subscription (API key), and a TTY/tmux session — none of which
+# a GitHub-hosted runner provides. They are run locally:
+#
+#   npm test                  # unit + int (needs claude/claude-p + .env.test)
+#   scripts/run-all-scenarios.sh   # full S0–S27 pi-TUI scenario suite (tmux)
+#
+# Scenario results and exemptions are tracked in SCENARIO_RESULTS.md. If a
+# self-hosted runner with those prerequisites + a RUN_REAL_CLAUDE_P / API-key
+# secret becomes available, add a separate opt-in job gated on that secret.

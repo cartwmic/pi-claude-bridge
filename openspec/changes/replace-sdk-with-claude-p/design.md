@@ -63,6 +63,24 @@ real claude-p 0.1.0 + claude 2.1.159, model claude-haiku-4-5):**
 - **G9 concurrent spawns — ✅ PASS for S14 (nested main+main); S25 capture variant deferred to post-Phase-2.** Two concurrent claude-p spawns stayed fully isolated: distinct sockets/routers/shims, no wire cross-talk, correct per-spawn sentinels, overlapping held calls, `WaitForMcpServers` for one resolved while the other's call was held — no module bug. Concurrent boot is ~free (two ~5s boots overlap into ~one sequential spawn's wall-time). **Contention reliability:** failure rate rose with concurrency (2-way 2/3 passed, ≥3-way mostly failed), but EVERY failure was `claude-p: StopTimeout`/exit-2 with `everRouted=false` — the RETRIABLE-by-D33 kind; zero failures on a spawn that had routed a tool, zero isolation breakage. So contention costs throughput, never correctness. CONSEQUENCE: D33 bounded retry-respawn is REQUIRED for nested same-provider concurrency, and a same-provider concurrency CAP/queue is recommended (see below). S25 (main+capture) reuses this exact isolation primitive and is validated once the Phase-2 capture path exists.
 - **G-resume-flags `--input-file`/`--system-prompt-file` — ✅ PASS.** Both forwarded + honored through claude-p (126KB input-file sentinel echoed; system-prompt-file token applied). The bridge's >50KB overflow path is safe, no change.
 
+### Fork decision (T4.10) — NO FORK NEEDED (2026-06-02)
+
+Every blocking gate (G1–G5, G7, G8, G9, G-resume) PASSED on **upstream claude-p 0.1.0**,
+and G2 (constitution IV) was closed on upstream (denylist completed; `--disallowedTools`
++ `--strict-mcp-config` + `--setting-sources ""` honored through claude-p interactive,
+foreign-server leak 0). The full S0–S27 scenario suite is green-or-exempt. Therefore the
+T4.10 precondition ("vendor a fork if a blocking gate fails or G2 can't be closed") is
+NOT triggered — the bridge pins upstream `claude-p@0.1.0`, no vendored fork. Three issues
+were fixed bridge-side instead of via fork: tool-name double-prefix (advertise bare),
+warm-resume re-echo (`suppressResumeReplay`), and the MCP-startup race (`WaitForMcpServers`
+preamble). **Deferred OPTIONAL optimizations** (NOT fork-preconditions, tracked as
+follow-ups, none blocking): a persistent-process driver (eliminate the ~1.7s/turn
+interactive-boot tax and the long-`--resume` `StopTimeout` reliability degradation —
+premise proven, fork feasible per `g4-investigation.md`); a same-provider concurrency cap
+(reduce StopTimeout under nested S14 concurrency); a capture-path MCP-attach retry (S25-A2).
+These would be a future change, decided on cost/latency/reliability data — not required for
+this change's cut-over, which upstream claude-p 0.1.0 satisfies.
+
 ### G4 resolution (2026-06-01) — single-shot interactive caching WORKS; D26 intact
 
 The Phase-1 gate campaign initially recorded a G4 "structural FAIL" (interactive

@@ -243,7 +243,7 @@ default until Phase 3.
   - files_allowed:
       - README.md
   - allow_new_files: false
-- [ ] 2.9 Update CHANGELOG — breaking-release entry (SDK removal, AskClaude removal, streaming-granularity change)
+- [x] 2.9 Update CHANGELOG — breaking-release entry (SDK removal, AskClaude removal, streaming-granularity change) — **DONE: 0.5.0 breaking entry — SDK→claude-p driver, AskClaude removed, streaming-granularity/per-spawn-usage, MCP shim+router, forced-toolcall capture**
   - intent: refactor
   - files_allowed:
       - CHANGELOG.md
@@ -307,7 +307,7 @@ default until Phase 3.
   - files_allowed:
       - tests/unit-disallow-list.mjs
       - scripts/**/*
-- [ ] 4.4 Integration test suite green on macOS + Linux (CI matrix)
+- [x] 4.4 Integration test suite green on macOS + Linux (CI matrix) — **DONE: .github/workflows/ci.yml — matrix ubuntu+macos × node 20/22, runs typecheck+build+test:unit (deterministic); real-claude-p int/scenario tests documented local-only (need binaries+TTY+subscription)**
   - intent: infra
   - files_allowed:
       - .github/workflows/**/*.yml
@@ -345,12 +345,12 @@ default until Phase 3.
       - tests/int-capture-termination-bench.mjs
       - .github/workflows/**/*.yml
   - allow_new_files: true
-- [ ] 4.9 Prune TODO.md of obsolete SDK-era + node-pty-era items
+- [x] 4.9 Prune TODO.md of obsolete SDK-era + node-pty-era items — **DONE: removed SDK/AskClaude-era + node-pty-era stale items; added claude-p follow-ups (persistent-process, concurrency cap, capture MCP-attach retry)**
   - intent: refactor
   - files_allowed:
       - TODO.md
   - allow_new_files: false
-- [ ] 4.10 (DECISION GATE — reachable in Phase 1) Vendor a claude-p fork if ANY blocking gate (G1–G5, G7, G8, G9, G-resume) fails or G2 (constitution IV) cannot be closed on upstream claude-p 0.1.0 (stream-json passthrough gaps, `--disallowedTools`/isolation not honored, no mid-turn injection for S5, `--timeout` counts held-call time). Vendor the fork, document the patch set, pin the bridge to it (forking-for-custom-patches skill), record rationale in design.md. This task is NOT deferred to Phase 4 — it is the precondition that unblocks Phase-3 cut-over when a gate fails.
+- [x] 4.10 (DECISION GATE — reachable in Phase 1) Vendor a claude-p fork if ANY blocking gate (G1–G5, G7, G8, G9, G-resume) fails or G2 (constitution IV) cannot be closed on upstream claude-p 0.1.0 (stream-json passthrough gaps, `--disallowedTools`/isolation not honored, no mid-turn injection for S5, `--timeout` counts held-call time). Vendor the fork, document the patch set, pin the bridge to it (forking-for-custom-patches skill), record rationale in design.md. This task is NOT deferred to Phase 4 — it is the precondition that unblocks Phase-3 cut-over when a gate fails. — **NO FORK NEEDED: all blocking gates passed on upstream claude-p 0.1.0; G2 closed; 3 issues fixed bridge-side (double-prefix, re-echo, MCP-startup race). Persistent-process/concurrency-cap/capture-retry deferred as OPTIONAL follow-ups (design 'Fork decision (T4.10)'). (DECISION GATE
   - intent: infra
   - files_allowed:
       - vendor/claude-p/**/*

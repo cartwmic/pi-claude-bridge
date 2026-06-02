@@ -29,7 +29,8 @@
 // (--disallowedTools native block), D31 (abort = SIGINT to the process group,
 // SIGKILL after grace, orphan reap), D33 (resilience layer — seam only here).
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import {
 	ClaudePStreamParser,
 	type DriverStreamEvent,
@@ -263,6 +264,132 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime version-skew check (task T4.7)
+// ---------------------------------------------------------------------------
+//
+// On the FIRST spawn (cached per process), read the `claude` CLI version AND the
+// claude-p package version and warn — once, via the structured logger — if either
+// is outside the README-pinned tested range. This is an OBSERVABILITY guard, not a
+// gate: a skew warning never blocks a spawn. The disallow-list closure
+// (CLAUDE_P_DISALLOWED_TOOLS) is the *.159-specific empirical native set, so a
+// `claude` version drift is the signal to re-audit it (README "Maintenance").
+//
+// HARD CONSTRAINT (spec "MUST NOT fail to load if either binary is absent"): the
+// version readers NEVER throw — they return null on any failure (binary missing,
+// non-zero exit, parse miss). A missing binary surfaces as a real error at the
+// first TURN (via the child `error` ENOENT path in spawnClaudeP), never here and
+// never at module import. The check is therefore safe to run unconditionally on
+// the first spawn.
+
+/** The `claude` CLI version this bridge's disallow-list + flag set was tested against. */
+export const TESTED_CLAUDE_VERSION = "2.1.159";
+/** The `claude-p` package version this bridge's driver/stream parsing was tested against. */
+export const TESTED_CLAUDE_P_VERSION = "0.1.0";
+
+/**
+ * Pluggable version readers (injected by tests; default to the real probes). Each
+ * returns the parsed semver-ish string, or `null` if it could not be read for ANY
+ * reason. Readers MUST NOT throw — a missing/broken binary is a `null`, surfaced as
+ * a real spawn error at first turn, not a load-time crash.
+ */
+export interface VersionReaders {
+	/** Read the `claude` CLI version (e.g. "2.1.159") or null. */
+	readClaudeVersion(): string | null;
+	/** Read the `claude-p` package version (e.g. "0.1.0") or null. */
+	readClaudePVersion(): string | null;
+}
+
+/** Default real reader: `claude --version` → "2.1.159 (Claude Code)" → "2.1.159". */
+function defaultReadClaudeVersion(): string | null {
+	try {
+		const out = execFileSync("claude", ["--version"], {
+			encoding: "utf8",
+			timeout: 15_000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		return parseSemverPrefix(out);
+	} catch {
+		// ENOENT (missing), non-zero exit, timeout — all collapse to "unknown".
+		return null;
+	}
+}
+
+/** Default real reader: claude-p package version from its package.json (no spawn). */
+function defaultReadClaudePVersion(): string | null {
+	try {
+		const req = createRequire(import.meta.url);
+		const pkg = req("claude-p/package.json") as { version?: unknown };
+		return typeof pkg.version === "string" ? parseSemverPrefix(pkg.version) : null;
+	} catch {
+		return null;
+	}
+}
+
+const DEFAULT_VERSION_READERS: VersionReaders = {
+	readClaudeVersion: defaultReadClaudeVersion,
+	readClaudePVersion: defaultReadClaudePVersion,
+};
+
+/** Extract the leading `MAJOR.MINOR.PATCH` from arbitrary version output, or null. */
+function parseSemverPrefix(s: string): string | null {
+	const m = /\b(\d+\.\d+\.\d+)\b/.exec(s);
+	return m ? m[1] : null;
+}
+
+/** Process-wide cache: the version check runs exactly once per process (cached-once). */
+let _versionCheckDone = false;
+
+/** TEST-ONLY: reset the cached-once guard so a unit test can re-exercise the check. */
+export function __resetVersionCheckForTests(): void {
+	_versionCheckDone = false;
+}
+
+/**
+ * Read both versions and warn (once, structured) on skew from the pinned tested
+ * range. Idempotent across the process: only the FIRST call does any work; later
+ * calls are no-ops (cached-once). Never throws. Readers are injectable for tests;
+ * the default readers probe the real `claude` CLI and the `claude-p` package.
+ *
+ * @returns the versions it observed on the first call (`{claude, claudeP}`, each
+ *   possibly null), or `null` on every subsequent call (already ran this process).
+ */
+export function checkClaudePVersionsOnce(
+	logger: ClaudePLogger | undefined,
+	readers: VersionReaders = DEFAULT_VERSION_READERS,
+): { claude: string | null; claudeP: string | null } | null {
+	if (_versionCheckDone) return null;
+	_versionCheckDone = true;
+
+	const log = logger ?? NOOP;
+	const claude = readers.readClaudeVersion();
+	const claudeP = readers.readClaudePVersion();
+
+	// A null version means "couldn't read it" — NOT a skew. We don't warn on null
+	// here: a genuinely missing binary becomes a real error at the first turn (the
+	// spawn's ENOENT path), and a transient probe miss shouldn't cry wolf. We DO
+	// warn when we read a version that differs from the pinned tested one.
+	const claudeSkew = claude !== null && claude !== TESTED_CLAUDE_VERSION;
+	const claudePSkew = claudeP !== null && claudeP !== TESTED_CLAUDE_P_VERSION;
+
+	if (claudeSkew || claudePSkew) {
+		log.warn(
+			{
+				event: "claudeP.version.skew",
+				claude: { observed: claude, tested: TESTED_CLAUDE_VERSION, skew: claudeSkew },
+				claudeP: { observed: claudeP, tested: TESTED_CLAUDE_P_VERSION, skew: claudePSkew },
+			},
+			`claude-p driver running outside its tested version range ` +
+				`(claude observed=${claude ?? "unknown"} tested=${TESTED_CLAUDE_VERSION}; ` +
+				`claude-p observed=${claudeP ?? "unknown"} tested=${TESTED_CLAUDE_P_VERSION}). ` +
+				`Re-audit CLAUDE_P_DISALLOWED_TOOLS + flag set against \`claude --help\` ` +
+				`(see README "Maintenance"). This is a warning, not a failure.`,
+		);
+	}
+
+	return { claude, claudeP };
+}
+
+// ---------------------------------------------------------------------------
 // Spawn lifecycle
 // ---------------------------------------------------------------------------
 
@@ -361,6 +488,10 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	const bin = opts.binPath ?? DEFAULT_CLAUDE_P_BIN;
 	const graceMs = opts.graceMs ?? ABORT_SIGKILL_GRACE_MS;
 	const sessionId = cfg.session.sessionId;
+
+	// First-spawn-only version-skew check (T4.7). Cached per process; never throws;
+	// a missing binary is surfaced as a real error below (child `error`), not here.
+	checkClaudePVersionsOnce(logger);
 
 	let args: string[];
 	try {

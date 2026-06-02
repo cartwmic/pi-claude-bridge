@@ -148,8 +148,33 @@ the surrounding tool-park/delivery records).
 
 ## Maintenance
 
+### Tested version range
+
+The claude-p driver — its flag set, native disallow-list closure, and stdout
+stream-event parsing — is pinned to and validated against:
+
+| Component       | Tested version |
+|-----------------|----------------|
+| `claude` (CLI)  | **2.1.159**    |
+| `claude-p`      | **0.1.0**      |
+
+On the first spawn of each process, the bridge reads both versions and emits a
+single structured `warn` (event `claudeP.version.skew`) if either differs from the
+pinned values above. This is a **warning, not a failure** — a version drift never
+blocks a turn. It is the signal to re-audit the disallow-list (below) against the
+new `claude` build. (The pinned constants live in `TESTED_CLAUDE_VERSION` /
+`TESTED_CLAUDE_P_VERSION` in `src/driver/claudeP.ts`; update them and this table in
+lock-step when you re-validate against a newer Claude Code.)
+
+The version check **never blocks the bridge from loading**: if either binary is
+absent or unreadable, the version probe collapses to "unknown" (no warning), and
+the missing binary surfaces as a real error at the first turn — never at import.
+
+### Native disallow-list
+
 After updating Claude Code, check for new built-in tools that may need adding to
 the disallowed closed set (`CLAUDE_P_DISALLOWED_TOOLS` in
 `src/driver/claudeP.ts`). The bridge isolates the model to the
 `mcp__custom-tools__*` namespace; unrecognized native CC tools that leak through
-appear in pi as tool calls it can't handle ("Tool X not found").
+appear in pi as tool calls it can't handle ("Tool X not found"). The version-skew
+warning above is your prompt to do this audit.

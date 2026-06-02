@@ -311,7 +311,7 @@ default until Phase 3.
   - intent: infra
   - files_allowed:
       - .github/workflows/**/*.yml
-- [ ] 4.4a Tarball verification: `npm pack` artifact's `dist/` contains every runtime import and the `bin` shim runs end-to-end on a fresh install
+- [x] 4.4a Tarball verification: `npm pack` artifact's `dist/` contains every runtime import and the `bin` shim runs end-to-end on a fresh install — **DONE: tests/int-tarball-verify.sh — npm pack→install→assert all 11 dist runtime files + bin shim present; installed shim starts/resolves deps/exits cleanly**
   - intent: infra
   - files_allowed:
       - tests/int-tarball-verify.sh
@@ -320,26 +320,26 @@ default until Phase 3.
   - intent: refactor
   - files_allowed:
       - openspec/changes/replace-sdk-with-claude-p/verify.md
-- [ ] 4.6 Cold-boot + per-turn latency benchmark — measure claude-p spawn→first-event and full-turn latency across N runs (cold + warm-resume); surface median + p99; document the interactive-boot cost vs the prior SDK path; decide whether a warm-pool follow-up change is warranted
+- [x] 4.6 Cold-boot + per-turn latency benchmark — measure claude-p spawn→first-event and full-turn latency across N runs (cold + warm-resume); surface median + p99; document the interactive-boot cost vs the prior SDK path; decide whether a warm-pool follow-up change is warranted — **DONE: tests/int-claude-p-latency-bench.mjs — cold first-event ~2.9s/full-turn ~3.65s, warm ~3.4s (median; p99 ~4-4.7s); interactive-boot cost documented; gated RUN_REAL_CLAUDE_P=1**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-latency-bench.mjs
       - .github/workflows/**/*.yml
   - allow_new_files: true
-- [ ] 4.6a Rollback rehearsal: `git revert <Phase-3 range>` against a scratch branch, run `npm test`, confirm a working tree
+- [x] 4.6a Rollback rehearsal: `git revert <Phase-3 range>` against a scratch branch, run `npm test`, confirm a working tree — **DONE: scripts/rollback-rehearsal.sh — reverts the Phase-3 cut-over on a scratch branch + typecheck/build/test:unit; ran it: revert applies CLEANLY, reverted tree needs npm install (restored SDK tests + deps) → documented 8-step manual procedure in the script**
   - intent: infra
   - files_allowed:
       - scripts/rollback-rehearsal.sh
       - .github/workflows/**/*.yml
   - allow_new_files: true
-- [ ] 4.7 Runtime version check in `src/driver/claudeP.ts`: on first spawn (cached per process), read `claude --version` AND `claude-p` version; warn if outside the README-pinned tested range. Bridge load MUST NOT depend on either binary being present (missing-binary surfaces at first turn).
+- [x] 4.7 Runtime version check in `src/driver/claudeP.ts`: on first spawn (cached per process), read `claude --version` AND `claude-p` version; warn if outside the README-pinned tested range. Bridge load MUST NOT depend on either binary being present (missing-binary surfaces at first turn). — **DONE: checkClaudePVersionsOnce in claudeP.ts (cached-once; claude --version + claude-p pkg version; warn on skew vs pinned 2.1.159/0.1.0; load-safe, missing binary surfaces at first turn not import); README pinned; 9 unit tests**
   - intent: feature
   - files_allowed:
       - src/driver/claudeP.ts
       - README.md
       - tests/unit-driver-version-check.mjs
   - allow_new_files: true
-- [ ] 4.8 Capture-mode termination latency benchmark (tokens between first valid capture call and `end_turn`); surface median + p99
+- [x] 4.8 Capture-mode termination latency benchmark (tokens between first valid capture call and `end_turn`); surface median + p99 — **DONE: tests/int-capture-termination-bench.mjs — capture→end_turn ~4.1s median/5.2s p99. FINDING: claude-p 0.1.0 reliably stashes the capture (delivered) but hangs POST-capture → StopTimeout exit 2, usage lost (capture path treats stash-present as success regardless). Another facet of the Stop-hook flakiness.**
   - intent: feature
   - files_allowed:
       - tests/int-capture-termination-bench.mjs

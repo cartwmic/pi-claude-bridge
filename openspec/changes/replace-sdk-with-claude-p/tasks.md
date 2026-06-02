@@ -205,30 +205,30 @@ default until Phase 3.
 
 ## 2. Phase 2 — Capture path + AskClaude removal
 
-- [ ] 2.1 Implement `src/capture.ts` — forced MCP tool-call capture on the claude-p driver (output-capture MODIFIED + ADDED Requirements)
+- [x] 2.1 Implement `src/capture.ts` — forced MCP tool-call capture on the claude-p driver (output-capture MODIFIED + ADDED Requirements) — **DONE: `runClaudePCapture` (deps-injected, no cross-call state; own router capture-mode + getCaptureStash; fresh session, single-shot no-retry)**
   - intent: feature
   - files_allowed:
       - src/capture.ts
       - tests/unit-capture.mjs
-- [ ] 2.2 Wire `streamSimple` capture-shape detection to the new capture path; preserve classification logic from `output-capture.output-capture-classification-of-ctx-tools` + `strict-call-shape`
+- [x] 2.2 Wire `streamSimple` capture-shape detection to the new capture path; preserve classification logic from `output-capture.output-capture-classification-of-ctx-tools` + `strict-call-shape` — **DONE: Case-0 dispatch claude-p→runClaudePCapture / sdk→runCaptureQuery; classify+strict-call-shape byte-unchanged**
   - intent: refactor
   - files_allowed:
       - index.ts
       - src/capture.ts
   - allow_new_files: false
-- [ ] 2.3 Integration test: capture happy path (output-capture.synthesized-toolcall-content-block-on-success)
+- [x] 2.3 Integration test: capture happy path (output-capture.synthesized-toolcall-content-block-on-success) — **PASS (real claude-p: synthesized toolCall with structured args)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-success.mjs
-- [ ] 2.4 Integration test: capture mid-conversation isolation (output-capture.capture-path-isolation) — covers SINGLE-spawn isolation invariants (no shared `cachedSessionId`/socket/router state); the CONCURRENT two-spawn case (capture while a main tool is parked, + `WaitForMcpServers`) is gate 0b.G9
+- [x] 2.4 Integration test: capture mid-conversation isolation (output-capture.capture-path-isolation) — covers SINGLE-spawn isolation invariants (no shared `cachedSessionId`/socket/router state); the CONCURRENT two-spawn case (capture while a main tool is parked, + `WaitForMcpServers`) is gate 0b.G9 — **PASS (no cachedSessionId/router/socket mutation; main turn B warm-resumed)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-isolation.mjs
-- [ ] 2.5 Integration test: capture error path — model never calls capture tool (output-capture.surface-absent-capture-tool-call-as-error)
+- [x] 2.5 Integration test: capture error path — model never calls capture tool (output-capture.surface-absent-capture-tool-call-as-error) — **PASS (absent capture call → stopReason error)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-error.mjs
-- [ ] 2.6 Integration test: capture path honors AbortSignal (output-capture.capture-path-honors-abortsignal)
+- [x] 2.6 Integration test: capture path honors AbortSignal (output-capture.capture-path-honors-abortsignal) — **PASS (clean teardown, stopReason aborted, no orphan)**
   - intent: feature
   - files_allowed:
       - tests/int-claude-p-capture-abort.mjs

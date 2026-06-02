@@ -48,6 +48,7 @@ import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import {
 	spawnClaudePWithResilience as _realSpawnClaudeP,
+	spawnClaudeP as _realSpawnClaudePSingle,
 	type ClaudePSpawnConfig,
 	type ClaudePHandle,
 	type ClaudePDoneResult,
@@ -56,6 +57,7 @@ import {
 } from "./src/driver/claudeP.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
+import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,6 +120,21 @@ export function __setSpawnClaudePForTests(f: typeof _realSpawnClaudeP): () => vo
 	const prev = _spawnClaudePFactory;
 	_spawnClaudePFactory = f;
 	return () => { _spawnClaudePFactory = prev; };
+}
+
+// ---------------------------------------------------------------------------
+// claude-p CAPTURE spawn factory — separate test seam (T2.1/T2.2). The capture
+// path uses the single-shot spawnClaudeP (NO resilience wrapper: a capture
+// respawn could re-execute the model's turn). Tests inject a mock here.
+// ---------------------------------------------------------------------------
+
+let _captureSpawnFactory: CaptureSpawnFactory = _realSpawnClaudePSingle;
+
+/** Test-only: swap the claude-p CAPTURE spawn factory and return a restorer. */
+export function __setCaptureSpawnForTests(f: CaptureSpawnFactory): () => void {
+	const prev = _captureSpawnFactory;
+	_captureSpawnFactory = f;
+	return () => { _captureSpawnFactory = prev; };
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,7 +1160,14 @@ export function streamClaudeAgentSdk(
 		}
 
 		if (shape.kind === "single-capture") {
-			runCaptureQuery(model, shape.captureTool, shape.cleanedSchema, context, options, stream);
+			// Driver dispatch (T2.2): claude-p uses the forced-toolcall capture
+			// path; sdk uses runCaptureQuery. The classification + strict-call-shape
+			// gate above is shared verbatim — only the executor differs.
+			if (effectiveDriver() === "claude-p") {
+				void runClaudePCapture(model, shape.captureTool, shape.cleanedSchema, context, options, stream, buildCaptureDeps());
+			} else {
+				runCaptureQuery(model, shape.captureTool, shape.cleanedSchema, context, options, stream);
+			}
 			return stream;
 		}
 
@@ -1503,6 +1527,31 @@ function writeOverflowTmp(prefix: string, content: string): string {
 	const p = join(tmpdir(), `${prefix}-${randomBytes(8).toString("hex")}.txt`);
 	writeFileSync(p, content, "utf-8");
 	return p;
+}
+
+/**
+ * Assemble the narrow, PURE dependency surface the claude-p capture path
+ * (src/capture.ts) needs. The cross-call state variables (cachedSessionId,
+ * cachedSessionCwd, lastSentMessageHashes) and the active-frame stack are
+ * deliberately NOT included — the capture path is isolated and cannot touch
+ * them. The spawn factory is the single-shot seam (`_captureSpawnFactory`).
+ */
+function buildCaptureDeps(): CaptureDeps {
+	return {
+		newTurnOutput,
+		buildColdStartPrompt,
+		cleanSchemaForSdk,
+		calculateCost,
+		resolveShimPath,
+		resolveClaudePBin,
+		writeOverflowTmp,
+		logger: logger.child({ piSessionId: getPiSessionId() }) as unknown as CaptureDeps["logger"],
+		execPath: process.execPath,
+		mcpServerName: MCP_SERVER_NAME,
+		promptFileThresholdBytes: PROMPT_FILE_THRESHOLD_BYTES,
+		timeoutSeconds: CLAUDE_P_TIMEOUT_SECONDS,
+		spawnClaudeP: (cfg, opts) => _captureSpawnFactory(cfg, opts),
+	};
 }
 
 /** Update the frame's usage from a driver `usage` event (already pi-shaped). */

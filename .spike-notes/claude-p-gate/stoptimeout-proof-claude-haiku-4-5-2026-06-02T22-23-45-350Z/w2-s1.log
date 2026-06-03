@@ -1,0 +1,53 @@
+{
+  "label": "w2-s1",
+  "sessionId": "469791ed-56ef-4f69-b9e4-f14797f62ad2",
+  "verdict": "FAIL(exit=2)",
+  "exit": 2,
+  "signal": null,
+  "wallMs": 60459,
+  "sessionStartFired": true,
+  "typingAnyway": false,
+  "inkQuiescent": true,
+  "promptTyped": true,
+  "stopFired": false,
+  "resultEmitted": false,
+  "stopTimeout": true,
+  "sessionStartTimeout": false,
+  "sawResultLine": false,
+  "txPath": "/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/469791ed-56ef-4f69-b9e4-f14797f62ad2.jsonl",
+  "tx": {
+    "exists": false
+  },
+  "conclusion": "NO TRANSCRIPT (session file absent)"
+}
+
+===== STDERR (--debug) =====
+[claude-p +0ms] run() entered
+[claude-p +0ms] hook harness ready (FIFO + relay script + --settings)
+[claude-p +4ms] zmux session spawned; child claude PID up, Ink booting
+zmux pane_output: 13 bytes
+zmux pane_output: 6 bytes
+zmux pane_output: 24 bytes
+zmux pane_output: 5 bytes
+zmux pane_output: 3 bytes
+zmux pane_output: 20 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 302 bytes
+hook: session_start payload={"session_id":"469791ed-56ef-4f69-b9e4-f14797f62ad2","transcript_path":"/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/469791ed-56ef-4f69-b9e4-f14797f62ad2.jsonl","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","hook_event_name":"SessionStart","source":"startup","model":"claude-haiku-4-5"}
+[claude-p +3538ms] SessionStart hook fired (Ink is up)
+[claude-p +3538ms] transcript_path from SessionStart: /Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/469791ed-56ef-4f69-b9e4-f14797f62ad2.jsonl
+[claude-p +3538ms] Ink quiescent (output silent for 273ms, waited 0ms total)
+[claude-p +3538ms] typing prompt (51 bytes)
+[claude-p +3665ms] prompt + Enter sent; waiting on claude API
+[claude-p +3665ms] transcript not yet on disk; retrying (path=/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/469791ed-56ef-4f69-b9e4-f14797f62ad2.jsonl)
+zmux pane_output: 12 bytes
+zmux pane_output: 617 bytes
+zmux pane_output: 1022 bytes
+zmux pane_output: 32 bytes
+claude-p: StopTimeout
+
+
+===== STDOUT =====
+

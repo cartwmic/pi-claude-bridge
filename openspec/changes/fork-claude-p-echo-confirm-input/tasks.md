@@ -1,6 +1,6 @@
 ## 0. Spike & baseline
 
-- [ ] 0.1 Commit the reproduction harness + proof fixture (`stoptimeout-proof.mjs`, `stoptimeout-rootcause-PROVEN.md`) and a recorded stock-binary baseline (dropped-prompt failures under 16-worker/concurrency-10 load).
+- [x] 0.1 Commit the reproduction harness + proof fixture (`stoptimeout-proof.mjs`, `stoptimeout-rootcause-PROVEN.md`) and a recorded stock-binary baseline (dropped-prompt failures under 16-worker/concurrency-10 load).
   - intent: infra
   - files_allowed:
       - .spike-notes/claude-p-gate/**

@@ -5,7 +5,7 @@
   - files_allowed:
       - .spike-notes/claude-p-gate/**
   - allow_new_files: true
-- [ ] 0.2 Spike the echo signal against REAL `claude-p`: confirm `SharedState.recent` holds the prompt echo on success and not on a dropped turn, and that clear-line (Ctrl-U) fully resets a partially-filled Ink input (clarify / risk R6). Record findings.
+- [x] 0.2 Spike the echo signal against REAL `claude-p`: confirm `SharedState.recent` holds the prompt echo on success and not on a dropped turn, and that clear-line (Ctrl-U) fully resets a partially-filled Ink input (clarify / risk R6). Record findings.
   - intent: infra
   - files_allowed:
       - .spike-notes/claude-p-gate/**
@@ -13,10 +13,10 @@
 
 ## 1. Fork & patch (repo: ~/git/claude-p — NOT the bridge repo)
 
-- [ ] 1.1 `gh repo fork smithersai/claude-p`, clone to `~/git/claude-p`, ensure `upstream` remote, track `origin` (per `forking-for-custom-patches`). (External repo.)
-- [ ] 1.2 Patch `src/driver.zig`: replace the blind `ink_enter_debounce_ms` sleep with the echo-confirm-or-retype loop (snapshot `recent` len → type → poll new ANSI-stripped bytes for a distinctive prompt token → clear-line + retype on miss, bounded → Enter only on confirm); add `RunError.PromptNotAccepted` (D1/D3). Satisfies claude-p-fork.echo-confirmed-prompt-commit, .bounded-retype-on-dropped-prompt, .fail-fast-when-the-prompt-cannot-be-confirmed. (External repo.)
-- [ ] 1.3 Build with Zig 0.15.2 for the dev platform; verify it still drives the interactive TUI and forwards `--disallowedTools`/`--strict-mcp-config`/`--setting-sources` unchanged (claude-p-fork.patch-preserves-the-interactive-tui-driving-model). (External repo.)
-- [ ] 1.4 Commit on the fork default branch, `custom:`-prefixed with upstream URL + reason; push to `origin` (claude-p-fork.fork-is-maintained-against-upstream). (External repo.)
+- [x] 1.1 `gh repo fork smithersai/claude-p`, clone to `~/git/claude-p`, ensure `upstream` remote, track `origin` (per `forking-for-custom-patches`). (External repo.)
+- [x] 1.2 Patch `src/driver.zig`: replace the blind `ink_enter_debounce_ms` sleep with the echo-confirm-or-retype loop (snapshot `recent` len → type → poll new ANSI-stripped bytes for a distinctive prompt token → clear-line + retype on miss, bounded → Enter only on confirm); add `RunError.PromptNotAccepted` (D1/D3). Satisfies claude-p-fork.echo-confirmed-prompt-commit, .bounded-retype-on-dropped-prompt, .fail-fast-when-the-prompt-cannot-be-confirmed. (External repo.)
+- [x] 1.3 Build with Zig 0.15.2 for the dev platform; verify it still drives the interactive TUI and forwards `--disallowedTools`/`--strict-mcp-config`/`--setting-sources` unchanged (claude-p-fork.patch-preserves-the-interactive-tui-driving-model). (External repo.)
+- [x] 1.4 Commit on the fork default branch, `custom:`-prefixed with upstream URL + reason; push to `origin` (claude-p-fork.fork-is-maintained-against-upstream). (External repo.)
 
 ## 2. Integrate & validate (gate G-echo)
 

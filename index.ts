@@ -343,6 +343,9 @@ type QueryFrame = {
 	turnOutput: AssistantMessage | null;
 	turnStarted: boolean;
 	turnSawToolCall: boolean;
+	/** Set when the parser stripped leaked tool-call protocol markup this turn
+	 *  (model emitted <function_calls> as text — tool surface unreachable). */
+	toolProtocolLeak?: { stripped: number; hadProse: boolean };
 	turnBlocks: any[];
 	customToolNameToPi: Map<string, string>;
 	model: Model<any>;
@@ -1149,10 +1152,33 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			updateUsageFromDriver(frame, ev.usage);
 			return;
 		}
+		case "tool-protocol-leak": {
+			// Model emitted tool calls as TEXT (raw markup already stripped by the
+			// parser). Record it; the `done` case decides whether the turn failed.
+			frame.toolProtocolLeak = { stripped: ev.stripped, hadProse: ev.hadProse };
+			return;
+		}
 		case "done": {
 			if (frame.currentPiStream) {
 				closeOpenInlineBlocks(frame);
 				syncTurnContent(frame);
+			}
+			// Failure mode (constitution VII — failures surface): the model emitted
+			// tool calls as text AND no real tool actually routed this turn → the MCP
+			// tool surface was unreachable, so the turn did no tool work. Surface it as
+			// an ERROR rather than passing off a tool-less, degraded answer as success.
+			// (If at least one real tool routed, the turn did real work — keep it.)
+			if (frame.toolProtocolLeak && !frame.router?.everRoutedToolCall) {
+				frame.turnOutput.stopReason = "error";
+				frame.turnOutput.errorMessage =
+					"claude-p emitted tool calls as text (<function_calls>) and no MCP tool executed this turn — " +
+					"the tool surface was not reachable (MCP shim not attached / API overload / agent-loop degraded). " +
+					"Surfaced as an error instead of returning a tool-less, degraded answer; retry the turn.";
+				frame.log.error(
+					{ event: "claudeP.toolProtocolLeak.fatal", stripped: frame.toolProtocolLeak.stripped, hadProse: frame.toolProtocolLeak.hadProse },
+					"claude-p: tool-call protocol leaked and no MCP tool routed — turn surfaced as error (tool surface unreachable)",
+				);
+				return;
 			}
 			frame.turnOutput.stopReason = frame.turnSawToolCall ? "toolUse" : "stop";
 			return;
@@ -1173,14 +1199,17 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
  */
 function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 	const cwd = frame.cwd;
-	if (res.stopReason === "error") {
+	// Clear the cache on a spawn-level error OR a turn-level error (e.g. the
+	// tool-protocol-leak failure mode, where the spawn exits cleanly but the turn
+	// is degraded) so the next turn cold-starts — giving the MCP attach a fresh try.
+	if (res.stopReason === "error" || frame.turnOutput?.stopReason === "error") {
 		// Clear cache so the next turn cold-starts (spec: "any cached driver
 		// session id is cleared").
 		if (cachedSessionId === res.sessionId || cachedSessionCwd === cwd) {
 			cachedSessionId = null;
 			cachedSessionCwd = null;
 		}
-		frame.log.warn({ stopReason: res.stopReason, exitCode: res.exitCode }, "finalizeClaudePFrame: error — cleared cached session");
+		frame.log.warn({ stopReason: res.stopReason, turnStopReason: frame.turnOutput?.stopReason, exitCode: res.exitCode }, "finalizeClaudePFrame: error — cleared cached session");
 	} else if (res.sessionId) {
 		// Cache the session id for next-turn warm resume — even on abort, so the
 		// next turn can resume and the model sees the interrupted partial.

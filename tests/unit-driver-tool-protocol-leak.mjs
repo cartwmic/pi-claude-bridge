@@ -124,5 +124,12 @@ describe("ClaudePStreamParser — no tool-protocol leak reaches text-delta", () 
 		);
 		assert.ok(leakWarn, "a toolProtocolLeak warn must be emitted");
 		assert.equal(leakWarn[0].stripped, 3);
+
+		// And it must RAISE the degradation signal so the bridge can surface the
+		// turn as a failure (constitution VII) when no real tool routed.
+		const leakEvent = events.find((e) => e.kind === "tool-protocol-leak");
+		assert.ok(leakEvent, "parser must emit a tool-protocol-leak event");
+		assert.equal(leakEvent.stripped, 3);
+		assert.equal(leakEvent.hadProse, true, "this turn had a real answer after the markup");
 	});
 });

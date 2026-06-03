@@ -47,6 +47,11 @@ export type DriverStreamEvent =
 	| { kind: "tool-use"; toolUseId: string; name: string; arguments: unknown }
 	| { kind: "usage"; usage: DriverStreamUsage }
 	| { kind: "done"; reason: "result" } // terminal `result` line seen
+	// The model emitted tool calls as TEXT (<function_calls>) — the bridge stripped
+	// the raw markup from the visible text and raises this so the turn can be
+	// surfaced as a failure when no real tool actually routed (the tool surface was
+	// not reachable). `hadProse` = genuine prose remained after stripping.
+	| { kind: "tool-protocol-leak"; stripped: number; hadProse: boolean }
 	| { kind: "error"; errorMessage: string };
 
 // ---------------------------------------------------------------------------
@@ -476,6 +481,9 @@ export class ClaudePStreamParser {
 									`text (model emitted <function_calls> as text — likely MCP tools not attached / ` +
 									`agent-loop degraded). Raw protocol XML withheld from the response.`,
 							);
+							// Raise the degradation so the bridge can surface it as a turn
+							// failure when no real tool routed (constitution VII).
+							this.emit({ kind: "tool-protocol-leak", stripped, hadProse: clean.length > 0 });
 						}
 						if (clean.length > 0) {
 							this.emit({ kind: "text-delta", text: clean });

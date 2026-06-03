@@ -87,6 +87,59 @@ function isBridgedToolName(name: unknown): name is string {
 	return typeof name === "string" && name.startsWith("mcp__");
 }
 
+/**
+ * Strip leaked tool-call PROTOCOL markup from assistant text.
+ *
+ * Failure mode (observed 2026-06-03, session 019e8c37): when the model cannot
+ * reach its MCP tools — e.g. the shim hasn't attached yet, or under an API 529
+ * the agent loop degrades — it falls back to emitting tool calls as TEXT, i.e.
+ * `<function_calls><invoke name="mcp__…"><parameter …>…</parameter></invoke></function_calls>`.
+ * claude-p streams that as an ordinary assistant `text` block, so without this it
+ * renders to the user as raw XML (one session leaked 27 such blocks).
+ *
+ * Per D32 this parser does NOT route tools (the shim/router owns routing), so we
+ * cannot turn these into real executions here — the only correct action is to keep
+ * the raw protocol XML out of the user-visible text. We remove only blocks that
+ * actually invoke a bridged `mcp__…` tool (so a user legitimately *discussing* the
+ * `<function_calls>` format is not clobbered); genuine prose in the same block
+ * survives. Also drops the empty `<§></§>` thinking-delimiter artifact.
+ *
+ * Returns the cleaned text and the number of markup spans removed (0 = untouched).
+ */
+export function sanitizeLeakedToolProtocol(text: string): { clean: string; stripped: number } {
+	let stripped = 0;
+	let out = text;
+	const FC = /<(?:antml:)?function_calls>[\s\S]*?<\/(?:antml:)?function_calls>/g;
+	const HAS_MCP_INVOKE = /<(?:antml:)?invoke\b[^>]*\bname="mcp__/;
+
+	// 1. Complete <function_calls>…</function_calls> blocks that invoke an mcp__ tool.
+	out = out.replace(FC, (m) => {
+		if (HAS_MCP_INVOKE.test(m)) {
+			stripped++;
+			return "";
+		}
+		return m; // not a bridged-tool invocation — leave it (could be legit prose/code)
+	});
+	// 2. A dangling opener (model cut off mid-call) that references an mcp__ tool.
+	out = out.replace(/<(?:antml:)?function_calls>[\s\S]*$/g, (m) => {
+		if (HAS_MCP_INVOKE.test(m)) {
+			stripped++;
+			return "";
+		}
+		return m;
+	});
+	// 3. The empty <§></§> delimiter artifact (not user content).
+	out = out.replace(/<§>\s*<\/§>/g, () => {
+		stripped++;
+		return "";
+	});
+
+	if (stripped > 0) {
+		out = out.replace(/\n{3,}/g, "\n\n").trim();
+	}
+	return { clean: out, stripped };
+}
+
 // ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------
@@ -410,7 +463,23 @@ export class ClaudePStreamParser {
 				case "text": {
 					const text = b.text;
 					if (typeof text === "string" && text.length > 0) {
-						this.emit({ kind: "text-delta", text });
+						const { clean, stripped } = sanitizeLeakedToolProtocol(text);
+						if (stripped > 0) {
+							this.logger.warn(
+								{
+									event: "claudeP.stream.toolProtocolLeak",
+									stripped,
+									originalLen: text.length,
+									cleanLen: clean.length,
+								},
+								`claude-p: stripped ${stripped} leaked tool-call protocol span(s) from assistant ` +
+									`text (model emitted <function_calls> as text — likely MCP tools not attached / ` +
+									`agent-loop degraded). Raw protocol XML withheld from the response.`,
+							);
+						}
+						if (clean.length > 0) {
+							this.emit({ kind: "text-delta", text: clean });
+						}
 					}
 					break;
 				}

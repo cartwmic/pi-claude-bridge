@@ -76,12 +76,52 @@ scn_pi_start() {
 }
 
 scn_pi_stop() {
-	# Tear down the entire private tmux server, not just the session.
-	# Since the server is dedicated to this scenario (per SCN_TMUX_SOCKET),
-	# kill-server cleanly disposes of everything: the session, the pi
-	# process inside it, and the server itself. No stray state survives,
-	# no broad `pkill` needed, no risk to parallel siblings.
+	# Runs as every scenario's `trap 'scn_pi_stop' EXIT` handler, so $? here is
+	# the scenario's pending exit code (from its final `exit $SCN_FAILED`).
+	local rc=$?
+
+	# ── Cross-cutting guard: tool-call PROTOCOL markup must NEVER reach the user.
+	# When the model can't reach its MCP tools (shim not attached / API 529 /
+	# degraded agent loop) it emits tool calls as TEXT —
+	#   <function_calls><invoke name="mcp__…"><parameter …>…</parameter></invoke></function_calls>
+	# — which claude-p streams as ordinary assistant text. The bridge MUST strip
+	# it (src/driver/stream.ts sanitizeLeakedToolProtocol); if raw XML reaches the
+	# rendered pane, FAIL the scenario regardless of any positive coherence match.
+	# This is the negative invariant the original S0–S27 assertions never checked
+	# (they grep for EXPECTED content, never for leaked protocol). Observed:
+	# pi session 019e8c37 leaked 27 such blocks. See
+	# tests/unit-driver-tool-protocol-leak.mjs.
+	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG" 2>/dev/null || true
+	if [[ -f "$PANE_LOG" ]] && grep -qE '<(antml:)?function_calls>|<(antml:)?invoke[[:space:]]+name="mcp__' "$PANE_LOG"; then
+		echo "  FAIL: tool-call PROTOCOL markup leaked into the rendered response — raw <function_calls>/<invoke name=\"mcp__…\"> XML visible to the user (bridge sanitizer regression; see tests/unit-driver-tool-protocol-leak.mjs)"
+		rc=1
+	fi
+
+	# Tear down the entire private tmux server, not just the session. Since the
+	# server is dedicated to this scenario (per SCN_TMUX_SOCKET), kill-server
+	# cleanly disposes of everything: the session, the pi process inside it, and
+	# the server itself. No stray state survives, no broad `pkill` needed, no
+	# risk to parallel siblings.
 	"${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+
+	# Propagate a leak-induced failure into the scenario's exit status. (When rc
+	# is already non-zero from a real assertion, this is a no-op re-assertion;
+	# when the scenario otherwise passed but leaked, this flips it to FAIL.)
+	if [[ "$rc" -ne 0 ]]; then exit "$rc"; fi
+}
+
+# Explicit, documented form of the cross-cutting guard above — call it directly
+# in a scenario to assert the rendered response carries no tool-call protocol
+# markup. (scn_pi_stop runs it automatically for every scenario; this is for a
+# dedicated scenario that wants the check inline with a clear message.)
+scn_assert_no_tool_protocol_leak() {
+	local descr="${1:-rendered response}"
+	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG" 2>/dev/null || true
+	if [[ -f "$PANE_LOG" ]] && grep -qE '<(antml:)?function_calls>|<(antml:)?invoke[[:space:]]+name="mcp__' "$PANE_LOG"; then
+		scn_fail "$descr — tool-call PROTOCOL markup leaked (raw <function_calls>/<invoke name=\"mcp__…\"> XML visible to the user)"
+	else
+		scn_pass "$descr — no tool-call protocol markup leaked"
+	fi
 }
 
 # Cross-scenario isolation. Now a no-op when each scenario has its own

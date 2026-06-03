@@ -93,51 +93,62 @@ function isBridgedToolName(name: unknown): name is string {
 }
 
 /**
+ * Container tag names the model uses when it writes tool calls as TEXT instead of
+ * native tool_use. The shape varies run-to-run — observed in session 019e8c37:
+ *   turn 1: <function_calls><invoke name="mcp__…"><parameter …>…</parameter></invoke></function_calls>
+ *   turn 2: <tool_use><parameter name="name">mcp__…</parameter><parameter name="command">…</parameter></tool_use>
+ * so we strip ANY of these container shapes (and `invoke` standalone), not just one.
+ */
+const TOOL_PROTOCOL_TAGS = ["function_calls", "tool_use", "tool_call", "function_call", "invoke"];
+
+/**
  * Strip leaked tool-call PROTOCOL markup from assistant text.
  *
  * Failure mode (observed 2026-06-03, session 019e8c37): when the model cannot
- * reach its MCP tools — e.g. the shim hasn't attached yet, or under an API 529
- * the agent loop degrades — it falls back to emitting tool calls as TEXT, i.e.
- * `<function_calls><invoke name="mcp__…"><parameter …>…</parameter></invoke></function_calls>`.
- * claude-p streams that as an ordinary assistant `text` block, so without this it
- * renders to the user as raw XML (one session leaked 27 such blocks).
+ * reach its MCP tools — the shim hasn't attached, or under an API 529 the agent
+ * loop degrades — it falls back to emitting tool calls as TEXT, in one of several
+ * XML-ish container shapes (see TOOL_PROTOCOL_TAGS). claude-p streams that as an
+ * ordinary assistant `text` block, so without this it renders to the user as raw
+ * XML (one turn leaked 27 <function_calls> blocks; a later rerun leaked 31
+ * <tool_use> blocks).
  *
- * Per D32 this parser does NOT route tools (the shim/router owns routing), so we
- * cannot turn these into real executions here — the only correct action is to keep
- * the raw protocol XML out of the user-visible text. We remove only blocks that
- * actually invoke a bridged `mcp__…` tool (so a user legitimately *discussing* the
- * `<function_calls>` format is not clobbered); genuine prose in the same block
- * survives. Also drops the empty `<§></§>` thinking-delimiter artifact.
+ * Per D32 this parser does NOT route tools (the shim/router owns routing), so the
+ * only correct action is to keep the raw protocol XML out of the user-visible text.
+ * We remove only container blocks that reference a bridged `mcp__…` tool (so a user
+ * legitimately *discussing* the format is not clobbered); genuine prose survives.
+ * Also drops the empty `<§></§>` thinking-delimiter artifact.
  *
  * Returns the cleaned text and the number of markup spans removed (0 = untouched).
  */
 export function sanitizeLeakedToolProtocol(text: string): { clean: string; stripped: number } {
 	let stripped = 0;
 	let out = text;
-	const FC = /<(?:antml:)?function_calls>[\s\S]*?<\/(?:antml:)?function_calls>/g;
-	const HAS_MCP_INVOKE = /<(?:antml:)?invoke\b[^>]*\bname="mcp__/;
+	const HAS_MCP = /mcp__/; // a bridged-tool reference anywhere in the block
 
-	// 1. Complete <function_calls>…</function_calls> blocks that invoke an mcp__ tool.
-	out = out.replace(FC, (m) => {
-		if (HAS_MCP_INVOKE.test(m)) {
-			stripped++;
-			return "";
-		}
-		return m; // not a bridged-tool invocation — leave it (could be legit prose/code)
-	});
-	// 2. A dangling opener (model cut off mid-call) that references an mcp__ tool.
-	out = out.replace(/<(?:antml:)?function_calls>[\s\S]*$/g, (m) => {
-		if (HAS_MCP_INVOKE.test(m)) {
-			stripped++;
-			return "";
-		}
-		return m;
-	});
-	// 3. The empty <§></§> delimiter artifact (not user content).
-	out = out.replace(/<§>\s*<\/§>/g, () => {
-		stripped++;
-		return "";
-	});
+	// 1. Complete <tag …>…</tag> blocks (each matched against its OWN close, so a
+	//    nested <invoke>/<parameter> inside <function_calls>/<tool_use> is removed
+	//    with the wrapper). Strip only blocks that reference an mcp__ tool.
+	for (const tag of TOOL_PROTOCOL_TAGS) {
+		const complete = new RegExp(`<(?:antml:)?${tag}\\b[^>]*>[\\s\\S]*?<\\/(?:antml:)?${tag}>`, "g");
+		out = out.replace(complete, (m) => (HAS_MCP.test(m) ? (stripped++, "") : m));
+	}
+	// 2. A dangling opener (model cut off mid-call) of any container, if it
+	//    references an mcp__ tool.
+	for (const tag of TOOL_PROTOCOL_TAGS) {
+		const dangling = new RegExp(`<(?:antml:)?${tag}\\b[^>]*>[\\s\\S]*$`);
+		out = out.replace(dangling, (m) => (HAS_MCP.test(m) ? (stripped++, "") : m));
+	}
+	// 3. Only if THIS text already leaked a tool block, sweep orphan protocol tags
+	//    left behind (stray opens/closes, <parameter> remnants). Gated on stripped>0
+	//    so a user merely discussing the format (no mcp__ block) is never touched.
+	if (stripped > 0) {
+		out = out.replace(
+			/<\/?(?:antml:)?(?:function_calls|tool_use|tool_call|function_call|invoke|parameter)\b[^>]*>/g,
+			() => (stripped++, ""),
+		);
+	}
+	// 4. The empty <§></§> delimiter artifact (not user content).
+	out = out.replace(/<§>\s*<\/§>/g, () => (stripped++, ""));
 
 	if (stripped > 0) {
 		out = out.replace(/\n{3,}/g, "\n\n").trim();

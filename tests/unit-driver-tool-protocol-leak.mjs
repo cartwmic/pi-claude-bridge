@@ -46,7 +46,24 @@ const LEAKED = [
 	"**Steps:** run `pi --list-models` to confirm the 4.8 id is present, then edit your pi default.",
 ].join("\n");
 
-const MARKUP_MARKERS = ["<function_calls>", "</function_calls>", "<invoke", "<parameter", "<§>", "</§>"];
+// The OTHER leaked shape seen in the same session's post-fix rerun (turn 2):
+// <tool_use> with <parameter name="name">mcp__…</parameter> — NO <function_calls>.
+const LEAKED_TOOL_USE = [
+	"Check bridge config first.",
+	"",
+	"<tool_use>",
+	'<parameter name="name">mcp__custom-tools__bash</parameter>',
+	'<parameter name="command">grep -rn "opus" ~/.claude/ 2>/dev/null | head -50</parameter>',
+	"</tool_use>",
+	"<tool_use>",
+	'<parameter name="name">mcp__custom-tools__bash</parameter>',
+	'<parameter name="command">find ~ -maxdepth 4 -type d 2>/dev/null | head -20</parameter>',
+	"</tool_use>",
+	"",
+	"**Short answer:** usually no — Claude bridge passes the model id through.",
+].join("\n");
+
+const MARKUP_MARKERS = ["<function_calls>", "</function_calls>", "<invoke", "<parameter", "<tool_use", "<tool_call", "<§>", "</§>"];
 
 function makeLogger() {
 	const warns = [];
@@ -65,6 +82,16 @@ describe("sanitizeLeakedToolProtocol", () => {
 		assert.ok(clean.includes("**Steps:**") && clean.includes("pi --list-models"));
 		// the 529 notice (not protocol markup) is left intact
 		assert.ok(clean.includes("529 Overloaded"));
+	});
+
+	it("strips the <tool_use> shape too (session 019e8c37 post-fix rerun / turn 2)", () => {
+		const { clean, stripped } = sanitizeLeakedToolProtocol(LEAKED_TOOL_USE);
+		assert.ok(stripped >= 2, "two <tool_use> blocks (+ orphan sweep) removed");
+		for (const m of MARKUP_MARKERS) {
+			assert.ok(!clean.includes(m), `clean text must not contain ${m}`);
+		}
+		assert.ok(clean.includes("Check bridge config first."));
+		assert.ok(clean.includes("**Short answer:**"));
 	});
 
 	it("is a no-op for ordinary text (0 stripped)", () => {

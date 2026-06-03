@@ -92,7 +92,7 @@ scn_pi_stop() {
 	# pi session 019e8c37 leaked 27 such blocks. See
 	# tests/unit-driver-tool-protocol-leak.mjs.
 	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG" 2>/dev/null || true
-	if [[ -f "$PANE_LOG" ]] && grep -qE '<(antml:)?function_calls>|<(antml:)?invoke[[:space:]]+name="mcp__' "$PANE_LOG"; then
+	if [[ -f "$PANE_LOG" ]] && grep -qE '<(antml:)?(function_calls|tool_use|tool_call|function_call|invoke)[ >]|<(antml:)?parameter[[:space:]]+name=' "$PANE_LOG"; then
 		echo "  FAIL: tool-call PROTOCOL markup leaked into the rendered response — raw <function_calls>/<invoke name=\"mcp__…\"> XML visible to the user (bridge sanitizer regression; see tests/unit-driver-tool-protocol-leak.mjs)"
 		rc=1
 	fi
@@ -117,7 +117,7 @@ scn_pi_stop() {
 scn_assert_no_tool_protocol_leak() {
 	local descr="${1:-rendered response}"
 	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG" 2>/dev/null || true
-	if [[ -f "$PANE_LOG" ]] && grep -qE '<(antml:)?function_calls>|<(antml:)?invoke[[:space:]]+name="mcp__' "$PANE_LOG"; then
+	if [[ -f "$PANE_LOG" ]] && grep -qE '<(antml:)?(function_calls|tool_use|tool_call|function_call|invoke)[ >]|<(antml:)?parameter[[:space:]]+name=' "$PANE_LOG"; then
 		scn_fail "$descr — tool-call PROTOCOL markup leaked (raw <function_calls>/<invoke name=\"mcp__…\"> XML visible to the user)"
 	else
 		scn_pass "$descr — no tool-call protocol markup leaked"

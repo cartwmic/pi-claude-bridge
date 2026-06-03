@@ -43,7 +43,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "change-case": "^5.4.4",
-    "claude-p": "0.1.0",
+    "claude-p": "github:cartwmic/claude-p#415f4ba0b1407f2e21ce62c294aa5e3978c2c64c",
     "pino": "^10.3.1",
     "rotating-file-stream": "^3.2.9"
   },

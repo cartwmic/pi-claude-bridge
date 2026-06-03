@@ -1,0 +1,121 @@
+{
+  "label": "w1-s1",
+  "sessionId": "65ff832e-1e10-455f-9437-938bc27c3c5e",
+  "verdict": "PASS",
+  "exit": 0,
+  "signal": null,
+  "wallMs": 8768,
+  "sessionStartFired": true,
+  "typingAnyway": false,
+  "inkQuiescent": true,
+  "promptTyped": true,
+  "stopFired": true,
+  "resultEmitted": true,
+  "stopTimeout": false,
+  "sessionStartTimeout": false,
+  "sawResultLine": true,
+  "txPath": "/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/65ff832e-1e10-455f-9437-938bc27c3c5e.jsonl",
+  "tx": {
+    "exists": true,
+    "lines": 13,
+    "users": 1,
+    "assistants": 2,
+    "assistantComplete": 2,
+    "lastType": "permission-mode",
+    "types": {
+      "mode": 2,
+      "permission-mode": 2,
+      "file-history-snapshot": 1,
+      "user": 1,
+      "ai-title": 2,
+      "assistant": 2,
+      "system": 2,
+      "last-prompt": 1
+    }
+  },
+  "conclusion": "PASS"
+}
+
+===== STDERR (--debug) =====
+[claude-p +0ms] run() entered
+[claude-p +1ms] hook harness ready (FIFO + relay script + --settings)
+[claude-p +9ms] zmux session spawned; child claude PID up, Ink booting
+zmux pane_output: 13 bytes
+zmux pane_output: 6 bytes
+zmux pane_output: 24 bytes
+zmux pane_output: 5 bytes
+zmux pane_output: 3 bytes
+zmux pane_output: 12 bytes
+zmux pane_output: 20 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 322 bytes
+hook: session_start payload={"session_id":"65ff832e-1e10-455f-9437-938bc27c3c5e","transcript_path":"/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/65ff832e-1e10-455f-9437-938bc27c3c5e.jsonl","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","hook_event_name":"SessionStart","source":"startup","model":"claude-haiku-4-5"}
+[claude-p +4099ms] SessionStart hook fired (Ink is up)
+[claude-p +4099ms] transcript_path from SessionStart: /Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/65ff832e-1e10-455f-9437-938bc27c3c5e.jsonl
+[claude-p +4099ms] Ink quiescent (output silent for 274ms, waited 0ms total)
+[claude-p +4099ms] typing prompt (51 bytes), attempt 1
+[claude-p +4892ms] typing prompt (51 bytes), attempt 2
+[claude-p +5709ms] typing prompt (51 bytes), attempt 3
+zmux pane_output: 204 bytes
+zmux pane_output: 120 bytes
+[claude-p +6024ms] prompt echo confirmed; Enter sent; waiting on claude API
+[claude-p +6024ms] transcript not yet on disk; retrying (path=/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/65ff832e-1e10-455f-9437-938bc27c3c5e.jsonl)
+zmux pane_output: 20 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 278 bytes
+[claude-p +6803ms] transcript opened for tailing after 116 attempt(s): /Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/65ff832e-1e10-455f-9437-938bc27c3c5e.jsonl
+[claude-p +6803ms] first transcript line streamed (2 line(s) in first flush)
+zmux pane_output: 55 bytes
+zmux pane_output: 55 bytes
+[claude-p +6928ms] streamed 2 more line(s) (total=4)
+zmux pane_output: 55 bytes
+zmux pane_output: 71 bytes
+zmux pane_output: 1024 bytes
+zmux pane_output: 287 bytes
+zmux pane_output: 57 bytes
+zmux pane_output: 71 bytes
+zmux pane_output: 73 bytes
+zmux pane_output: 75 bytes
+zmux pane_output: 73 bytes
+zmux pane_output: 77 bytes
+zmux pane_output: 76 bytes
+zmux pane_output: 61 bytes
+zmux pane_output: 106 bytes
+zmux pane_output: 20 bytes
+zmux pane_output: 852 bytes
+[claude-p +7825ms] streamed 1 more line(s) (total=5)
+zmux pane_output: 35 bytes
+zmux pane_output: 165 bytes
+hook: stop payload={"session_id":"65ff832e-1e10-455f-9437-938bc27c3c5e","transcript_path":"/Users/cartwmic/.claude/projects/-Volumes-Workshop-git-pi-claude-bridge--spike-notes-claude-p-gate/65ff832e-1e10-455f-9437-938bc27c3c5e.jsonl","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","permission_mode":"bypassPermissions","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"READY","background_tasks":[],"session_crons":[]}
+[claude-p +7849ms] Stop hook fired (assistant turn finished)
+[claude-p +7849ms] draining post-Stop transcript flush window (20 × 20ms)
+zmux pane_output: 72 bytes
+zmux pane_output: 35 bytes
+zmux pane_output: 122 bytes
+[claude-p +8401ms] post-Stop drain streamed 4 more line(s)
+zmux pane_output: 32 bytes
+zmux pane_output: 8 bytes
+zmux pane_output: 9 bytes
+zmux pane_output: 28 bytes
+zmux pane_output: 13 bytes
+zmux pane_output: 5 bytes
+zmux pane_output: 119 bytes
+zmux session_exited: code=null signal=9
+[claude-p +8676ms] result envelope emitted; stream done
+[claude-p +8676ms] run() returning (total_lines_streamed=5, duration=8676ms)
+
+
+===== STDOUT =====
+{"type":"mode","mode":"normal","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e"}
+{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e"}
+{"type":"file-history-snapshot","messageId":"e166b570-75d1-4abd-8d23-d4a810e9d8be","snapshot":{"messageId":"e166b570-75d1-4abd-8d23-d4a810e9d8be","trackedFileBackups":{},"timestamp":"2026-06-03T04:29:25.059Z"},"isSnapshotUpdate":false}
+{"parentUuid":null,"isSidechain":false,"promptId":"9417b8b2-e639-4ec5-97f9-a42c9c4e721a","type":"user","message":{"role":"user","content":"Reply with exactly the word READY and nothing else."},"uuid":"e166b570-75d1-4abd-8d23-d4a810e9d8be","timestamp":"2026-06-03T04:29:25.059Z","permissionMode":"bypassPermissions","userType":"external","entrypoint":"cli","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e","version":"2.1.159","gitBranch":"replan-driver-from-phase-0"}
+{"type":"ai-title","aiTitle":"Respond with specific word","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e"}
+{"parentUuid":"e166b570-75d1-4abd-8d23-d4a810e9d8be","isSidechain":false,"message":{"model":"claude-haiku-4-5-20251001","id":"msg_01T2wfNwsJh1YeKQYJs3npGp","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"Ep4DCm0IDhgCKkAwtbBc3sr0NMmf7I2ysJGPXnlkCIR42WMXwgs5lvFdBSijvDMxdoMGiG6ECJ0WeLFbViCu9khdM0QSJHb5PoWUMhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgzxwSQvyrRPxHaiHhYaDAcYvvC9ru1mnDCtAiIwRjeCxdgzmenfvNL3nPndzKqbqoyin2w9xb6CTLcMVioSYsa+lMSItv1O2eUTJ5VgKt4BV8X4ea3o68pk9FEBqRO0jnGy2ImXuKnAi+BATgpRyPXW2b4pGb/aGNkmbdMmpJ6t274odwvcpa1ILLtPt1hEjCWHnU+dT5xkNHLhhTYJHXn6fLgs9vPZNVGEfZva2qUVJIUGF1lPVr67ZRu58yQ83T0WD7HdF6XI9grjpzjFSyNeoHkS1sWE8GeOpWjFGE8m/L5dSb8bkIpqLnlLfgwg0Km9uO18w0aOD2GgDLAPyoDp913HThfqUFQuJl364zAwgV3VHezMR/9l2XrwTC0f5xShTivkAVdBynp7XcqsGAE="}],"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2524,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":59,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2524,"output_tokens":59,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CbfhMxTLAjoSQCnrbaVCQ","type":"assistant","uuid":"704b6439-6667-4985-9d9c-418d86735165","timestamp":"2026-06-03T04:29:26.217Z","userType":"external","entrypoint":"cli","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e","version":"2.1.159","gitBranch":"replan-driver-from-phase-0"}
+{"parentUuid":"704b6439-6667-4985-9d9c-418d86735165","isSidechain":false,"message":{"model":"claude-haiku-4-5-20251001","id":"msg_01T2wfNwsJh1YeKQYJs3npGp","type":"message","role":"assistant","content":[{"type":"text","text":"READY"}],"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2524,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":59,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2524,"output_tokens":59,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CbfhMxTLAjoSQCnrbaVCQ","type":"assistant","uuid":"fa818267-f849-4383-b548-b7aa5122928b","timestamp":"2026-06-03T04:29:26.218Z","userType":"external","entrypoint":"cli","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e","version":"2.1.159","gitBranch":"replan-driver-from-phase-0"}
+{"parentUuid":"fa818267-f849-4383-b548-b7aa5122928b","isSidechain":false,"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[{"command":"/tmp/claude-501/claude-p-23099-183774b4/hook.sh Stop","durationMs":55}],"hookErrors":[],"preventedContinuation":false,"stopReason":"","hasOutput":false,"level":"suggestion","timestamp":"2026-06-03T04:29:26.516Z","uuid":"6d70c481-a9c2-47d7-bb76-803beb1f7e37","toolUseID":"4ca2a004-42b6-4e68-b17e-debca90df721","userType":"external","entrypoint":"cli","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e","version":"2.1.159","gitBranch":"replan-driver-from-phase-0"}
+{"parentUuid":"6d70c481-a9c2-47d7-bb76-803beb1f7e37","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":1311,"messageCount":4,"timestamp":"2026-06-03T04:29:26.517Z","uuid":"5266c551-2e64-4916-9004-6dcef07f18f3","isMeta":false,"userType":"external","entrypoint":"cli","cwd":"/Volumes/Workshop/git/pi-claude-bridge/.spike-notes/claude-p-gate","sessionId":"65ff832e-1e10-455f-9437-938bc27c3c5e","version":"2.1.159","gitBranch":"replan-driver-from-phase-0"}
+{"type":"result","subtype":"success","session_id":"65ff832e-1e10-455f-9437-938bc27c3c5e","result":"READY","is_error":false,"duration_ms":8676,"duration_api_ms":0,"num_turns":2,"total_cost_usd":0,"usage":{"input_tokens":5048,"output_tokens":118,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[]}
+

@@ -28,6 +28,7 @@ import {
 	__resetVersionCheckForTests,
 	TESTED_CLAUDE_VERSION,
 	TESTED_CLAUDE_P_VERSION,
+	EXPECTED_CLAUDE_P_PATCH,
 } from "../src/driver/claudeP.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -45,11 +46,13 @@ function recordingLogger() {
 	};
 }
 
-/** Build an injectable VersionReaders pair from fixed return values. */
-function readers(claude, claudeP) {
+/** Build an injectable VersionReaders from fixed return values. Patch defaults to
+ *  the expected fork marker so version-skew cases don't also trip the patch warn. */
+function readers(claude, claudeP, patch = EXPECTED_CLAUDE_P_PATCH) {
 	return {
 		readClaudeVersion: () => claude,
 		readClaudePVersion: () => claudeP,
+		readClaudePPatch: () => patch,
 	};
 }
 
@@ -66,8 +69,9 @@ describe("checkClaudePVersionsOnce (T4.7 runtime version-skew check)", () => {
 		assert.deepEqual(observed, {
 			claude: TESTED_CLAUDE_VERSION,
 			claudeP: TESTED_CLAUDE_P_VERSION,
+			claudePPatch: EXPECTED_CLAUDE_P_PATCH,
 		});
-		assert.equal(log.warns.length, 0, "in-range versions must not warn");
+		assert.equal(log.warns.length, 0, "in-range versions + patched fork must not warn");
 	});
 
 	it("warns once when the claude CLI version is skewed", () => {
@@ -123,7 +127,7 @@ describe("checkClaudePVersionsOnce (T4.7 runtime version-skew check)", () => {
 		// null = couldn't read. A missing binary becomes a real error at first TURN
 		// (the spawn ENOENT path), NOT a skew warning here, and NOT a throw.
 		const observed = checkClaudePVersionsOnce(log, readers(null, null));
-		assert.deepEqual(observed, { claude: null, claudeP: null });
+		assert.deepEqual(observed, { claude: null, claudeP: null, claudePPatch: EXPECTED_CLAUDE_P_PATCH });
 		assert.equal(log.warns.length, 0, "null versions must not be treated as skew");
 	});
 
@@ -158,7 +162,53 @@ describe("checkClaudePVersionsOnce (T4.7 runtime version-skew check)", () => {
 			if (observed) {
 				assert.ok(observed.claude === null || typeof observed.claude === "string");
 				assert.ok(observed.claudeP === null || typeof observed.claudeP === "string");
+				assert.ok(observed.claudePPatch === null || typeof observed.claudePPatch === "string");
 			}
 		});
+	});
+});
+
+// AC: claude-p-driver.driver-runs-the-patched-claude-p-binary — the bridge must be
+// able to confirm the resolved binary carries the echo-confirm patch, and warn
+// (not silently proceed) when it resolved STOCK upstream claude-p.
+describe("patched-binary identity check (claude-p-driver.driver-runs-the-patched-claude-p-binary)", () => {
+	it("does NOT warn when the expected fork patch marker is present", () => {
+		__resetVersionCheckForTests();
+		const log = recordingLogger();
+		const observed = checkClaudePVersionsOnce(
+			log,
+			readers(TESTED_CLAUDE_VERSION, TESTED_CLAUDE_P_VERSION, EXPECTED_CLAUDE_P_PATCH),
+		);
+		assert.equal(observed.claudePPatch, EXPECTED_CLAUDE_P_PATCH);
+		assert.equal(log.warns.length, 0, "the patched fork must not warn");
+	});
+
+	it("warns when the patch marker is ABSENT (stock upstream claude-p resolved)", () => {
+		__resetVersionCheckForTests();
+		const log = recordingLogger();
+		checkClaudePVersionsOnce(log, readers(TESTED_CLAUDE_VERSION, TESTED_CLAUDE_P_VERSION, null));
+		const patchWarns = log.warns.filter((w) => w.fields.event === "claudeP.patch.missing");
+		assert.equal(patchWarns.length, 1, "a stock binary must trigger the patch-missing warn");
+		assert.equal(patchWarns[0].fields.observed, null);
+		assert.equal(patchWarns[0].fields.expected, EXPECTED_CLAUDE_P_PATCH);
+		assert.match(patchWarns[0].msg, /NOT the expected patched fork/);
+		assert.match(patchWarns[0].msg, /re-exposed/);
+	});
+
+	it("warns when the patch marker is a DIFFERENT/stale value", () => {
+		__resetVersionCheckForTests();
+		const log = recordingLogger();
+		checkClaudePVersionsOnce(log, readers(TESTED_CLAUDE_VERSION, TESTED_CLAUDE_P_VERSION, "some-other-patch"));
+		const patchWarns = log.warns.filter((w) => w.fields.event === "claudeP.patch.missing");
+		assert.equal(patchWarns.length, 1);
+		assert.equal(patchWarns[0].fields.observed, "some-other-patch");
+	});
+
+	it("patch-missing and version-skew warns co-occur independently (two warns)", () => {
+		__resetVersionCheckForTests();
+		const log = recordingLogger();
+		checkClaudePVersionsOnce(log, readers("9.9.9", TESTED_CLAUDE_P_VERSION, null));
+		const events = log.warns.map((w) => w.fields.event).sort();
+		assert.deepEqual(events, ["claudeP.patch.missing", "claudeP.version.skew"]);
 	});
 });

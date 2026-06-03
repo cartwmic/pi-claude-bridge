@@ -20,7 +20,7 @@
 
 ## 2. Integrate & validate (gate G-echo)
 
-- [ ] 2.1 Repoint the bridge `package.json` `claude-p` dependency to the fork; ensure `resolveClaudePBin()` (main + capture paths) runs the patched binary; fail loudly if the platform binary is absent. Satisfies claude-p-driver.driver-runs-the-patched-claude-p-binary.
+- [x] 2.1 Repoint the bridge `package.json` `claude-p` dependency to the fork; ensure `resolveClaudePBin()` (main + capture paths) runs the patched binary; fail loudly if the platform binary is absent. Satisfies claude-p-driver.driver-runs-the-patched-claude-p-binary.
   - intent: infra
   - files_allowed:
       - package.json
@@ -28,7 +28,7 @@
       - index.ts
       - scripts/**
   - allow_new_files: true
-- [ ] 2.2 Add the patched-binary identity check (extend `checkClaudePVersionsOnce` in `index.ts`): warn on stock-binary fallback. Satisfies the identity half of claude-p-driver.driver-runs-the-patched-claude-p-binary.
+- [x] 2.2 Add the patched-binary identity check (extend `checkClaudePVersionsOnce` in `index.ts`): warn on stock-binary fallback. Satisfies the identity half of claude-p-driver.driver-runs-the-patched-claude-p-binary.
   - intent: feature
   - files_allowed:
       - index.ts

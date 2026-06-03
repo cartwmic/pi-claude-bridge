@@ -285,6 +285,14 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 export const TESTED_CLAUDE_VERSION = "2.1.159";
 /** The `claude-p` package version this bridge's driver/stream parsing was tested against. */
 export const TESTED_CLAUDE_P_VERSION = "0.1.0";
+/**
+ * The patch-identity marker the bridge REQUIRES on its `claude-p` dependency
+ * (the `cartwmic/claude-p` fork's package.json `claudePPatch`). Its absence means
+ * the resolved binary is stock upstream `claude-p` — the echo-confirm input fix
+ * is NOT present and the StopTimeout/"hang" under concurrent-boot contention is
+ * re-exposed. See change `fork-claude-p-echo-confirm-input`.
+ */
+export const EXPECTED_CLAUDE_P_PATCH = "echo-confirm-input";
 
 /**
  * Pluggable version readers (injected by tests; default to the real probes). Each
@@ -297,6 +305,8 @@ export interface VersionReaders {
 	readClaudeVersion(): string | null;
 	/** Read the `claude-p` package version (e.g. "0.1.0") or null. */
 	readClaudePVersion(): string | null;
+	/** Read the fork's patch-identity marker (package.json `claudePPatch`) or null. */
+	readClaudePPatch(): string | null;
 }
 
 /** Default real reader: `claude --version` → "2.1.159 (Claude Code)" → "2.1.159". */
@@ -325,9 +335,21 @@ function defaultReadClaudePVersion(): string | null {
 	}
 }
 
+/** Default real reader: the fork's patch marker from claude-p/package.json (no spawn). */
+function defaultReadClaudePPatch(): string | null {
+	try {
+		const req = createRequire(import.meta.url);
+		const pkg = req("claude-p/package.json") as { claudePPatch?: unknown };
+		return typeof pkg.claudePPatch === "string" ? pkg.claudePPatch : null;
+	} catch {
+		return null;
+	}
+}
+
 const DEFAULT_VERSION_READERS: VersionReaders = {
 	readClaudeVersion: defaultReadClaudeVersion,
 	readClaudePVersion: defaultReadClaudePVersion,
+	readClaudePPatch: defaultReadClaudePPatch,
 };
 
 /** Extract the leading `MAJOR.MINOR.PATCH` from arbitrary version output, or null. */
@@ -356,13 +378,33 @@ export function __resetVersionCheckForTests(): void {
 export function checkClaudePVersionsOnce(
 	logger: ClaudePLogger | undefined,
 	readers: VersionReaders = DEFAULT_VERSION_READERS,
-): { claude: string | null; claudeP: string | null } | null {
+): { claude: string | null; claudeP: string | null; claudePPatch: string | null } | null {
 	if (_versionCheckDone) return null;
 	_versionCheckDone = true;
 
 	const log = logger ?? NOOP;
 	const claude = readers.readClaudeVersion();
 	const claudeP = readers.readClaudePVersion();
+	const claudePPatch = readers.readClaudePPatch();
+
+	// Patch-identity check: the bridge depends on the cartwmic/claude-p fork whose
+	// echo-confirm input patch fixes the StopTimeout "hang". An absent/wrong marker
+	// means we resolved STOCK upstream claude-p and the fix is inactive — warn loudly
+	// rather than silently re-expose the wedge under concurrent-boot contention.
+	if (claudePPatch !== EXPECTED_CLAUDE_P_PATCH) {
+		log.warn(
+			{
+				event: "claudeP.patch.missing",
+				expected: EXPECTED_CLAUDE_P_PATCH,
+				observed: claudePPatch,
+			},
+			`claude-p is NOT the expected patched fork (claudePPatch observed=` +
+				`${claudePPatch ?? "absent"} expected=${EXPECTED_CLAUDE_P_PATCH}). The echo-confirm ` +
+				`input fix is INACTIVE — the StopTimeout/"hang" under concurrent-boot contention ` +
+				`is re-exposed. Reinstall the fork (github:cartwmic/claude-p) with Zig 0.15.2 ` +
+				`available. This is a warning, not a failure.`,
+		);
+	}
 
 	// A null version means "couldn't read it" — NOT a skew. We don't warn on null
 	// here: a genuinely missing binary becomes a real error at the first turn (the
@@ -386,7 +428,7 @@ export function checkClaudePVersionsOnce(
 		);
 	}
 
-	return { claude, claudeP };
+	return { claude, claudeP, claudePPatch };
 }
 
 // ---------------------------------------------------------------------------

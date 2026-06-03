@@ -34,7 +34,7 @@
       - index.ts
       - tests/**
   - allow_new_files: true
-- [ ] 2.3 Run `stoptimeout-proof.mjs` against the patched binary at the SAME load: assert 0 dropped-prompt failures (G-echo); record the before/after fixture (stock 2/60 → patched 0). Implements D4.
+- [x] 2.3 Run `stoptimeout-proof.mjs` against the patched binary at the SAME load: assert 0 dropped-prompt failures (G-echo); record the before/after fixture (stock 2/60 → patched 0). Implements D4.
   - intent: infra
   - files_allowed:
       - .spike-notes/claude-p-gate/**
@@ -43,14 +43,14 @@
 
 ## 3. Tests, constitution re-verify & verification
 
-- [ ] 3.1 Test that `resolveClaudePBin()` resolves the patched binary on both paths and the identity check warns on a stock binary; wire G-echo into the suite where the runner can drive real `claude`/`claude-p`.
+- [x] 3.1 Test that `resolveClaudePBin()` resolves the patched binary on both paths and the identity check warns on a stock binary; wire G-echo into the suite where the runner can drive real `claude`/`claude-p`.
   - intent: feature
   - files_allowed:
       - tests/**
       - index.ts
       - package.json
   - allow_new_files: true
-- [ ] 3.2 Re-verify constitution III (no `~/.claude` writes) and IV (disallow flags forwarded) hold post-swap; document the fork + `sync-custom-forks` re-validation workflow in README/TODO.
+- [x] 3.2 Re-verify constitution III (no `~/.claude` writes) and IV (disallow flags forwarded) hold post-swap; document the fork + `sync-custom-forks` re-validation workflow in README/TODO.
   - intent: feature
   - files_allowed:
       - tests/**
@@ -58,7 +58,7 @@
       - README.md
       - TODO.md
   - allow_new_files: true
-- [ ] 3.3 Author `verify.md`: map each AC (claude-p-fork.* + claude-p-driver.*) to its validating test/gate (G-echo for reliability; unit tests for resolution + identity), carry the clarify clear-line result, record the Completion Decision.
+- [x] 3.3 Author `verify.md`: map each AC (claude-p-fork.* + claude-p-driver.*) to its validating test/gate (G-echo for reliability; unit tests for resolution + identity), carry the clarify clear-line result, record the Completion Decision.
   - intent: infra
   - files_allowed:
       - openspec/changes/fork-claude-p-echo-confirm-input/**

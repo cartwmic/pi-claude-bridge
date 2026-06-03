@@ -148,6 +148,38 @@ the surrounding tool-park/delivery records).
 
 ## Maintenance
 
+### Forked `claude-p` (echo-confirm input patch)
+
+The `claude-p` dependency points at a **maintained fork**,
+[`cartwmic/claude-p`](https://github.com/cartwmic/claude-p), not the upstream npm
+release. The fork carries one custom patch: `src/driver.zig` **confirms the typed
+prompt echoed into Ink's input box before pressing Enter** (clear-line + retype on
+a miss, bounded, then fail fast with `RunError.PromptNotAccepted`). This fixes the
+intermittent `StopTimeout` "hang" — under concurrent-boot CPU contention the stock
+binary typed the prompt before Ink's input was ready, dropped the keystrokes, and
+wedged until `--timeout` (see `.spike-notes/claude-p-gate/stoptimeout-rootcause-PROVEN.md`).
+Validated: the load that wedged stock 2/60 → patched **0/60**
+(`.spike-notes/claude-p-gate/gecho-result.md`).
+
+- **Build-on-install.** `package.json` pins `github:cartwmic/claude-p#<sha>`. The
+  fork's `prepare` script runs `zig build`, so **Zig 0.15.2 must be on `PATH` at
+  install time** (e.g. `mise exec zig@0.15.2 -- npm install`). The fork's
+  `bin/claude-p.js` prefers the freshly-built `zig-out/bin/claude-p`.
+- **Identity check.** On first spawn the bridge reads the fork's
+  `package.json` `claudePPatch` marker (`echo-confirm-input`) and emits a `warn`
+  (event `claudeP.patch.missing`) if it resolved a **stock** upstream `claude-p`
+  (the fix would be inactive). Constant: `EXPECTED_CLAUDE_P_PATCH` in
+  `src/driver/claudeP.ts`.
+- **Syncing upstream** (`sync-custom-forks`): in `~/git/claude-p`,
+  `git fetch upstream && git merge upstream/main`, re-build, then **re-run gate
+  G-echo** (`node .spike-notes/claude-p-gate/stoptimeout-proof.mjs --concurrency 10
+  --waves 6 --timeout 60 --load 16` → expect 0 failures) before bumping the bridge's
+  pinned `#<sha>`. The patch is confined to the prompt-commit step to keep the merge
+  surface small.
+- **Follow-ups** (not yet done): a multi-platform CI/release pipeline for the fork
+  binary (so consumers without Zig can install a prebuilt), and bridge-side
+  defense-in-depth (same-provider concurrency cap + idle-watchdog).
+
 ### Tested version range
 
 The claude-p driver — its flag set, native disallow-list closure, and stdout

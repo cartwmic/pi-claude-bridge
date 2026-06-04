@@ -97,6 +97,22 @@ scn_pi_stop() {
 		rc=1
 	fi
 
+	# ── Cross-cutting guard #2 (STRIP-PROOF): a leak the bridge SUCCESSFULLY strips
+	# never reaches the pane, so guard #1 above is blind to it (it only catches
+	# markup that ESCAPED the strip). The reliable signal lives in the bridge log:
+	# `claudeP.stream.toolProtocolLeak`. Any such event means the model emitted a
+	# tool call as TEXT — no structured call routed for it — which is a real
+	# tool-calling failure for that turn even when the user-visible text is clean.
+	# This is the gap that let pi session 019e8f5d (21 leaked spans, contained)
+	# pass every existing assertion. RCA + repro:
+	# .spike-notes/claude-p-gate/coldstart-perpetuation-proof.mjs.
+	if [[ -f "$BRIDGE_LOG" ]] && grep -qE "toolProtocolLeak" "$BRIDGE_LOG" 2>/dev/null; then
+		local nleak
+		nleak=$(grep -cE "toolProtocolLeak" "$BRIDGE_LOG" 2>/dev/null || echo "?")
+		echo "  FAIL: bridge log shows ${nleak} tool-protocol leak event(s) — the model emitted tool calls as TEXT (contained by the strip, but the tool surface failed this turn). See claudeP.stream.toolProtocolLeak in $BRIDGE_LOG"
+		rc=1
+	fi
+
 	# Tear down the entire private tmux server, not just the session. Since the
 	# server is dedicated to this scenario (per SCN_TMUX_SOCKET), kill-server
 	# cleanly disposes of everything: the session, the pi process inside it, and

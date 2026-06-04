@@ -658,3 +658,90 @@ describe("warm-resume RE-ECHO suppression (G5)", () => {
 		assert.ok(events.some((e) => e.kind === "done" && e.reason === "result"));
 	});
 });
+
+// ── Warm-resume stale-turn DIAGNOSTIC (detection-only, 2026-06-04) ────────────
+// Production bug: a --resume turn delivered the PRIOR turn's byte-identical result
+// because claude-p latched the REPLAYED terminal state before the live turn ran. The
+// parser cannot prevent that, but it CAN detect it: on resume, the LIVE prompt is the
+// user line after the FINAL `last-prompt` boundary. If a `result` arrives with no such
+// prompt, staleSuspected fires. These tests are grounded in the real captured stream
+// shape (g4-singleshot-raw + the live interactive-fork resume capture). Detection only
+// — delivery is unchanged either way.
+
+function newParserDiag({ livePromptText } = {}) {
+	const events = [];
+	const diags = [];
+	const parser = new ClaudePStreamParser({
+		logger: makeLogger(),
+		onEvent: (e) => events.push(e),
+		suppressResumeReplay: true,
+		livePromptText,
+		onResumeDiag: (d) => diags.push(d),
+	});
+	return { parser, events, diags };
+}
+
+describe("warm-resume stale-turn diagnostic (detection-only)", () => {
+	it("HEALTHY resume (live prompt follows the final boundary) → staleSuspected=false", () => {
+		const { parser, diags } = newParserDiag({ livePromptText: "Use the step tool then tell me the result." });
+		parser.write(resumeStream()); // the verified healthy fixture
+		assert.equal(diags.length, 1, "exactly one resume-diag at turn-end");
+		const d = diags[0];
+		assert.equal(d.staleSuspected, false);
+		assert.equal(d.sawReplayBoundary, true);
+		assert.equal(d.livePromptAfterBoundary, true, "live prompt followed the final last-prompt");
+		assert.equal(d.livePromptTextMatched, true, "live prompt text matched what we sent");
+	});
+
+	it("STALE resume (NO live prompt after the final boundary) → staleSuspected=true", () => {
+		// claude-p replayed one prior turn (ending in last-prompt) then emitted a
+		// terminal `result` reflecting the replayed state — the live prompt never
+		// appeared. This is the exact production signature (byte-identical prior result).
+		const stream = [
+			line(userPrompt("what openspec changes exist right now?")),
+			line(assistantBlocks(textBlock("there are 3 changes ..."))),
+			turnLifecycleNoise(),
+			line(lastPromptLine("what openspec changes exist right now?")),
+			// NO live user-prompt line here — the live turn never ran.
+			line(resultLine({ input_tokens: 6, output_tokens: 297 })),
+		].join("\n") + "\n";
+		const { parser, diags } = newParserDiag({ livePromptText: "what commit are we at?" });
+		parser.write(stream);
+		assert.equal(diags.length, 1);
+		const d = diags[0];
+		assert.equal(d.staleSuspected, true, "replay seen but no live prompt followed → stale");
+		assert.equal(d.sawReplayBoundary, true);
+		assert.equal(d.livePromptAfterBoundary, false, "no real prompt after the final last-prompt");
+		assert.equal(d.livePromptTextMatched, false, "the prompt we sent never appeared in the stream");
+	});
+
+	it("STALE resume ending without a result (premature exit) is still flagged at endOfStream", () => {
+		const stream = [
+			line(userPrompt("prior prompt")),
+			line(assistantBlocks(textBlock("prior answer"))),
+			turnLifecycleNoise(),
+			line(lastPromptLine("prior prompt")),
+		].join("\n") + "\n";
+		const { parser, diags } = newParserDiag({ livePromptText: "the live prompt" });
+		parser.write(stream);
+		assert.equal(diags.length, 0, "no diag until turn-end");
+		parser.endOfStream({ aborted: false, exitInfo: { code: 0 } });
+		assert.equal(diags.length, 1, "diag emitted once at endOfStream");
+		assert.equal(diags[0].staleSuspected, true);
+		assert.equal(diags[0].terminatedBy, "endOfStream");
+	});
+
+	it("no onResumeDiag on FRESH turns (suppressResumeReplay off → no diagnostic)", () => {
+		const diags = [];
+		const parser = new ClaudePStreamParser({
+			logger: makeLogger(),
+			onEvent: () => {},
+			suppressResumeReplay: false,
+			onResumeDiag: (d) => diags.push(d),
+		});
+		parser.write(
+			[line(userPrompt("hi")), line(assistantBlocks(textBlock("hello"))), turnLifecycleNoise(), line(resultLine({ input_tokens: 1, output_tokens: 1 }))].join("\n") + "\n",
+		);
+		assert.equal(diags.length, 0, "fresh turns emit no resume diagnostic");
+	});
+});

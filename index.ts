@@ -1467,7 +1467,7 @@ async function startFreshQuery(
 
 	const handle = _spawnClaudePFactory(
 		cfg,
-		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay },
+		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay, livePromptText: useResume ? promptText : undefined },
 		{
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,

@@ -30,10 +30,14 @@
 // SIGKILL after grace, orphan reap), D33 (resilience layer — seam only here).
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import {
 	ClaudePStreamParser,
 	type DriverStreamEvent,
+	type ResumeDiag,
 	type StreamLogger,
 } from "./stream.js";
 
@@ -484,6 +488,12 @@ export interface SpawnClaudePOptions {
 	 * ClaudePStreamParserOptions.suppressResumeReplay. Only set on warm-resume turns.
 	 */
 	suppressResumeReplay?: boolean;
+	/**
+	 * The prompt text the bridge sent for this turn (warm-resume only). Detection-only:
+	 * forwarded to the parser for the stale-turn diagnostic (does the live prompt
+	 * actually appear in the resumed stream?). Never affects delivery. See ResumeDiag.
+	 */
+	livePromptText?: string;
 }
 
 export interface ClaudePLogger extends StreamLogger {
@@ -509,6 +519,37 @@ export interface ClaudePHandle {
 }
 
 const NOOP: ClaudePLogger = { warn() {}, info() {}, error() {} };
+
+/**
+ * Detection-only (2026-06-04): when a warm-resume turn looks stale (claude-p replayed
+ * but no live prompt followed — the live turn never ran and the terminal `result`
+ * reflects the replayed state), dump the spawn's raw stdout + the diagnostic so the
+ * exact stale stream can be inspected and the fix validated. Dir override:
+ * CLAUDE_P_STALE_DIAG_DIR (default <tmpdir>/claude-p-stale-diag). Never throws.
+ */
+function writeStaleDiag(
+	logger: ClaudePLogger,
+	sessionId: string,
+	pid: number | undefined,
+	diag: ResumeDiag,
+	raw: string,
+): void {
+	try {
+		const dir = process.env.CLAUDE_P_STALE_DIAG_DIR || joinPath(homedir(), ".pi", "agent", "claude-p-stale-diag");
+		mkdirSync(dir, { recursive: true });
+		const file = joinPath(dir, `stale-resume-${sessionId}-${pid ?? "x"}-${Date.now()}.txt`);
+		writeFileSync(file, JSON.stringify({ sessionId, pid, ...diag }) + "\n" + raw);
+		logger.warn?.(
+			{ event: "claudeP.resume.staleDiagWritten", file, ...diag },
+			`resume-diag: STALE warm-resume suspected — raw stream dumped to ${file}`,
+		);
+	} catch (err) {
+		logger.warn?.(
+			{ event: "claudeP.resume.staleDiagWriteFailed", err: errMessage(err) },
+			"resume-diag: failed to write stale diag (ignored)",
+		);
+	}
+}
 
 /**
  * Spawn claude-p for one pi turn and return a handle. The subprocess runs in its
@@ -559,6 +600,10 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	// `done`(reason "result") on a clean turn-end and an `error` on premature
 	// exit, so wrapping onEvent gives us the parser's observable verdict.
 	let sawResult = false;
+	// Detection-only (2026-06-04): buffer raw stdout so a stale warm-resume turn's
+	// exact stream can be dumped for RCA. Capped; never parsed from here.
+	let rawBuf = "";
+	const RAW_CAP = 2_000_000;
 	const parser = new ClaudePStreamParser({
 		onEvent: (event: DriverStreamEvent) => {
 			if (event.kind === "done" && event.reason === "result") sawResult = true;
@@ -566,6 +611,18 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 		},
 		logger,
 		suppressResumeReplay: opts.suppressResumeReplay,
+		livePromptText: opts.livePromptText,
+		onResumeDiag: (diag: ResumeDiag) => {
+			logger.info?.(
+				{ event: "claudeP.resume.diag", sessionId: sessionId.slice(0, 8), ...diag },
+				`resume-diag: numTurns=${diag.numTurns} promptLines=${diag.promptLineCount} ` +
+					`livePromptAfterBoundary=${diag.livePromptAfterBoundary} textMatched=${diag.livePromptTextMatched} ` +
+					`staleSuspected=${diag.staleSuspected}`,
+			);
+			if (diag.staleSuspected || process.env.CLAUDE_P_RAW_DUMP) {
+				writeStaleDiag(logger, sessionId, child?.pid, diag, rawBuf);
+			}
+		},
 	});
 
 	// If binPath points at a JS launcher (claude-p ships its bin as bin/claude-p.js),
@@ -590,6 +647,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	if (child.stdout) {
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => {
+			if (rawBuf.length < RAW_CAP) rawBuf += chunk; // detection-only buffer (capped)
 			if (aborted) {
 				// Abort lifecycle is decoupled: ignore late stdout (log at info).
 				logger.info?.(

@@ -49,6 +49,32 @@ export type DriverStreamEvent =
 	| { kind: "done"; reason: "result" } // terminal `result` line seen
 	| { kind: "error"; errorMessage: string };
 
+/**
+ * Warm-resume stale-turn DIAGNOSTIC (detection-only — 2026-06-04). Emitted once at
+ * turn-end on a `--resume` turn so we can confirm/measure the stale-result race
+ * (production: a resume turn delivered the PRIOR turn's byte-identical result because
+ * claude-p latched the REPLAYED terminal state before the live turn ran). NONE of
+ * these change delivery; they are purely observed and logged. Signals, in order of
+ * robustness:
+ *   - numTurns: claude-p's own `result.num_turns` (advances on every real turn; a
+ *     stale turn leaves it frozen at the prior value).
+ *   - livePromptAfterBoundary: a real user-PROMPT line appeared AFTER the final
+ *     `last-prompt` replay marker (i.e. the live turn's prompt was actually processed).
+ *     This is the primary stale discriminator — self-contained, no text/count heuristic.
+ *   - livePromptTextMatched: a prompt line matched the prompt the bridge sent (cross-check).
+ */
+export interface ResumeDiag {
+	numTurns: number | null;
+	promptLineCount: number;
+	sawReplayBoundary: boolean;
+	livePromptAfterBoundary: boolean;
+	livePromptTextMatched: boolean;
+	lastReplayedPrompt: string | null;
+	terminatedBy: "result" | "endOfStream";
+	/** Primary heuristic: replay seen but no live prompt followed the final boundary. */
+	staleSuspected: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Schema constants
 // ---------------------------------------------------------------------------
@@ -85,6 +111,37 @@ const NOISE_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
  */
 function isBridgedToolName(name: unknown): name is string {
 	return typeof name === "string" && name.startsWith("mcp__");
+}
+
+// ── Warm-resume stale-turn diagnostic helpers (detection-only) ───────────────
+
+/** Extract a user line's prompt text (string content, or joined text blocks). */
+function extractPromptText(rec: Record<string, unknown>): string | null {
+	const message = rec.message;
+	if (!message || typeof message !== "object") return null;
+	const content = (message as Record<string, unknown>).content;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		const parts: string[] = [];
+		for (const b of content) {
+			if (b && typeof b === "object" && (b as Record<string, unknown>).type === "text") {
+				const t = (b as Record<string, unknown>).text;
+				if (typeof t === "string") parts.push(t);
+			}
+		}
+		return parts.length ? parts.join("") : null;
+	}
+	return null;
+}
+
+/** Whitespace-normalized comparison: does this user line carry the prompt we sent? */
+function promptTextMatches(rec: Record<string, unknown>, expected: string): boolean {
+	const got = extractPromptText(rec);
+	if (got === null) return false;
+	const a = got.replace(/\s+/g, " ").trim();
+	const b = expected.replace(/\s+/g, " ").trim();
+	if (a.length === 0 || b.length === 0) return false;
+	return a === b || a.includes(b) || b.includes(a);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +193,19 @@ export interface ClaudePStreamParserOptions {
 	 * existing callers are unaffected. Only warm-resume turns should pass `true`.
 	 */
 	suppressResumeReplay?: boolean;
+	/**
+	 * The prompt text the bridge sent for THIS turn (warm-resume only). Used purely
+	 * for the stale-turn diagnostic (ResumeDiag.livePromptTextMatched) — does a
+	 * user-prompt line in the stream match what we sent? Never affects delivery.
+	 */
+	livePromptText?: string;
+	/**
+	 * Detection-only sink for the warm-resume stale-turn diagnostic (see ResumeDiag).
+	 * Called at most once, at turn-end, only when suppressResumeReplay is true. Never
+	 * affects parsed events or delivery — the driver wires this to logging + a raw
+	 * stream dump when staleSuspected.
+	 */
+	onResumeDiag?: (diag: ResumeDiag) => void;
 }
 
 /** Information about how the claude-p subprocess ended. */
@@ -182,10 +252,24 @@ export class ClaudePStreamParser {
 	 */
 	private liveTurnBuffer: DriverStreamEvent[] = [];
 
+	// ── Warm-resume stale-turn diagnostic (detection-only; see ResumeDiag) ──────
+	private readonly livePromptText?: string;
+	private readonly onResumeDiag?: (diag: ResumeDiag) => void;
+	private diagNumTurns: number | null = null;
+	private diagPromptLineCount = 0;
+	private diagSawReplayBoundary = false;
+	/** Set false on each `last-prompt`, true on each real prompt → true iff a prompt followed the FINAL boundary. */
+	private diagPromptAfterBoundary = false;
+	private diagLivePromptTextMatched = false;
+	private diagLastReplayedPrompt: string | null = null;
+	private diagEmitted = false;
+
 	constructor(opts: ClaudePStreamParserOptions) {
 		this.onEvent = opts.onEvent;
 		this.logger = opts.logger ?? NOOP_LOGGER;
 		this.suppressResumeReplay = opts.suppressResumeReplay === true;
+		this.livePromptText = opts.livePromptText;
+		this.onResumeDiag = opts.onResumeDiag;
 	}
 
 	/**
@@ -233,6 +317,10 @@ export class ClaudePStreamParser {
 		}
 
 		this.ended = true;
+
+		// Stale-turn diagnostic for resume turns that ended without a clean `result`
+		// (premature exit or abort) — emit once (no-op if handleResult already did).
+		this.emitResumeDiag("endOfStream");
 
 		if (this.resultSeen) return; // clean turn-end already emitted
 		if (args.aborted) return; // intentional abort — not an error
@@ -290,6 +378,18 @@ export class ClaudePStreamParser {
 				{ event: "claudeP.stream.missingType", prefix: trimmed.slice(0, MAX_PREFIX) },
 				"claude-p stdout: line has no string `type` field",
 			);
+			return;
+		}
+
+		// Warm-resume replay boundary marker. On `--resume`, claude-p emits one
+		// `last-prompt` after each REPLAYED turn; the LIVE prompt is the user line
+		// that follows the FINAL one. Capture it for the stale-turn diagnostic and
+		// skip the drift warning it would otherwise produce (it is expected, not drift).
+		if (type === "last-prompt") {
+			const lp = rec.lastPrompt;
+			if (typeof lp === "string") this.diagLastReplayedPrompt = lp;
+			this.diagSawReplayBoundary = true;
+			this.diagPromptAfterBoundary = false; // awaiting a prompt AFTER this boundary
 			return;
 		}
 
@@ -367,6 +467,14 @@ export class ClaudePStreamParser {
 	private handleUser(rec: Record<string, unknown>): void {
 		if (!this.suppressResumeReplay) return; // fresh/default: nothing to track
 		if (!this.isUserPromptLine(rec)) return; // tool_result line — not a boundary
+		// Stale-turn diagnostic (detection-only): count real prompts, mark that a
+		// prompt followed the most recent replay boundary, and cross-check against the
+		// prompt the bridge sent. None of this affects delivery.
+		this.diagPromptLineCount++;
+		this.diagPromptAfterBoundary = true;
+		if (this.livePromptText && promptTextMatches(rec, this.livePromptText)) {
+			this.diagLivePromptTextMatched = true;
+		}
 		// New prompt boundary → discard any buffered (replayed) prior-turn content.
 		this.liveTurnBuffer = [];
 	}
@@ -465,6 +573,34 @@ export class ClaudePStreamParser {
 		this.onEvent({ kind: "usage", usage });
 		this.resultSeen = true;
 		this.onEvent({ kind: "done", reason: "result" });
+		// Stale-turn diagnostic: claude-p's own turn counter (advances on every real
+		// turn; frozen on a stale replay). Emit the diagnostic once, at turn-end.
+		const nt = rec.num_turns;
+		if (typeof nt === "number") this.diagNumTurns = nt;
+		this.emitResumeDiag("result");
+	}
+
+	/**
+	 * Emit the warm-resume stale-turn diagnostic exactly once at turn-end (resume
+	 * turns only). Detection-only: never alters parsed events. `staleSuspected` is the
+	 * primary discriminator — claude-p replayed (≥1 `last-prompt`) but NO real prompt
+	 * followed the final boundary, i.e. the live turn never ran and the terminal
+	 * `result` reflects the replayed state (the production bug). The driver wires
+	 * onResumeDiag to logging + a raw-stream dump when this fires.
+	 */
+	private emitResumeDiag(terminatedBy: "result" | "endOfStream"): void {
+		if (!this.suppressResumeReplay || this.diagEmitted || !this.onResumeDiag) return;
+		this.diagEmitted = true;
+		this.onResumeDiag({
+			numTurns: this.diagNumTurns,
+			promptLineCount: this.diagPromptLineCount,
+			sawReplayBoundary: this.diagSawReplayBoundary,
+			livePromptAfterBoundary: this.diagPromptAfterBoundary,
+			livePromptTextMatched: this.diagLivePromptTextMatched,
+			lastReplayedPrompt: this.diagLastReplayedPrompt,
+			terminatedBy,
+			staleSuspected: this.diagSawReplayBoundary && !this.diagPromptAfterBoundary,
+		});
 	}
 
 	private mapUsage(raw: unknown): DriverStreamUsage {

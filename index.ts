@@ -985,6 +985,21 @@ function resolveShimPath(): string {
 		// Dev/test fallback: built dist next to this module, else TS source.
 		const distLocal = join(dirname(new URL(import.meta.url).pathname), "dist", "src", "mcp", "shim.js");
 		if (existsSync(distLocal)) return distLocal;
+		// No built dist → the shim runs from TypeScript source under tsx (shimNodeArgs
+		// adds `--import tsx`). Fail LOUD here if tsx is missing rather than letting
+		// `node shim.ts` crash silently on every spawn and leave the model with zero
+		// mcp__custom-tools__* tools (it would emit tool calls as text every turn —
+		// the 2026-06-04 root cause, session 019e9011).
+		try {
+			req.resolve("tsx");
+		} catch {
+			throw new Error(
+				"pi-claude-bridge: the MCP shim resolved to TypeScript source (no built dist) but 'tsx' is " +
+					"not installed — the shim cannot run, so the model would receive NO mcp__custom-tools__* " +
+					"tools and emit tool calls as raw text. Fix: run `npm install` (tsx is a runtime dependency) " +
+					"or `npm run build` to produce dist/.",
+			);
+		}
 		return join(dirname(new URL(import.meta.url).pathname), "src", "mcp", "shim.ts");
 	}
 }
@@ -999,7 +1014,7 @@ function resolveShimPath(): string {
  * calls as TEXT every turn and never reaches a real tool. (Proven 2026-06-04,
  * session 019e9011: installed copy had no dist → shim crashed → 0 tools routed.)
  */
-function shimNodeArgs(shimPath: string): string[] {
+export function shimNodeArgs(shimPath: string): string[] {
 	return shimPath.endsWith(".ts") ? ["--import", "tsx", shimPath] : [shimPath];
 }
 

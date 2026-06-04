@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Add: claude-opus-4-8 model** — Added `claude-opus-4-8` as a selectable model. The `opus` shortcut now resolves to 4.8 by default; 4.7 and 4.6 remain available for explicit pinning. Requires a runtime `@mariozechner/pi-ai` that exposes the `claude-opus-4-8` model definition (silently dropped from the picker otherwise).
+
 ## 0.5.0 — 2026-06-02
 
 - **BREAKING: inference now drives the interactive `claude` TUI via [`claude-p`](https://www.npmjs.com/package/claude-p), not the Claude Agent SDK.** The in-process `@anthropic-ai/claude-agent-sdk` `query()` path is gone; every turn is one `claude-p` spawn that drives the same interactive session a human would. The bridge **never** shells out to the nominal `claude -p` / `--print` surface. The `@anthropic-ai/*` dependencies are removed. `CLAUDE_BRIDGE_DRIVER` defaults to `claude-p` and is the only supported value — setting `CLAUDE_BRIDGE_DRIVER=sdk` (or anything other than `claude-p`) now fails fast with a deprecation error at load time instead of silently falling back. macOS and Linux only (`claude-p` requires `forkpty`).

@@ -34,13 +34,6 @@ else
 	scn_fail "no real tool round-trip in bridge log — tool surface did not work"
 fi
 
-# No tool-protocol leak at all (the scn_pi_stop trap also enforces this).
-if grep -qE "toolProtocolLeak" "$BRIDGE_LOG" 2>/dev/null; then
-	scn_fail "tool-protocol leak event in bridge log (opus emitted tool calls as text)"
-else
-	scn_pass "no tool-protocol leak event in bridge log"
-fi
-
 read_calls=$(scn_tool_count_named read)
 echo "  read tool invocations: $read_calls"
 

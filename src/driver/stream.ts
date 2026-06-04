@@ -47,11 +47,6 @@ export type DriverStreamEvent =
 	| { kind: "tool-use"; toolUseId: string; name: string; arguments: unknown }
 	| { kind: "usage"; usage: DriverStreamUsage }
 	| { kind: "done"; reason: "result" } // terminal `result` line seen
-	// The model emitted tool calls as TEXT (<function_calls>) — the bridge stripped
-	// the raw markup from the visible text and raises this so the turn can be
-	// surfaced as a failure when no real tool actually routed (the tool surface was
-	// not reachable). `hadProse` = genuine prose remained after stripping.
-	| { kind: "tool-protocol-leak"; stripped: number; hadProse: boolean }
 	| { kind: "error"; errorMessage: string };
 
 // ---------------------------------------------------------------------------
@@ -90,70 +85,6 @@ const NOISE_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
  */
 function isBridgedToolName(name: unknown): name is string {
 	return typeof name === "string" && name.startsWith("mcp__");
-}
-
-/**
- * Container tag names the model uses when it writes tool calls as TEXT instead of
- * native tool_use. The shape varies run-to-run — observed in session 019e8c37:
- *   turn 1: <function_calls><invoke name="mcp__…"><parameter …>…</parameter></invoke></function_calls>
- *   turn 2: <tool_use><parameter name="name">mcp__…</parameter><parameter name="command">…</parameter></tool_use>
- * so we strip ANY of these container shapes (and `invoke` standalone), not just one.
- */
-const TOOL_PROTOCOL_TAGS = ["function_calls", "tool_use", "tool_call", "function_call", "invoke"];
-
-/**
- * Strip leaked tool-call PROTOCOL markup from assistant text.
- *
- * Failure mode (observed 2026-06-03, session 019e8c37): when the model cannot
- * reach its MCP tools — the shim hasn't attached, or under an API 529 the agent
- * loop degrades — it falls back to emitting tool calls as TEXT, in one of several
- * XML-ish container shapes (see TOOL_PROTOCOL_TAGS). claude-p streams that as an
- * ordinary assistant `text` block, so without this it renders to the user as raw
- * XML (one turn leaked 27 <function_calls> blocks; a later rerun leaked 31
- * <tool_use> blocks).
- *
- * Per D32 this parser does NOT route tools (the shim/router owns routing), so the
- * only correct action is to keep the raw protocol XML out of the user-visible text.
- * We remove only container blocks that reference a bridged `mcp__…` tool (so a user
- * legitimately *discussing* the format is not clobbered); genuine prose survives.
- * Also drops the empty `<§></§>` thinking-delimiter artifact.
- *
- * Returns the cleaned text and the number of markup spans removed (0 = untouched).
- */
-export function sanitizeLeakedToolProtocol(text: string): { clean: string; stripped: number } {
-	let stripped = 0;
-	let out = text;
-	const HAS_MCP = /mcp__/; // a bridged-tool reference anywhere in the block
-
-	// 1. Complete <tag …>…</tag> blocks (each matched against its OWN close, so a
-	//    nested <invoke>/<parameter> inside <function_calls>/<tool_use> is removed
-	//    with the wrapper). Strip only blocks that reference an mcp__ tool.
-	for (const tag of TOOL_PROTOCOL_TAGS) {
-		const complete = new RegExp(`<(?:antml:)?${tag}\\b[^>]*>[\\s\\S]*?<\\/(?:antml:)?${tag}>`, "g");
-		out = out.replace(complete, (m) => (HAS_MCP.test(m) ? (stripped++, "") : m));
-	}
-	// 2. A dangling opener (model cut off mid-call) of any container, if it
-	//    references an mcp__ tool.
-	for (const tag of TOOL_PROTOCOL_TAGS) {
-		const dangling = new RegExp(`<(?:antml:)?${tag}\\b[^>]*>[\\s\\S]*$`);
-		out = out.replace(dangling, (m) => (HAS_MCP.test(m) ? (stripped++, "") : m));
-	}
-	// 3. Only if THIS text already leaked a tool block, sweep orphan protocol tags
-	//    left behind (stray opens/closes, <parameter> remnants). Gated on stripped>0
-	//    so a user merely discussing the format (no mcp__ block) is never touched.
-	if (stripped > 0) {
-		out = out.replace(
-			/<\/?(?:antml:)?(?:function_calls|tool_use|tool_call|function_call|invoke|parameter)\b[^>]*>/g,
-			() => (stripped++, ""),
-		);
-	}
-	// 4. The empty <§></§> delimiter artifact (not user content).
-	out = out.replace(/<§>\s*<\/§>/g, () => (stripped++, ""));
-
-	if (stripped > 0) {
-		out = out.replace(/\n{3,}/g, "\n\n").trim();
-	}
-	return { clean: out, stripped };
 }
 
 // ---------------------------------------------------------------------------
@@ -477,28 +408,15 @@ export class ClaudePStreamParser {
 			const b = block as Record<string, unknown>;
 			switch (b.type) {
 				case "text": {
+					// Faithful passthrough: claude-p is a model completion endpoint. Whatever
+					// the model returned — including a tool call it (wrongly) emitted as TEXT
+					// rather than as a structured call — is part of the response and reaches
+					// the user/terminal/history verbatim. The bridge does NOT rewrite model
+					// output; content-based scrubbing can't tell a real leak from a legitimate
+					// discussion of the tool-call format (they're identical), so it must not try.
 					const text = b.text;
 					if (typeof text === "string" && text.length > 0) {
-						const { clean, stripped } = sanitizeLeakedToolProtocol(text);
-						if (stripped > 0) {
-							this.logger.warn(
-								{
-									event: "claudeP.stream.toolProtocolLeak",
-									stripped,
-									originalLen: text.length,
-									cleanLen: clean.length,
-								},
-								`claude-p: stripped ${stripped} leaked tool-call protocol span(s) from assistant ` +
-									`text (model emitted <function_calls> as text — likely MCP tools not attached / ` +
-									`agent-loop degraded). Raw protocol XML withheld from the response.`,
-							);
-							// Raise the degradation so the bridge can surface it as a turn
-							// failure when no real tool routed (constitution VII).
-							this.emit({ kind: "tool-protocol-leak", stripped, hadProse: clean.length > 0 });
-						}
-						if (clean.length > 0) {
-							this.emit({ kind: "text-delta", text: clean });
-						}
+						this.emit({ kind: "text-delta", text });
 					}
 					break;
 				}

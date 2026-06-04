@@ -74,6 +74,8 @@ export interface CaptureDeps {
 	calculateCost: (model: Model<any>, usage: AssistantMessage["usage"]) => void;
 	/** Resolve the stdio MCP shim path (dist or dev fallback). */
 	resolveShimPath: () => string;
+	/** node argv prefix to run the shim (adds `--import <abs tsx>` for .ts source). */
+	shimNodeArgs: (shimPath: string) => string[];
 	/** Resolve the claude-p binary (JS launcher or bare name). */
 	resolveClaudePBin: () => string;
 	/** Spill large/multiline content to a tmpfile under os.tmpdir(). */
@@ -215,12 +217,10 @@ export async function runClaudePCapture(
 		mcpServers: {
 			[deps.mcpServerName]: {
 				command: deps.execPath,
-				// A .ts shim (no built dist) must run under tsx — see shimNodeArgs in
-				// index.ts. Plain `node shim.ts` crashes (ERR_MODULE_NOT_FOUND on ./ipc.js),
-				// so the capture shim never attaches and the model can't reach the capture
-				// tool. (2026-06-04, session 019e9011.)
+				// .ts shim (no built dist) must run under tsx with an ABSOLUTE tsx path —
+				// see shimNodeArgs in index.ts (a bare `tsx` fails from the session cwd).
 				args: [
-					...(shimPath.endsWith(".ts") ? ["--import", "tsx", shimPath] : [shimPath]),
+					...deps.shimNodeArgs(shimPath),
 					"--socket", router.socketPath,
 					"--mode", "capture",
 					"--capture-tool", captureMatchName,

@@ -1015,7 +1015,17 @@ function resolveShimPath(): string {
  * session 019e9011: installed copy had no dist → shim crashed → 0 tools routed.)
  */
 export function shimNodeArgs(shimPath: string): string[] {
-	return shimPath.endsWith(".ts") ? ["--import", "tsx", shimPath] : [shimPath];
+	if (!shimPath.endsWith(".ts")) return [shimPath];
+	// tsx MUST be an ABSOLUTE path here. `--import tsx` resolves the bare specifier
+	// relative to the SHIM subprocess's cwd — which is the pi SESSION's cwd (e.g.
+	// ~/.local/share/chezmoi), NOT the bridge. A bare `tsx` therefore fails with
+	// ERR_MODULE_NOT_FOUND wherever the user actually runs, the shim never attaches,
+	// and the model emits tool calls as TEXT. (Proven 2026-06-04, session 019e9039,
+	// cwd=chezmoi: bare `--import tsx` crashed; `--import file://<abs tsx>` works.)
+	// Resolve tsx from the bridge's OWN node_modules and pass a file:// URL so it is
+	// cwd-independent.
+	const tsxLoader = createRequire(import.meta.url).resolve("tsx");
+	return ["--import", `file://${tsxLoader}`, shimPath];
 }
 
 /**
@@ -1056,6 +1066,7 @@ function buildCaptureDeps(): CaptureDeps {
 		cleanSchemaForSdk,
 		calculateCost,
 		resolveShimPath,
+		shimNodeArgs,
 		resolveClaudePBin,
 		writeOverflowTmp,
 		logger: logger.child({ piSessionId: getPiSessionId() }) as unknown as CaptureDeps["logger"],

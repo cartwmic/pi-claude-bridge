@@ -20,8 +20,11 @@ const SHIM_TS = join(HERE, "..", "src", "mcp", "shim.ts");
 const TOOLS_B64 = Buffer.from(JSON.stringify([{ name: "bash" }])).toString("base64");
 
 describe("shimNodeArgs — TypeScript source must run under tsx", () => {
-	it("prepends --import tsx for a .ts shim path (the no-dist path)", () => {
-		assert.deepEqual(shimNodeArgs("/x/src/mcp/shim.ts"), ["--import", "tsx", "/x/src/mcp/shim.ts"]);
+	it("imports an ABSOLUTE file:// tsx for a .ts shim path (cwd-independent — bare `tsx` fails from the session cwd)", () => {
+		const a = shimNodeArgs("/x/src/mcp/shim.ts");
+		assert.equal(a[0], "--import");
+		assert.match(a[1], /^file:\/\/.*\/tsx\//, `must be an absolute file:// path to tsx, got: ${a[1]}`);
+		assert.equal(a[2], "/x/src/mcp/shim.ts");
 	});
 	it("leaves a built .js shim path bare (dist present → no tsx needed)", () => {
 		assert.deepEqual(shimNodeArgs("/x/dist/src/mcp/shim.js"), ["/x/dist/src/mcp/shim.js"]);
@@ -31,7 +34,10 @@ describe("shimNodeArgs — TypeScript source must run under tsx", () => {
 function spawnShim(nodeArgs) {
 	return new Promise((res) => {
 		const args = [...nodeArgs, "--socket", `/tmp/pcb-test-noexist-${process.pid}.sock`, "--mode", "main", "--tools", TOOLS_B64];
-		const child = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"] });
+		// CRITICAL: run from a cwd WITHOUT node_modules/tsx (like the user's pi session
+		// cwd, e.g. ~/.local/share/chezmoi). A bare `--import tsx` would fail here; the
+		// fix resolves tsx to an absolute file:// path so it works regardless of cwd.
+		const child = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"], cwd: "/tmp" });
 		let stderr = "";
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (c) => (stderr += c));

@@ -50,7 +50,6 @@ import {
 	type PromptSource,
 } from "./src/driver/claudeP.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
-import { sanitizeLeakedToolProtocol } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
 import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
 
@@ -578,6 +577,15 @@ function lastUserMessageHasImages(messages: Context["messages"]): boolean {
  * context. Format is intentionally explicit so the model knows it's history,
  * not the current request.
  */
+// Exported for unit testing. Replayed history is embedded VERBATIM — we do NOT
+// rewrite what the model previously produced, even if a prior turn leaked tool
+// calls as text. Faithful history is the invariant (decision 2026-06-03: "if the
+// model returned it, it is part of the history even if wrong"). Content-based
+// scrubbing was tried and reverted: a leaked tool call and a legitimate
+// discussion of the tool-call format are textually identical, so any scrub
+// corrupts real conversations (e.g. debugging the bridge's own mcp__ protocol).
+// Leaks are instead SURFACED at generation time (claudeP.toolProtocolLeak.fatal)
+// and caught by the scenario log-guard — never silently rewritten on replay.
 export function buildColdStartPrompt(messages: Context["messages"]): string {
 	if (messages.length === 0) return "";
 	if (messages.length === 1 && messages[0].role === "user") {
@@ -591,36 +599,23 @@ export function buildColdStartPrompt(messages: Context["messages"]): string {
 	const lastIsUser = last.role === "user";
 	const priorMessages = lastIsUser ? messages.slice(0, -1) : messages;
 
-	// Scrub leaked tool-call PROTOCOL markup out of REPLAYED history before
-	// embedding it (RCA 2026-06-03): if a prior assistant turn's text contains
-	// `<function_calls>…mcp__…</function_calls>` (the model having emitted a tool
-	// call as TEXT — the leak), re-feeding it verbatim primes the model to KEEP
-	// emitting tool calls as text instead of issuing structured calls, even when
-	// its tools are present. This is the self-reinforcing perpetuation vector:
-	// one leaked turn poisons every subsequent cold-start replay. Reproduced
-	// .spike-notes/claude-p-gate/coldstart-perpetuation-proof.mjs (poisoned
-	// history → model generates text-protocol; clean history → never). The
-	// sanitizer is mcp__-guarded so a legit discussion of the format is untouched.
-	// We scrub ONLY replayed history here — never the live current message below.
-	const scrub = (t: string): string => sanitizeLeakedToolProtocol(t).clean;
-
 	const priorLines: string[] = [];
 	for (const m of priorMessages) {
 		if (m.role === "user") {
 			const text = typeof m.content === "string" ? m.content : messageContentToText(m.content);
-			if (text) priorLines.push(`[user] ${scrub(text)}`);
+			if (text) priorLines.push(`[user] ${text}`);
 		} else if (m.role === "assistant") {
 			const blocks = Array.isArray(m.content) ? m.content : [];
 			const parts: string[] = [];
 			for (const b of blocks) {
-				if (b.type === "text" && b.text) parts.push(scrub(b.text));
+				if (b.type === "text" && b.text) parts.push(b.text);
 				else if (b.type === "toolCall") parts.push(`[tool: ${b.name}(${JSON.stringify(b.arguments).slice(0, 200)})]`);
 			}
 			if (parts.length) priorLines.push(`[assistant] ${parts.join(" ")}`);
 		} else if (m.role === "toolResult") {
 			const text = typeof m.content === "string" ? m.content : messageContentToText(m.content);
 			const tag = m.isError ? "tool-error" : "tool-result";
-			priorLines.push(`[${tag} ${m.toolName}] ${scrub(text).slice(0, 500)}`);
+			priorLines.push(`[${tag} ${m.toolName}] ${text.slice(0, 500)}`);
 		}
 	}
 

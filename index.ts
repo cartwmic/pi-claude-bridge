@@ -990,6 +990,20 @@ function resolveShimPath(): string {
 }
 
 /**
+ * The `node` argv to spawn the shim. When the shim resolves to TypeScript SOURCE
+ * (no built dist — the case for an installed copy that was never `npm run build`-ed,
+ * which is how pi loads this extension via tsx), it MUST run under tsx: the shim's
+ * ESM imports use the `.js` extension convention that only tsx remaps to the real
+ * `.ts` files. Plain `node shim.ts` dies with ERR_MODULE_NOT_FOUND on `./ipc.js`,
+ * which leaves `claude` with NO mcp__custom-tools__* tools — so the model emits tool
+ * calls as TEXT every turn and never reaches a real tool. (Proven 2026-06-04,
+ * session 019e9011: installed copy had no dist → shim crashed → 0 tools routed.)
+ */
+function shimNodeArgs(shimPath: string): string[] {
+	return shimPath.endsWith(".ts") ? ["--import", "tsx", shimPath] : [shimPath];
+}
+
+/**
  * Resolve the claude-p binary the driver spawns. Returns the package's JS launcher
  * (`claude-p/bin/claude-p.js`) so resolution does NOT depend on `claude-p` being on
  * PATH — the pi runtime may strip `node_modules/.bin`. The driver spawns a `.js`
@@ -1352,7 +1366,7 @@ async function startFreshQuery(
 		mcpServers: {
 			[MCP_SERVER_NAME]: {
 				command: process.execPath,
-				args: [shimPath, "--socket", router.socketPath, "--mode", "main", "--tools", toolsB64],
+				args: [...shimNodeArgs(shimPath), "--socket", router.socketPath, "--mode", "main", "--tools", toolsB64],
 			},
 		},
 	});

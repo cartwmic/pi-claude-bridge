@@ -215,8 +215,12 @@ export async function runClaudePCapture(
 		mcpServers: {
 			[deps.mcpServerName]: {
 				command: deps.execPath,
+				// A .ts shim (no built dist) must run under tsx — see shimNodeArgs in
+				// index.ts. Plain `node shim.ts` crashes (ERR_MODULE_NOT_FOUND on ./ipc.js),
+				// so the capture shim never attaches and the model can't reach the capture
+				// tool. (2026-06-04, session 019e9011.)
 				args: [
-					shimPath,
+					...(shimPath.endsWith(".ts") ? ["--import", "tsx", shimPath] : [shimPath]),
 					"--socket", router.socketPath,
 					"--mode", "capture",
 					"--capture-tool", captureMatchName,

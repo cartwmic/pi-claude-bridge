@@ -56,13 +56,18 @@ scn_pi_start() {
 	# query line.
 	local extra_args=""
 	if (( $# > 0 )); then extra_args="$*"; fi
+	# SCN_PI_ENV: optional extra `KEY=val KEY=val` env a scenario wants in pi's
+	# process (e.g. CLAUDE_BRIDGE_WATCHDOG_IDLE_MS, CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS
+	# for the timeout scenarios). Spliced in just before `pi` so it overrides nothing
+	# the lib sets and is visible to the bridge running inside pi.
+	local pi_env="${SCN_PI_ENV:-}"
 	# -ne disables auto-discovered extensions; -e loads ONLY our local copy.
 	# Without -ne, pi would also load the installed copy at
 	# ~/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/, and the symbol
 	# guard means the installed (legacy) one would win.
 	"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 		"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-		 pi --no-session -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL' $extra_args"
+		 $pi_env pi --no-session -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL' $extra_args"
 
 	local deadline=$((SECONDS + 30))
 	while (( SECONDS < deadline )); do
@@ -172,6 +177,22 @@ scn_wait_for() {
 		sleep 0.5
 	done
 	echo "TIMEOUT waiting for: $pat" >&2
+	return 1
+}
+
+scn_wait_for_log() {
+	# scn_wait_for_log "regex" timeout_seconds
+	# Polls the BRIDGE debug log until regex matches OR timeout. Use for
+	# completion/error signals that never reach the pane (e.g. an errored turn
+	# that emits no "caching session=" line). Returns 0 on match, 1 on timeout.
+	local pat="$1"
+	local timeout="${2:-30}"
+	local start=$SECONDS
+	while ((SECONDS - start < timeout)); do
+		if [[ -f "$BRIDGE_LOG" ]] && grep -qE "$pat" "$BRIDGE_LOG" 2>/dev/null; then return 0; fi
+		sleep 0.5
+	done
+	echo "TIMEOUT waiting for bridge-log: $pat" >&2
 	return 1
 }
 

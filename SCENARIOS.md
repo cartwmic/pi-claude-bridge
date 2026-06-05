@@ -774,6 +774,69 @@ emits one." Asserting "zero built-in tool_use" is WRONG and will false-fail.
 violation → hard fail → triggers the claude-p fork (T4.10) per gate G2. This
 scenario makes the G2 guarantee visible at the pi-TUI/acceptance-bar level.
 
+### S28 — Held tool round outlasts the idle watchdog (Layer 2: held-round-aware liveness)
+
+**Goal:** prove a long-running held tool round (claude-p alive but idle, blocked
+on the MCP round-trip while pi runs the tool) is NEVER killed by the bridge's
+idle watchdog. **Added with the hung-turn fix; this is the user-reported bug — a
+long subagent/tool being killed mid-work.**
+
+**Why a watchdog at all:** claude-p's own `--timeout` counts held-tool idle time,
+so it's only a generous backstop; the bridge owns the real liveness check because
+it alone knows a tool is parked (`pendingResolvers > 0`). The watchdog must be
+**held-round-aware**: silence while a tool is parked is healthy, not a wedge.
+
+**Setup:** `CLAUDE_BRIDGE_WATCHDOG_IDLE_MS=8000` (a deliberately short window),
+opus (reliable tool invocation), default `--timeout`.
+
+**Steps:**
+1. Ask the model to invoke `bash` to run `sleep 20 && echo <SENTINEL>` (held
+   round ~20s, far longer than the 8s watchdog window).
+
+**Pass:**
+- **Mechanical (positive):** the bridge logs `watchdog: tick during held round —
+  deferring` ≥1× — the watchdog's window elapsed *during* the parked round and it
+  chose not to kill. (Load-bearing signal.)
+- **Mechanical (negative):** no `declaring wedge` / `killing wedged claude-p` —
+  the healthy held round was left alone.
+- **Mechanical:** a real `bash` tool round routed + the tool result delivered +
+  the turn finalized (`caching session=`).
+- **Coherence:** the model echoes the sentinel the tool printed (the held tool's
+  output reached the model end-to-end).
+
+**Disposition:** any wedge-kill of a parked round is a regression of the user's
+bug → hard fail.
+
+### S29 — claude-p dies mid-held-tool: error, not hang; pi recovers (Layer 1: safety net)
+
+**Goal:** prove that when claude-p errors/exits *while pi is running a held tool*
+(its own `--timeout` firing, a crash, OOM), the bridge surfaces a terminal ERROR
+to pi instead of swallowing it — and pi recovers. **Added with the hung-turn fix;
+the original symptom was an infinite spinner.**
+
+**Setup:** `CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS=18` (short, so claude-p's own
+timer fires while the tool is still held), watchdog left at default 180s so it
+does NOT interfere (this scenario is specifically about the `--timeout` backstop),
+opus.
+
+**Steps:**
+1. Ask the model to immediately invoke `bash` to run `sleep 25 && echo <SENTINEL>`
+   (held round 25s > 18s `--timeout`).
+2. After the error surfaces, send a trivial follow-up turn.
+
+**Pass:**
+- **Mechanical:** `bash` parked before `--timeout` (held round opened), then
+  `finalizeClaudePFrame: error` (the `--timeout` fired mid-held-tool).
+- **Mechanical (Layer 1):** `tool-result delivery to errored frame` / `closed pi
+  stream with error` — the late tool-result delivered into the dead frame closed
+  pi's stream with an error instead of wiring into a corpse and hanging.
+- **Mechanical:** the pane shows an error/non-completion (not a phantom success).
+- **Recovery (the real no-hang proof):** the follow-up turn completes — pi was
+  idle and able to take another turn, not stuck on a spinner.
+
+**Disposition:** a swallowed error / hung spinner / phantom success is a Layer-1
+regression → hard fail.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per

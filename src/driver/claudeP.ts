@@ -514,6 +514,17 @@ export interface ClaudePHandle {
 	 * for a terminal `result`, and any late stdout is ignored.
 	 */
 	abort(): void;
+	/**
+	 * Kill a WEDGED spawn: SIGKILL the process group but — unlike abort() — do
+	 * NOT mark it aborted, so exit classification is "error", not "aborted". The
+	 * bridge's held-round-aware idle watchdog calls this when claude-p has gone
+	 * silent while NOT waiting on a held tool (a boot-wedge / StopTimeout race, or
+	 * a post-tool hang). Classifying as "error" routes it through the resilience
+	 * wrapper's retry gate exactly as claude-p's own --timeout firing would: a
+	 * boot-wedge (no tools/call routed) retries; a post-tool wedge surfaces the
+	 * error to pi. Idempotent; a no-op once settled or if abort() already ran.
+	 */
+	killWedged(): void;
 	/** Resolves once when the turn terminates (clean / aborted / error). Never rejects. */
 	readonly done: Promise<ClaudePDoneResult>;
 }
@@ -763,6 +774,20 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 		killTimer.unref?.();
 	};
 
+	// ── kill-wedged ─────────────────────────────────────────────────────────────
+	const killWedged = () => {
+		if (settled || aborted) return;
+		logger.info?.(
+			{ event: "claudeP.lifecycle.wedgeKill", pid: child.pid },
+			"killing wedged claude-p (SIGKILL to group) — classifies as error → retry-eligible",
+		);
+		// Deliberately do NOT set `aborted`: we want settle() to classify this exit
+		// as "error" (no result seen), so the resilience wrapper's retry gate fires.
+		// SIGKILL the group directly (it's wedged — no point being gentle); the
+		// child `close` handler then drives settle().
+		signalGroup(pgid, "SIGKILL", logger);
+	};
+
 	if (opts.signal) {
 		if (opts.signal.aborted) {
 			// Already aborted before spawn fully wired — abort on next tick so the
@@ -778,6 +803,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			return child.pid;
 		},
 		abort,
+		killWedged,
 		done,
 	};
 }
@@ -874,6 +900,15 @@ export function spawnClaudePWithResilience(
 		current?.abort();
 	};
 
+	// Forward a wedge-kill to the live inner spawn WITHOUT setting the wrapper's
+	// `aborted`. The inner spawn settles "error", so this wrapper's done-handler
+	// runs the retry gate (policy.shouldRetry) — boot-wedge retries, post-tool
+	// wedge surfaces — exactly as a real claude-p --timeout firing would.
+	const killWedged = () => {
+		if (aborted || outerSettled) return;
+		current?.killWedged();
+	};
+
 	if (externalSignal) {
 		if (externalSignal.aborted) queueMicrotask(abort);
 		else externalSignal.addEventListener("abort", abort, { once: true });
@@ -926,6 +961,7 @@ export function spawnClaudePWithResilience(
 			return current?.pid;
 		},
 		abort,
+		killWedged,
 		done,
 	};
 }
@@ -999,6 +1035,7 @@ function makeFailedHandle(
 	return {
 		pid: undefined,
 		abort() {},
+		killWedged() {},
 		done: Promise.resolve({ stopReason: "error", sessionId, exitCode: null, signal: null }),
 	};
 }

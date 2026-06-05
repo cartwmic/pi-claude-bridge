@@ -179,6 +179,13 @@ export function __resetCachedSessionForTests(): void {
 	cachedSessionId = null;
 	cachedSessionCwd = null;
 	lastSentMessageHashes = null;
+	// Drop any frames a test left on the stack (e.g. a retained errored/aborted
+	// frame whose driver never popped) so the next test in the same file starts
+	// clean. Best-effort stop their routers to release IPC sockets.
+	while (stack.length > 0) {
+		const f = stack.pop();
+		void f?.router?.stop();
+	}
 }
 
 // Pi tool arg key renames (pi names vs `claude` built-in names). Used by
@@ -325,6 +332,82 @@ function detectHistoryDivergence(
 	return current.length < prior.length;
 }
 
+// ---------------------------------------------------------------------------
+// Held-round-aware idle watchdog (Layer 2 of the hung-turn fix).
+//
+// claude-p stays alive and IDLE across a held tool round: the model's MCP
+// tool_use is an in-flight call, so claude-p blocks until pi returns the result.
+// Its own --timeout counts that idle time, so --timeout must be a generous
+// BACKSTOP (CLAUDE_P_TIMEOUT_SECONDS) that never trips a healthy subagent. The
+// bridge is the only component that knows a tool is parked, so liveness is
+// enforced here: a per-frame timer that declares a wedge after WATCHDOG_IDLE_MS
+// of NO driver output — but ONLY when no tool is parked. While a tool is parked
+// it defers entirely to the tool's own (pi-enforced) timeout and never fires. On
+// a wedge it calls handle.killWedged() → the spawn classifies "error" → the
+// resilience wrapper retries a boot-wedge (no tool routed) or surfaces a
+// post-tool wedge via the Layer 1 safety net.
+// ---------------------------------------------------------------------------
+
+/** Idle window (ms) before a silent, NOT-parked claude-p is declared wedged.
+ *  Env CLAUDE_BRIDGE_WATCHDOG_IDLE_MS overrides; 0 disables. Must exceed healthy
+ *  slow-boot first-output latency (observed as high as ~65s). */
+const WATCHDOG_IDLE_MS = (() => {
+	const raw = process.env.CLAUDE_BRIDGE_WATCHDOG_IDLE_MS;
+	if (raw === undefined || raw === "") return 180_000;
+	const n = Number(raw);
+	return Number.isFinite(n) && n >= 0 ? n : 180_000;
+})();
+
+interface Watchdog {
+	/** Reset the idle countdown — call on every sign of driver life. */
+	poke(): void;
+	/** Halt permanently (turn finalized or aborted). Idempotent. */
+	stop(): void;
+}
+
+/**
+ * Build a held-round-aware idle watchdog. `isHeldRound()` is consulted at fire
+ * time: when true (a tool is parked) the watchdog re-arms WITHOUT firing —
+ * claude-p is legitimately waiting on pi. Otherwise it calls `onWedge()` and
+ * keeps watching (across a resilience retry) until stop().
+ */
+function makeWatchdog(opts: {
+	idleMs: number;
+	isHeldRound: () => boolean;
+	onWedge: () => void;
+	log: pino.Logger;
+}): Watchdog {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let stopped = false;
+	const arm = () => {
+		if (stopped || opts.idleMs <= 0) return;
+		if (timer) clearTimeout(timer);
+		timer = setTimeout(tick, opts.idleMs);
+		timer.unref?.();
+	};
+	const tick = () => {
+		if (stopped) return;
+		if (opts.isHeldRound()) {
+			// A tool is parked → claude-p is correctly idle waiting for pi. Defer to
+			// the tool's own (pi-enforced) timeout; keep watching. Debug-level so it
+			// is observable (a scenario can assert the watchdog ticked + deferred
+			// during a held round) without adding noise at the default log level.
+			opts.log.debug({ idleMs: opts.idleMs }, "watchdog: tick during held round — deferring (claude-p legitimately idle on a held tool)");
+			arm();
+			return;
+		}
+		opts.log.warn({ idleMs: opts.idleMs }, `watchdog: claude-p silent for ${opts.idleMs}ms with no tool parked — declaring wedge (kill+retry)`);
+		try { opts.onWedge(); } catch (err) {
+			opts.log.warn({ err: err instanceof Error ? err.message : String(err) }, "watchdog: onWedge threw (ignored)");
+		}
+		arm(); // keep watching across the retry until finalize/abort stops us
+	};
+	return { poke: arm, stop: () => { stopped = true; if (timer) clearTimeout(timer); timer = undefined; } };
+}
+
+/** Test-only: expose the held-round-aware watchdog factory. */
+export const __makeWatchdogForTests = makeWatchdog;
+
 /**
  * Active in-flight query state. There is at most one *top-level* active query
  * per pi conversation, BUT subagents can nest a child query inside a parent's
@@ -359,6 +442,16 @@ type QueryFrame = {
 	pendingResults: Map<string, { content: { type: "text"; text: string }[]; isError?: boolean }>;
 
 	wasAborted: boolean;
+	// Set true when the driver terminated with an error (claude-p exited/crashed/
+	// timed out, or a turn-level error) — as opposed to a clean stop or a user
+	// abort. Used so a tool-result delivered into a dead frame closes pi's stream
+	// with a terminal error instead of wiring into a corpse and hanging forever
+	// (the error-path analogue of `wasAborted`). See finalizeClaudePFrame +
+	// streamClaudeAgentSdk Case 1 (`willHangIfWired`).
+	driverErrored: boolean;
+	// Layer 2: held-round-aware idle watchdog for this spawn. Created in
+	// startFreshQuery; stopped in finalizeClaudePFrame + abortFrame.
+	watchdog?: Watchdog;
 	donePromise: Promise<void>;
 };
 
@@ -797,7 +890,11 @@ export function streamClaudeAgentSdk(
 			}
 			if (matchedFrame) break;
 		}
-		const willHangIfWired = matchedFrame ? matchedFrame.wasAborted : active.wasAborted;
+		// A delivery hangs if it wires into a frame that will never generate more
+		// content: it was aborted, OR its driver errored/exited (claude-p crashed
+		// or hit its timeout while pi was running the held tool). Both are terminal.
+		const terminalFrame = matchedFrame ?? active;
+		const willHangIfWired = terminalFrame.wasAborted || terminalFrame.driverErrored;
 
 		// Wire the stream BEFORE resolving — only if the matched frame is
 		// still live. A live frame's SDK will continue generating into this
@@ -805,6 +902,10 @@ export function streamClaudeAgentSdk(
 		if (!willHangIfWired) {
 			active.currentPiStream = stream;
 			resetTurnState(active);
+			// Handing control back to claude-p (it resumes once the resolver fires
+			// below) — restart the idle clock so the post-delivery continuation has
+			// a fresh window before the watchdog would consider it wedged.
+			terminalFrame.watchdog?.poke();
 		}
 
 		// Deliver each result to the matching resolver across the stack.
@@ -833,16 +934,28 @@ export function streamClaudeAgentSdk(
 		// won't write anything more. The resolver did still get the real
 		// content; it lives in the SDK's session JSONL for next-turn resume.
 		if (willHangIfWired) {
+			// Aborted takes precedence over errored (a user abort that also tore
+			// down the driver should read as "aborted by user"). Only a frame that
+			// errored WITHOUT a user abort surfaces as a driver error.
+			const erroredNotAborted = terminalFrame.driverErrored && !terminalFrame.wasAborted;
 			queueMicrotask(() => {
 				const out = newTurnOutput(model);
-				out.stopReason = "aborted";
-				out.errorMessage = "Operation aborted by user (real tool result captured for next-turn resume)";
+				if (erroredNotAborted) {
+					out.stopReason = "error";
+					out.errorMessage = "claude-p driver exited before returning the tool result — turn ended (the tool result was captured for next-turn resume)";
+				} else {
+					out.stopReason = "aborted";
+					out.errorMessage = "Operation aborted by user (real tool result captured for next-turn resume)";
+				}
 				try {
 					stream.push({ type: "start", partial: out });
-					stream.push({ type: "error", reason: "aborted", error: out });
+					stream.push({ type: "error", reason: erroredNotAborted ? "error" : "aborted", error: out });
 					stream.end();
 				} catch { /* stream may have ended */ }
-				(matchedFrame ?? active).log.info({ deliveredFor: "aborted-frame" }, "tool-result delivery to aborted frame: closed pi stream with aborted-error");
+				terminalFrame.log.info(
+					{ deliveredFor: erroredNotAborted ? "errored-frame" : "aborted-frame" },
+					`tool-result delivery to ${erroredNotAborted ? "errored" : "aborted"} frame: closed pi stream with ${erroredNotAborted ? "error" : "aborted"}-error`,
+				);
 			});
 		}
 		return stream;
@@ -948,6 +1061,7 @@ const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before com
  * Used by every abort/supersede/clearSession site.
  */
 function abortFrame(frame: QueryFrame): void {
+	frame.watchdog?.stop();
 	frame.claudeHandle?.abort();
 	void frame.router?.stop();
 }
@@ -969,7 +1083,22 @@ function drainPendingResolversAsAborted(frame: QueryFrame, reason: string) {
 // calls it directly.
 // ===========================================================================
 
-const CLAUDE_P_TIMEOUT_SECONDS = 600; // generous; must not trip on a held tool round (spec)
+/**
+ * claude-p's own --timeout (seconds). This is a BACKSTOP, not the primary
+ * liveness control: it counts held-tool idle time, so it must be >= the longest
+ * held tool round (a subagent / slow tool — itself bounded by the tool's OWN
+ * pi-enforced timeout) or it will kill a healthy in-progress tool. The bridge's
+ * held-round-aware idle watchdog (WATCHDOG_IDLE_MS) is the fast wedge detector;
+ * this is only the last-resort ceiling. Env override:
+ * CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS (set very high, e.g. 86400, to make it
+ * effectively inert and let the watchdog be the sole authority). Default 4h.
+ */
+const CLAUDE_P_TIMEOUT_SECONDS = (() => {
+	const raw = process.env.CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS;
+	if (raw === undefined || raw === "") return 14_400; // 4h backstop
+	const n = Number(raw);
+	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 14_400;
+})();
 const PROMPT_FILE_THRESHOLD_BYTES = 50 * 1024; // >50KB → tmpfile (argv-limit safety, constitution III)
 
 /**
@@ -1220,10 +1349,19 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
  * finalizer; pops the frame iff it's the top and has no pending resolvers.
  */
 function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
+	// The (possibly retried) spawn has reached a terminal state — stop the
+	// liveness watchdog (idempotent; abortFrame may have stopped it already).
+	frame.watchdog?.stop();
 	const cwd = frame.cwd;
 	// Clear the cache on a spawn-level error OR a turn-level error so the next turn
 	// cold-starts — giving the MCP attach a fresh try.
 	if (res.stopReason === "error" || frame.turnOutput?.stopReason === "error") {
+		// Mark the frame as driver-errored so a tool-result that pi delivers AFTER
+		// the driver died (currentPiStream is null while pi executes a held tool)
+		// closes pi's stream with a terminal error instead of wiring into a dead
+		// driver and hanging forever. See streamClaudeAgentSdk Case 1
+		// (`willHangIfWired`). This is the error-path analogue of the abort path.
+		frame.driverErrored = true;
 		// Clear cache so the next turn cold-starts (spec: "any cached driver
 		// session id is cleared").
 		if (cachedSessionId === res.sessionId || cachedSessionCwd === cwd) {
@@ -1356,6 +1494,7 @@ async function startFreshQuery(
 		pendingResolvers: new Map(),
 		pendingResults: new Map(),
 		wasAborted: false,
+		driverErrored: false,
 		donePromise: Promise.resolve(),
 	};
 	resetTurnState(frame);
@@ -1465,9 +1604,20 @@ async function startFreshQuery(
 	// recurring across turns. Fresh (cold) turns pass false → no suppression.
 	const suppressResumeReplay = useResume;
 
+	// Layer 2: held-round-aware idle watchdog. Created BEFORE the spawn so the
+	// onEvent poke always sees it. It never fires while a tool is parked
+	// (pendingResolvers > 0) — a healthy long subagent is deferred to entirely —
+	// and otherwise kills+retries a silent (wedged) claude-p via killWedged().
+	frame.watchdog = makeWatchdog({
+		idleMs: WATCHDOG_IDLE_MS,
+		isHeldRound: () => frame.pendingResolvers.size > 0,
+		onWedge: () => frame.claudeHandle?.killWedged?.(),
+		log: frame.log,
+	});
+
 	const handle = _spawnClaudePFactory(
 		cfg,
-		{ onEvent: (ev: DriverStreamEvent) => processDriverEvent(frame, ev), logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay, livePromptText: useResume ? promptText : undefined },
+		{ onEvent: (ev: DriverStreamEvent) => { frame.watchdog?.poke(); processDriverEvent(frame, ev); }, logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay, livePromptText: useResume ? promptText : undefined },
 		{
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,
@@ -1476,6 +1626,7 @@ async function startFreshQuery(
 		},
 	);
 	frame.claudeHandle = handle;
+	frame.watchdog.poke(); // arm the boot-wedge window
 	frame.donePromise = handle.done.then((res) => finalizeClaudePFrame(frame, res));
 }
 

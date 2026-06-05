@@ -1208,21 +1208,41 @@ function buildCaptureDeps(): CaptureDeps {
 	};
 }
 
-/** Update the frame's usage from a driver `usage` event (already pi-shaped). */
-function updateUsageFromDriver(frame: QueryFrame, usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number }) {
+type DriverUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number };
+
+/**
+ * Update the frame's usage from a driver `usage` event.
+ *
+ * `context` is the CONTEXT-window usage (the final API call's input-side tokens
+ * — the real window occupancy); `billing` is the CUMULATIVE turn usage (the sum
+ * across every round, from claude-p's `result.usage`). They differ on
+ * multi-round turns. We report the CONTEXT tokens to pi (so its context-window
+ * indicator is accurate — claude-p's cumulative would read many× the window),
+ * but compute COST and the turn's output-token count from BILLING (so $ spend
+ * and total output stay accurate). pi sums each message's provider-supplied
+ * `usage.cost`, so stuffing the cumulative cost here keeps session cost correct.
+ */
+function updateUsageFromDriver(frame: QueryFrame, context: DriverUsage, billing?: DriverUsage) {
 	const output = frame.turnOutput;
 	if (!output) return;
-	output.usage.input = usage.input;
-	output.usage.output = usage.output;
-	output.usage.cacheRead = usage.cacheRead;
-	output.usage.cacheWrite = usage.cacheWrite;
-	output.usage.totalTokens = usage.totalTokens;
-	calculateCost(frame.model, output.usage);
+	const bill = billing ?? context;
+	// Context-window fields: the final call's input-side tokens.
+	output.usage.input = context.input;
+	output.usage.cacheRead = context.cacheRead;
+	output.usage.cacheWrite = context.cacheWrite;
+	// Output is generated, not part of the input window — report the turn TOTAL.
+	output.usage.output = bill.output;
+	output.usage.totalTokens = context.input + context.cacheRead + context.cacheWrite + bill.output;
+	// Cost is the whole turn's spend → compute from the CUMULATIVE billing usage,
+	// NOT from the (smaller) context tokens, then attach to the reported usage.
+	const billingUsage = { input: bill.input, output: bill.output, cacheRead: bill.cacheRead, cacheWrite: bill.cacheWrite, totalTokens: bill.totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	output.usage.cost = calculateCost(frame.model, billingUsage as typeof output.usage);
 	// Emit the canonical usage log line so observability + cache-shape assertions
-	// have a stable structured record per turn.
+	// have a stable structured record per turn. `ctx*` = reported context tokens;
+	// `bill*` = cumulative (cost basis).
 	frame.log.info(
-		{ in: output.usage.input, out: output.usage.output, cacheRead: output.usage.cacheRead, cacheWrite: output.usage.cacheWrite },
-		`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} model=${frame.model.id}`,
+		{ in: output.usage.input, out: output.usage.output, cacheRead: output.usage.cacheRead, cacheWrite: output.usage.cacheWrite, billCacheRead: bill.cacheRead, billTotal: bill.totalTokens },
+		`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} model=${frame.model.id} (billCacheRead=${bill.cacheRead})`,
 	);
 }
 
@@ -1323,7 +1343,7 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			return;
 		}
 		case "usage": {
-			updateUsageFromDriver(frame, ev.usage);
+			updateUsageFromDriver(frame, ev.usage, ev.billing);
 			return;
 		}
 		case "done": {

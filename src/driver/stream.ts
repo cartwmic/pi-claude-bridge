@@ -45,7 +45,12 @@ export type DriverStreamEvent =
 	// Observational only (D32): carries the model's `toolu_…` id + name + full
 	// argument object for streaming/UX. Routing/correlation is the shim+router's.
 	| { kind: "tool-use"; toolUseId: string; name: string; arguments: unknown }
-	| { kind: "usage"; usage: DriverStreamUsage }
+	// `usage` = CONTEXT-window usage (the final API call's input-side tokens — the
+	// real window occupancy). `billing` = CUMULATIVE turn usage (Claude Code's
+	// `result.usage`, the exact sum across every round) for cost. They differ for
+	// multi-round turns; index.ts reports context tokens to pi but derives cost
+	// from billing.
+	| { kind: "usage"; usage: DriverStreamUsage; billing: DriverStreamUsage }
 	| { kind: "done"; reason: "result" } // terminal `result` line seen
 	| { kind: "error"; errorMessage: string };
 
@@ -251,6 +256,12 @@ export class ClaudePStreamParser {
 	 * replayed prior-turn content), then flushed in order at the terminal `result`.
 	 */
 	private liveTurnBuffer: DriverStreamEvent[] = [];
+
+	// Per-call usage of the LAST assistant message that carried real input-side
+	// tokens. claude-p's terminal `result.usage` is the CUMULATIVE sum across all
+	// rounds (wrong for a context-window indicator); this final per-call usage is
+	// the true window occupancy. Captured in handleAssistant, emitted at `result`.
+	private lastAssistantUsage: DriverStreamUsage | null = null;
 
 	// ── Warm-resume stale-turn diagnostic (detection-only; see ResumeDiag) ──────
 	private readonly livePromptText?: string;
@@ -508,6 +519,14 @@ export class ClaudePStreamParser {
 	private handleAssistant(rec: Record<string, unknown>): void {
 		const message = rec.message;
 		if (message === null || typeof message !== "object") return;
+		// Capture this API call's usage as the running "context size". Each
+		// assistant message carries its own per-call usage; the LAST one with real
+		// input-side tokens is the final call = the true context-window occupancy.
+		// Guard against message_start / partial frames that report all-zero usage.
+		const perCall = this.mapUsage((message as Record<string, unknown>).usage);
+		if (perCall.input + perCall.cacheRead + perCall.cacheWrite > 0) {
+			this.lastAssistantUsage = perCall;
+		}
 		const content = (message as Record<string, unknown>).content;
 		if (!Array.isArray(content)) return;
 
@@ -569,8 +588,13 @@ export class ClaudePStreamParser {
 			this.liveTurnBuffer = [];
 			for (const ev of buffered) this.onEvent(ev);
 		}
-		const usage = this.mapUsage(rec.usage);
-		this.onEvent({ kind: "usage", usage });
+		// `result.usage` is the CUMULATIVE turn usage (exact sum over all rounds) →
+		// use it for cost (billing). For the context-window indicator emit the LAST
+		// per-call usage (real window occupancy); fall back to billing if no
+		// assistant usage was seen (e.g. a zero-round turn).
+		const billing = this.mapUsage(rec.usage);
+		const usage = this.lastAssistantUsage ?? billing;
+		this.onEvent({ kind: "usage", usage, billing });
 		this.resultSeen = true;
 		this.onEvent({ kind: "done", reason: "result" });
 		// Stale-turn diagnostic: claude-p's own turn counter (advances on every real

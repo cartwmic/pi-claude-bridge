@@ -130,16 +130,26 @@ describe("real fixture replay (expC-claude-p-stream.jsonl)", () => {
 			"WaitForMcpServers must be suppressed",
 		);
 
-		// usage event from result line, exact mapping.
+		// usage event: `usage` = the LAST per-call usage (context-window occupancy);
+		// `billing` = the cumulative `result.usage` (sum over all rounds, for cost).
 		const usage = events.filter((e) => e.kind === "usage");
 		assert.equal(usage.length, 1, "exactly one usage event");
 		assert.deepEqual(usage[0].usage, {
+			input: 6,
+			output: 27,
+			cacheRead: 38502,
+			cacheWrite: 113,
+			totalTokens: 6 + 27 + 38502 + 113,
+		}, "context usage = final per-call (not the cumulative sum)");
+		assert.deepEqual(usage[0].billing, {
 			input: 48,
 			output: 2287,
 			cacheRead: 127119,
 			cacheWrite: 103973,
 			totalTokens: 48 + 2287 + 127119 + 103973,
-		});
+		}, "billing usage = cumulative result.usage");
+		// The cumulative cacheRead must exceed the per-call (this is the whole bug).
+		assert.ok(usage[0].billing.cacheRead > usage[0].usage.cacheRead, "cumulative > per-call");
 
 		// done event after usage, reason result.
 		const done = events.filter((e) => e.kind === "done");

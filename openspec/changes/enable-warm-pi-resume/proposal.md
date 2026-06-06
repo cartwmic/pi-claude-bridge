@@ -25,13 +25,14 @@ path users hit most (every resume; every post-error turn).
   a Stop before submit, or one with no transcript growth, never yields a result).
   The bridge **trusts claude-p's result** — no bridge-side stale detection or
   discard/cold-retry. Spiked + proven (`.spike-notes/claude-p-gate/resume-staleness-gate-*`).
-- **Cold-start remains the always-safe fallback** on any missing/invalid sidecar,
-  history divergence, version skew, or stale detection. Net: warm resume never
-  produces a worse-than-cold *result*. (One honest caveat: a failed warm attempt
-  does extra spawn+detect work before cold-retrying, so it is *slower* than a
-  direct cold-start; correctness, not latency, is the floor. A deleted transcript
-  is a rare exception — it surfaces as one errored turn before the next cold turn,
-  since `claude --resume <missing>` errors (T0.1).)
+- **Cold-start is the floor** whenever warm isn't applicable (no/invalid sidecar,
+  history divergence, version skew) — a normal turn, not a retry. Net: warm resume
+  never produces a worse-than-cold *result*. (Honest caveat: a warm attempt that
+  ERRORS — e.g. a deleted transcript (`claude --resume <missing>` errors, T0.1) or
+  the fork gate refusing — surfaces that error on the current turn (visible) and
+  the next turn cold-starts; the failed warm path is NOT silently re-run cold
+  in-turn, so it costs one errored turn vs. a clean cold-start. Correctness +
+  visibility, not latency, are the floor.)
 - **CONSTITUTION + DOMAIN (BREAKING):** (1) amends Principle I ("MUST NOT persist
   conversation history of its own") to permit content-free resume *metadata*;
   (2) amends Domain invariant 3 — `domain.md:40-43` today makes `restart` an

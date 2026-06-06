@@ -42,11 +42,11 @@ validation fails) THE driver SHALL cold-start.
 
 ### Requirement: Resume Returns The Live Turn, Never A Replayed Prior Turn
 
-WHEN the driver serves a `--resume` turn, THE driver SHALL emit a result that reflects the LIVE turn only: it SHALL gate result emission on the transcript growing past a baseline captured before the live prompt is submitted (a new assistant turn must be appended), and SHALL ignore any Stop signal received before the live prompt is submitted. IF the transcript does not grow past the baseline (no live assistant turn appears), THEN THE driver SHALL return an error rather than a replayed prior-turn result, so the bridge cold-retries. (Source-level fix in the `claude-p` fork; this is why the bridge needs no stale-result detection of its own.)
+WHEN the driver serves a `--resume` turn, THE driver SHALL emit a result that reflects the LIVE turn only: it SHALL gate result emission on the transcript growing past a baseline captured before the live prompt is submitted (a new assistant turn must be appended), and SHALL ignore any Stop signal received before the live prompt is submitted. IF the transcript does not grow past the baseline (no live assistant turn appears), THEN THE driver SHALL return an error rather than a replayed prior-turn result — the error surfaces to the bridge (which invalidates the session so the next turn cold-starts). (Source-level fix in the `claude-p` fork; this is why the bridge needs no stale-result detection of its own.)
 
 #### Scenario: A replayed prior turn is never emitted as the resume result
 - **WHEN** a `--resume` turn's transcript still ends at the prior turn (the live turn has not appended an assistant message) at the moment a Stop is observed
-- **THEN** the driver does NOT emit the prior turn's answer — it waits for the live turn (transcript-growth gate), and if the live turn never appears it errors (the bridge then cold-retries)
+- **THEN** the driver does NOT emit the prior turn's answer — it waits for the live turn (transcript-growth gate), and if the live turn never appears it errors (the error surfaces; the bridge drops the session so the next turn cold-starts)
 
 #### Scenario: A Stop before submit is ignored
 - **WHEN** a Stop hook signal arrives before the driver has submitted the live prompt (state is not awaiting-stop)

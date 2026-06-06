@@ -65,7 +65,7 @@
   - intent: feature
   - files_allowed:
       - index.ts
-- [ ] 4.3 (NO bridge stale guard — D5 is fixed in the fork, task 0.3.) The bridge treats a driver `result` as authoritative and a driver error as an ordinary cold-retry trigger (existing error→cold path + D7 sidecar invalidation). Just confirm no bridge-side stale detection exists/is added.
+- [ ] 4.3 (NO bridge stale guard — D5 is fixed in the fork, task 0.3.) The bridge treats a driver `result` as authoritative and a driver error as an ordinary turn error: it surfaces (Principle VII) and invalidates the sidecar (D7) so the next turn cold-starts — no in-turn cold-retry. Just confirm no bridge-side stale detection exists/is added.
   - intent: feature
   - files_allowed:
       - index.ts

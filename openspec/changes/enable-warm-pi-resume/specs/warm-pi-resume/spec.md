@@ -67,15 +67,15 @@ IF the sidecar is unreadable or malformed, THEN THE bridge SHALL cold-start the 
 
 ### Requirement: Driver Guarantees A Live-Resume Result (no bridge-side stale guard)
 
-THE warm-resume path SHALL rely on the `claude-p` driver's guarantee that a `--resume` turn's result reflects the LIVE turn — the driver's transcript-growth gate emits a result only once the transcript shows a new assistant turn appended past the pre-submit baseline (see the `claude-p-driver` capability). THE bridge SHALL NOT implement its own stale-result detection, `staleSuspected` heuristic, or discard/retry: it treats a driver `result` as authoritative, and a driver error (the gate's refusal, surfaced as an error stop reason) as an ordinary cold-retry trigger.
+THE warm-resume path SHALL rely on the `claude-p` driver's guarantee that a `--resume` turn's result reflects the LIVE turn — the driver's transcript-growth gate emits a result only once the transcript shows a new assistant turn appended past the pre-submit baseline (see the `claude-p-driver` capability). THE bridge SHALL NOT implement its own stale-result detection, `staleSuspected` heuristic, or discard/retry: it treats a driver `result` as authoritative, and a driver error (the gate's refusal) as an ordinary turn error — the error SURFACES (Principle VII) and the sidecar/cache is invalidated so the next turn cold-starts.
 
 #### Scenario: Warm turn returns the live answer
 - **WHEN** a warm-resume turn completes with a `result`
 - **THEN** the bridge delivers that result as-is — it is guaranteed by the driver to be the live turn's — with no staleness re-check
 
-#### Scenario: Driver refuses a stale turn → bridge cold-retries
+#### Scenario: Driver refuses a stale turn → error surfaces, next turn cold-starts
 - **IF** the driver cannot confirm the live turn ran (its transcript-growth gate fails and it returns an error rather than a replayed result)
-- **THEN** the bridge treats it as a turn error: invalidates the cache + sidecar and cold-starts the next turn, with no special staleness logic
+- **THEN** the bridge treats it as an ordinary turn error: the error surfaces to pi (Principle VII), the cache + sidecar are invalidated, and the next turn cold-starts — with no special staleness logic and no in-turn cold-retry
 
 ### Requirement: Sidecar Invalidated On Turn Error
 

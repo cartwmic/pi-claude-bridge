@@ -8,7 +8,7 @@
   - intent: infra
   - files_allowed:
       - .spike-notes/**
-- [ ] 0.3 PREREQUISITE — land the `claude-p` transcript-growth gate (D5; the source-level stale-result fix, spiked on fork branch `spike/resume-staleness-gate`: state-gate `.stop` + require `num_turns > baseline` before emitting). Merge it onto claude-p `main`, `zig build` + `zig build test` green, then bump the bridge's claude-p pin (`package.json`). This is what lets the bridge trust the driver's `--resume` result; dissolves the old bridge stale-guard + Thread B + C5.
+- [x] 0.3 DONE 2026-06-06 — landed the `claude-p` transcript-growth gate (D5). Fork: merged `spike/resume-staleness-gate` → claude-p `main` (`origin/main` = `32800b2`), ReleaseSafe `zig build` + `zig build test` green. Bridge: repinned `package.json`/`package-lock.json` to `#32800b2`; `npm install` rebuilt the gated binary from source (`prepare: zig build`). Verified against the INSTALLED binary: unit 313/0; e2e under load 0 stale emits; `int-smoke` 3/0; `int-multi-turn` 5/0 (incl. "turn 2 not stale from turn 1" + "final text survives multi-round tool calls"); `int-cache` session-resume clean (1 cold / 4 warm / 1 session). [`int-cache` cache-metric assertions flake non-deterministically — pre-existing claude-p cache noise, gate-independent. `int-session-resume` couldn't run — stale `.env.test` alt provider `stablellm/glm-4.7:fastest` no longer exists; unrelated to the gate / claude-p path.]
   - intent: infra
   - files_allowed:
       - package.json

@@ -101,6 +101,16 @@ describe("buildClaudePArgs — required flags", () => {
 		assert.equal(valueAfter(args, "--mcp-config"), '{"mcpServers":{}}');
 	});
 
+	it("emits --mcp-ready-file when mcpReadyFile is set", () => {
+		const args = buildClaudePArgs(baseCfg({ mcpReadyFile: "/tmp/x.sock.ready" }));
+		assert.equal(valueAfter(args, "--mcp-ready-file"), "/tmp/x.sock.ready");
+	});
+
+	it("omits --mcp-ready-file when mcpReadyFile is unset", () => {
+		const args = buildClaudePArgs(baseCfg());
+		assert.ok(!args.includes("--mcp-ready-file"));
+	});
+
 	it("includes --disallowedTools with the full native disallow set", () => {
 		const args = buildClaudePArgs(baseCfg());
 		assert.equal(valueAfter(args, "--disallowedTools"), DISALLOWED_TOOLS_VALUE);

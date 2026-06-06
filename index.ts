@@ -29,7 +29,7 @@ import {
 } from "@mariozechner/pi-ai";
 import * as piAi from "@mariozechner/pi-ai";
 import { keyHint, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import pino from "pino";
 import { createStream } from "rotating-file-stream";
 import { homedir, tmpdir } from "os";
@@ -1372,6 +1372,16 @@ function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 	// The (possibly retried) spawn has reached a terminal state — stop the
 	// liveness watchdog (idempotent; abortFrame may have stopped it already).
 	frame.watchdog?.stop();
+	// Best-effort: remove this turn's MCP-readiness sentinel (paired to the
+	// router socket). Per-attempt spawns already clear stale copies; this drops
+	// the final one so /tmp doesn't accumulate. Never throws.
+	if (frame.router) {
+		try {
+			rmSync(`${frame.router.socketPath}.ready`, { force: true });
+		} catch {
+			/* ignore */
+		}
+	}
 	const cwd = frame.cwd;
 	// Clear the cache on a spawn-level error OR a turn-level error so the next turn
 	// cold-starts — giving the MCP attach a fresh try.
@@ -1547,11 +1557,16 @@ async function startFreshQuery(
 	// Build --mcp-config pointing at the stdio shim for this spawn.
 	const shimPath = resolveShimPath();
 	const toolsB64 = Buffer.from(JSON.stringify(toolDefs), "utf-8").toString("base64");
+	// MCP-readiness sentinel, paired to this spawn's router socket. The shim
+	// creates it once it has served tools/list (tool surface live in claude);
+	// claude-p holds the submit Enter until it exists. Closes the boot race where
+	// the prompt is submitted before mcp__custom-tools__* is registered.
+	const mcpReadyFile = `${router.socketPath}.ready`;
 	const mcpConfig = JSON.stringify({
 		mcpServers: {
 			[MCP_SERVER_NAME]: {
 				command: process.execPath,
-				args: [...shimNodeArgs(shimPath), "--socket", router.socketPath, "--mode", "main", "--tools", toolsB64],
+				args: [...shimNodeArgs(shimPath), "--socket", router.socketPath, "--mode", "main", "--tools", toolsB64, "--ready-file", mcpReadyFile],
 			},
 		},
 	});
@@ -1578,6 +1593,7 @@ async function startFreshQuery(
 		mcpConfig,
 		session,
 		timeoutSeconds: CLAUDE_P_TIMEOUT_SECONDS,
+		mcpReadyFile,
 	};
 
 	frame.log.debug(

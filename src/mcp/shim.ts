@@ -38,6 +38,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { PassThrough } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { connectIpcClient, createLineDecoder, type IpcClient, type ToolResultContent } from "./ipc.js";
 
 export type ShimMode = "main" | "capture";
@@ -55,6 +56,14 @@ export type ShimConfig = {
 	tools: ShimToolDef[];
 	/** Required in capture mode: the MCP name of the capture tool. */
 	captureToolName?: string;
+	/**
+	 * Optional MCP-readiness sentinel path. When set, the shim creates this file
+	 * the first time it serves `tools/list` — i.e. the moment the bridged tool
+	 * surface becomes known to `claude`. claude-p waits on this file before
+	 * submitting the prompt, closing the boot race where the model would generate
+	 * with no `mcp__custom-tools__*` tools and emit tool calls as raw text.
+	 */
+	readyFile?: string;
 };
 
 export const CAPTURE_SUCCESS_TEXT = "Capture received. End your turn now.";
@@ -89,7 +98,9 @@ export function parseShimArgs(argv: string[], env: NodeJS.ProcessEnv = process.e
 	const captureToolName = get("--capture-tool");
 	if (mode === "capture" && !captureToolName) throw new Error("shim: --capture-tool <name> required in capture mode");
 
-	return { socketPath, mode, tools, captureToolName };
+	const readyFile = get("--ready-file");
+
+	return { socketPath, mode, tools, captureToolName, readyFile };
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +312,30 @@ export async function runShim(argv: string[], env: NodeJS.ProcessEnv = process.e
 	const config = parseShimArgs(argv, env);
 	const ipc = await connectIpcClient(config.socketPath);
 	const handlers = createShimHandlers({ config, ipc });
+
+	// MCP-readiness signal: the first time we serve `tools/list`, the bridged
+	// tool surface is now known to `claude`. Touch the sentinel so claude-p can
+	// release the held prompt Enter. Wrapped HERE (not in createShimHandlers) so
+	// the handler factory stays pure and filesystem-free for unit tests.
+	if (config.readyFile) {
+		const readyFile = config.readyFile;
+		const innerListTools = handlers.listTools;
+		let raised = false;
+		handlers.listTools = () => {
+			const res = innerListTools();
+			if (!raised) {
+				raised = true;
+				try {
+					writeFileSync(readyFile, "ready\n");
+					shimLog({ level: "info", event: "mcp-ready-raised", file: readyFile });
+				} catch (err) {
+					shimLog({ level: "warn", event: "mcp-ready-write-failed", message: String(err) });
+				}
+			}
+			return res;
+		};
+	}
+
 	const { server, feed, transport } = buildMcpServer(handlers);
 	await server.connect(transport);
 

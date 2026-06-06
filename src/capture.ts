@@ -32,6 +32,7 @@
 // call-as-error, capture-path-honors-abortsignal, capture-path-isolation).
 
 import { randomBytes, randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type {
 	AssistantMessage,
@@ -213,6 +214,11 @@ export async function runClaudePCapture(
 	// ── --mcp-config pointing at the shim in CAPTURE mode ─────────────────────
 	const shimPath = deps.resolveShimPath();
 	const toolsB64 = Buffer.from(JSON.stringify(toolDefs), "utf-8").toString("base64");
+	// MCP-readiness sentinel (same mechanism as the main path): the capture shim
+	// creates it once it serves tools/list, so claude-p holds the submit Enter
+	// until the capture tool is live — otherwise the model emits the capture call
+	// as text and the stash never lands.
+	const mcpReadyFile = `${router.socketPath}.ready`;
 	const mcpConfig = JSON.stringify({
 		mcpServers: {
 			[deps.mcpServerName]: {
@@ -225,6 +231,7 @@ export async function runClaudePCapture(
 					"--mode", "capture",
 					"--capture-tool", captureMatchName,
 					"--tools", toolsB64,
+					"--ready-file", mcpReadyFile,
 				],
 			},
 		},
@@ -253,6 +260,7 @@ export async function runClaudePCapture(
 		mcpConfig,
 		session: { kind: "fresh", sessionId: randomUUID() },
 		timeoutSeconds: deps.timeoutSeconds,
+		mcpReadyFile,
 	};
 
 	// ── Collect usage from the driver `usage` event (terminal `result` line) ──
@@ -289,6 +297,12 @@ export async function runClaudePCapture(
 	const finish = () => {
 		// Best-effort router teardown (own socket — disjoint from any main spawn).
 		void router.stop().catch(() => {});
+		// Drop this spawn's MCP-readiness sentinel (best-effort; never throws).
+		try {
+			rmSync(mcpReadyFile, { force: true });
+		} catch {
+			/* ignore */
+		}
 	};
 	const onAbort = () => {
 		if (streamEnded) return;

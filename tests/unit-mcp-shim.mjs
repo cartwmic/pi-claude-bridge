@@ -14,7 +14,11 @@ import {
 import { createIpcServer, generateSocketPath, connectIpcClient } from "../src/mcp/ipc.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { spawn } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { join as joinPath } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as pathResolve } from "node:path";
 
@@ -105,6 +109,21 @@ describe("shim — parseShimArgs", () => {
 			PI_CLAUDE_BRIDGE_SHIM_TOOLS: b64([{ name: "t" }]),
 		});
 		assert.deepEqual(cfg.tools, [{ name: "t" }]);
+	});
+
+	it("parses --ready-file (optional MCP-readiness sentinel)", () => {
+		const cfg = parseShimArgs([
+			"--socket", "/tmp/x.sock",
+			"--mode", "main",
+			"--tools", b64([{ name: "mcp__custom-tools__read" }]),
+			"--ready-file", "/tmp/x.sock.ready",
+		]);
+		assert.equal(cfg.readyFile, "/tmp/x.sock.ready");
+	});
+
+	it("readyFile is undefined when --ready-file absent", () => {
+		const cfg = parseShimArgs(["--socket", "/s", "--mode", "main", "--tools", b64([])]);
+		assert.equal(cfg.readyFile, undefined);
 	});
 });
 
@@ -285,6 +304,38 @@ describe("shim — full MCP protocol over a linked transport", () => {
 			await client.close();
 			await server.close();
 			ipc.close();
+			await router.stop();
+		}
+	});
+});
+
+describe("shim — MCP-readiness sentinel (--ready-file)", () => {
+	it("creates the sentinel the first time it serves tools/list", async () => {
+		const router = fakeRouter();
+		await router.start();
+		const readyFile = joinPath(tmpdir(), `pcb-test-${process.pid}-${Date.now()}.ready`);
+		rmSync(readyFile, { force: true });
+		assert.equal(existsSync(readyFile), false, "sentinel must not exist before tools/list");
+
+		const transport = new StdioClientTransport({
+			command: process.execPath,
+			args: [
+				"--import", "tsx", SHIM_PATH,
+				"--socket", router.sock,
+				"--mode", "main",
+				"--tools", b64([{ name: "mcp__custom-tools__read", inputSchema: { type: "object" } }]),
+				"--ready-file", readyFile,
+			],
+		});
+		const client = new Client({ name: "test", version: "1.0.0" }, { capabilities: {} });
+		try {
+			await client.connect(transport); // initialize handshake — NOT tools/list yet
+			const list = await client.listTools(); // this is what raises the sentinel
+			assert.deepEqual(list.tools.map((t) => t.name), ["mcp__custom-tools__read"]);
+			assert.equal(existsSync(readyFile), true, "sentinel must exist after the first tools/list");
+		} finally {
+			await client.close();
+			rmSync(readyFile, { force: true });
 			await router.stop();
 		}
 	});

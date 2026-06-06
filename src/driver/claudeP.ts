@@ -30,7 +30,7 @@
 // SIGKILL after grace, orphan reap), D33 (resilience layer — seam only here).
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
@@ -181,6 +181,15 @@ export interface ClaudePSpawnConfig {
 	 * a held tool round"). → --timeout
 	 */
 	timeoutSeconds: number;
+	/**
+	 * Optional MCP-readiness sentinel path. The shim creates it once it has served
+	 * `tools/list`; claude-p holds the submit Enter until it exists, so the turn
+	 * never generates before the bridged tool surface is live. The bridge pairs it
+	 * to the router socket (`${socketPath}.ready`). Unlinked per-attempt at spawn
+	 * so a stale sentinel from a killed attempt can't let a retry submit early.
+	 * → --mcp-ready-file
+	 */
+	mcpReadyFile?: string;
 }
 
 /** Flags this module must NEVER emit (constitution IV + "never nominal claude -p"). */
@@ -206,6 +215,13 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 
 	// --mcp-config <inline-json-or-path>
 	args.push("--mcp-config", cfg.mcpConfig);
+
+	// --mcp-ready-file <path>: hold the submit Enter until the shim has served
+	// tools/list (the tool surface is live). Optional; only the bridge's shim
+	// spawns set it. claude-p consumes it (never forwarded to claude).
+	if (cfg.mcpReadyFile) {
+		args.push("--mcp-ready-file", cfg.mcpReadyFile);
+	}
 
 	// --disallowedTools <space-joined native list> (single argv token; see format note)
 	args.push("--disallowedTools", DISALLOWED_TOOLS_VALUE);
@@ -582,6 +598,17 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	const bin = opts.binPath ?? DEFAULT_CLAUDE_P_BIN;
 	const graceMs = opts.graceMs ?? ABORT_SIGKILL_GRACE_MS;
 	const sessionId = cfg.session.sessionId;
+
+	// Per-attempt: clear any stale MCP-readiness sentinel so a retry can't submit
+	// against the PREVIOUS (killed) attempt's file. This spawn's shim re-creates
+	// it once it serves tools/list. Best-effort; never throws.
+	if (cfg.mcpReadyFile) {
+		try {
+			rmSync(cfg.mcpReadyFile, { force: true });
+		} catch {
+			/* ignore — claude-p just waits the full budget if a stale file lingers */
+		}
+	}
 
 	// First-spawn-only version-skew check (T4.7). Cached per process; never throws;
 	// a missing binary is surfaced as a real error below (child `error`), not here.

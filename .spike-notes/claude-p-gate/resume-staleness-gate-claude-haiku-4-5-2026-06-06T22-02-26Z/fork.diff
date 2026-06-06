@@ -1,0 +1,192 @@
+diff --git a/src/driver.zig b/src/driver.zig
+index 6664886..d20904f 100644
+--- a/src/driver.zig
++++ b/src/driver.zig
+@@ -464,6 +464,12 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
+     var stop_payload_owned: ?[]u8 = null;
+     defer if (stop_payload_owned) |p| allocator.free(p);
+ 
++    // Resume-staleness baseline: the number of assistant turns already in the
++    // transcript BEFORE we submit the live prompt. The live turn must push the
++    // count past this; until it does, any Stop/parse reflects a REPLAYED prior
++    // turn (the `--resume` stale-result race). Captured at echo-confirm, below.
++    var baseline_turns: u32 = 0;
++
+     // Live transcript tailer. Opened lazily once we learn `transcript_path`
+     // (typically from the SessionStart hook payload). Only used when the
+     // caller requested stream-json output AND supplied a writer.
+@@ -625,6 +631,15 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
+                                     return RunError.PromptNotAccepted;
+                                 }
+ 
++                                // Resume-staleness guard: snapshot how many assistant
++                                // turns the transcript already has BEFORE submit. The
++                                // prompt is echoed into Ink's input box but NOT yet
++                                // committed, so the transcript still ends at the prior
++                                // turn. The live turn must push this count higher
++                                // before its result is trusted (driver post-Stop loop).
++                                baseline_turns = transcript_mod.turnCountFile(allocator, transcript_path);
++                                traceFmt(opts, trace_start, "resume-staleness baseline = {d} assistant turn(s) before submit", .{baseline_turns});
++
+                                 // The prompt is in Ink's input box but NOT yet
+                                 // submitted. When an MCP-readiness sentinel was
+                                 // requested, hold the Enter until the bridged tool
+@@ -643,11 +658,19 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
+                             }
+                         },
+                         .stop => {
+-                            trace(opts, trace_start, "Stop hook fired (assistant turn finished)");
+                             if (transcript_path == null) {
+                                 transcript_path = try hook_mod.extractTranscriptPath(allocator, ev.payload);
+                             }
+-                            stop_payload_owned = try allocator.dupe(u8, ev.payload);
++                            // State gate: a Stop that arrives before we've submitted
++                            // the live prompt is a replayed/prior-turn signal, not ours.
++                            // Record the transcript path (above) but do not treat it as
++                            // our turn's completion.
++                            if (state != .awaiting_stop) {
++                                trace(opts, trace_start, "ignoring Stop hook — live prompt not yet submitted (state gate)");
++                            } else {
++                                trace(opts, trace_start, "Stop hook fired (assistant turn finished)");
++                                stop_payload_owned = try allocator.dupe(u8, ev.payload);
++                            }
+                         },
+                         .unknown => {},
+                     }
+@@ -733,38 +756,54 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
+     // fall back to `last_assistant_message` from the Stop payload.
+     var summary = blk: {
+         var attempt: u32 = 0;
++        var saw_growth = false;
+         while (attempt < 40) : (attempt += 1) {
+             var maybe = transcript_mod.parseFile(allocator, tp) catch |e| switch (e) {
+                 error.NoAssistantMessage, error.FileNotFound => null,
+                 else => return e,
+             };
+             if (maybe) |valid| {
+-                // If the assistant text is empty but no error was reported,
+-                // we likely read the transcript before the final text-block
+-                // assistant message was flushed (the early lines only have
+-                // thinking + tool_use blocks). Retry until text appears.
+-                if (valid.final_text.len > 0 or valid.is_error) break :blk valid;
++                // Resume-staleness gate: only trust a parse once the live turn
++                // has appended a NEW assistant turn past the pre-submit baseline.
++                // Until then the transcript still ends at the REPLAYED prior turn,
++                // and `final_text` would be the prior answer (the production bug).
++                if (valid.num_turns > baseline_turns) {
++                    saw_growth = true;
++                    // The assistant RECORD exists; wait for its text block to
++                    // flush (early lines may be thinking/tool_use only).
++                    if (valid.final_text.len > 0 or valid.is_error) break :blk valid;
++                }
+                 maybe.?.deinit(allocator);
+             }
+             std.Thread.sleep(50 * std.time.ns_per_ms);
+         }
+-        if (stop_payload_owned) |payload| {
+-            const last = try hook_mod.extractLastAssistantMessage(allocator, payload);
+-            if (last) |text| {
+-                const sid = (try hook_mod.extractSessionId(allocator, payload)) orelse try allocator.dupe(u8, "");
+-                break :blk transcript_mod.Summary{
+-                    .final_text = text,
+-                    .session_id = sid,
+-                    .is_error = false,
+-                    .num_turns = 1,
+-                    .total_cost_usd = 0.0,
+-                    .duration_api_ms = 0,
+-                    .usage = .{},
+-                    .jsonl_replay = try allocator.dupe(u8, ""),
+-                };
++        // Fall back to the Stop payload's last_assistant_message ONLY when it is
++        // safe to do so: the live turn's record landed (saw_growth) but its text
++        // hasn't flushed, OR this was a fresh turn (baseline 0 → no prior turn to
++        // be stale). Otherwise the count never grew → the Stop was stale/replayed
++        // (or the live turn produced no assistant turn): refuse to emit the prior
++        // answer and fail so the caller cold-retries.
++        if (saw_growth or baseline_turns == 0) {
++            if (stop_payload_owned) |payload| {
++                const last = try hook_mod.extractLastAssistantMessage(allocator, payload);
++                if (last) |text| {
++                    const sid = (try hook_mod.extractSessionId(allocator, payload)) orelse try allocator.dupe(u8, "");
++                    break :blk transcript_mod.Summary{
++                        .final_text = text,
++                        .session_id = sid,
++                        .is_error = false,
++                        .num_turns = baseline_turns + 1,
++                        .total_cost_usd = 0.0,
++                        .duration_api_ms = 0,
++                        .usage = .{},
++                        .jsonl_replay = try allocator.dupe(u8, ""),
++                    };
++                }
+             }
++            return RunError.TranscriptUnavailable;
+         }
+-        return RunError.TranscriptUnavailable;
++        traceFmt(opts, trace_start, "resume-staleness guard: transcript never grew past baseline ({d}) — refusing to emit a replayed prior turn (StopTimeout)", .{baseline_turns});
++        return RunError.StopTimeout;
+     };
+     errdefer summary.deinit(allocator);
+ 
+diff --git a/src/transcript.zig b/src/transcript.zig
+index 6c90ac2..676b27a 100644
+--- a/src/transcript.zig
++++ b/src/transcript.zig
+@@ -203,6 +203,18 @@ pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !Summary {
+     return parse(allocator, bytes);
+ }
+ 
++/// Count of assistant turns currently recorded in the transcript file, or 0 if
++/// the file is absent or has no assistant message yet. Used as the
++/// resume-staleness baseline: the live turn must push this count higher before
++/// claude-p trusts a parsed result — otherwise a parse reflects a REPLAYED
++/// prior turn (the `--resume` stale-result race). Best-effort; never throws.
++pub fn turnCountFile(allocator: std.mem.Allocator, path: ?[]const u8) u32 {
++    const p = path orelse return 0;
++    var s = parseFile(allocator, p) catch return 0;
++    defer s.deinit(allocator);
++    return s.num_turns;
++}
++
+ // -------- tests --------
+ 
+ const testing = std.testing;
+@@ -298,6 +310,38 @@ test "parse: replay preserves lines verbatim" {
+     try testing.expect(std.mem.indexOf(u8, s.jsonl_replay, "\"text\":\"hi\"") != null);
+ }
+ 
++test "resume staleness: num_turns distinguishes a replayed prior turn from the live turn" {
++    // A resumed transcript that still ends at the PRIOR turn. parse() returns
++    // the prior answer as final_text (this is the stale-result HAZARD the gate
++    // must not emit) and num_turns == 1 (the baseline the live turn must exceed).
++    const prior_only =
++        \\{"type":"system","subtype":"init","sessionId":"s"}
++        \\{"type":"user","sessionId":"s","message":{"content":[{"type":"text","text":"capital of France?"}]}}
++        \\{"type":"assistant","sessionId":"s","message":{"content":[{"type":"text","text":"Paris"}]}}
++        \\
++    ;
++    var before = try parse(testing.allocator, prior_only);
++    defer before.deinit(testing.allocator);
++    try testing.expectEqualStrings("Paris", before.final_text); // hazard: last assistant is the PRIOR answer
++    try testing.expectEqual(@as(u32, 1), before.num_turns); // baseline = 1
++
++    // After the live turn lands, num_turns grows and final_text is the LIVE
++    // answer. The driver's gate accepts only when num_turns > baseline.
++    const with_live =
++        \\{"type":"system","subtype":"init","sessionId":"s"}
++        \\{"type":"user","sessionId":"s","message":{"content":[{"type":"text","text":"capital of France?"}]}}
++        \\{"type":"assistant","sessionId":"s","message":{"content":[{"type":"text","text":"Paris"}]}}
++        \\{"type":"user","sessionId":"s","message":{"content":[{"type":"text","text":"what is 2+2?"}]}}
++        \\{"type":"assistant","sessionId":"s","message":{"content":[{"type":"text","text":"4"}]}}
++        \\
++    ;
++    var after = try parse(testing.allocator, with_live);
++    defer after.deinit(testing.allocator);
++    try testing.expectEqualStrings("4", after.final_text); // live answer
++    try testing.expectEqual(@as(u32, 2), after.num_turns); // grew past baseline
++    try testing.expect(after.num_turns > before.num_turns); // the guard's core invariant
++}
++
+ test "parse: multi-block text concatenation" {
+     const jsonl =
+         \\{"type":"assistant","session_id":"c","message":{"content":[{"type":"text","text":"part1 "},{"type":"tool_use","name":"X"},{"type":"text","text":"part2"}]}}

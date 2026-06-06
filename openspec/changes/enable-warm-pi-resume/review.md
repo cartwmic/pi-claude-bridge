@@ -6,7 +6,7 @@ Controlled-vocabulary mode switchboard for `apply`.
 
 | Mode | Value | Notes |
 |---|---|---|
-| Scale | L | Constitution **Governance** mandates Scale ≥ L for any change that amends a principle (this amends Principle I, D8). Also: new persistent cross-process state, a hard cross-change dependency, a net-new driver-signal plumbing, and core turn-lifecycle edits. Scale L pulls in mandatory ADR promotion (D1/D2/D5/D8) and the adversarial-review-cycle (this review). Bumped from M during adversarial review — M was a governance violation. |
+| Scale | L | Constitution **Governance** mandates Scale ≥ L for any change that amends a principle (this amends Principle I, D8). Also: new persistent cross-process state, a coordinated `claude-p` fork change (the source-level resume-staleness gate, D5), and core turn-lifecycle edits. Scale L pulls in mandatory ADR promotion (D1/D2/D5/D8) and the adversarial-review-cycle (this review). Bumped from M during adversarial review — M was a governance violation. |
 | Execution Mode | tdd-preferred | Validation logic (sidecar read/write, prefix-match, version/stale gates, key normalization) is cleanly unit-testable; write tests first for those. Resume end-to-end is spike/integration-gated. |
 | Verification Mode | retained-required | Touches turn lifecycle + amends the constitution → a retained `verify.md` must exist before archive (incl. the two pre-apply spikes + a pi-TUI resume scenario). |
 | Debug Mode | systematic-debugging | Resume mis-latch / divergence bugs are subtle; reproduce-before-fix (matches how the warm-resume stale bug was handled). |
@@ -21,12 +21,12 @@ Controlled-vocabulary mode switchboard for `apply`.
 
 ## Manual Adjustments
 
-- **Hard dependency / sequencing (Clarify C5, Risk R2):** the broader
-  stale-result enforcement change SHOULD land first or together. This change
-  implements only the per-resume guard (D5) — corrected in adversarial review to
-  gate on `staleSuspected` (not `num_turns`) and requiring net-new plumbing of
-  that signal onto `ClaudePDoneResult`. Standalone is permissible only once that
-  guard is load-bearing. Owner decision required before apply.
+- **Stale-result fix is in the `claude-p` fork (D5, spiked):** the `--resume`
+  stale race is fixed at the source (transcript-growth gate) rather than by a
+  bridge-side guard. This DISSOLVED the old "Thread B" dependency and the C5
+  sequencing question. The only sequencing left is the trivial prerequisite:
+  land the fork gate on claude-p `main` + bump the pin (task 0.3) before the
+  bridge warm-resumes.
 - **No kill-switch (owner decision, Step 6):** the change ships with NO feature
   flag — "no conditional logic; we can always revert." Cold-start is the invariant
   floor (D4), so rollback is `git revert` + delete `~/.pi/agent/resume/`.
@@ -45,4 +45,4 @@ Controlled-vocabulary mode switchboard for `apply`.
   1. **No kill-switch** — ship without a feature flag; rollback via `git revert` + delete `~/.pi/agent/resume/`.
   2. **Fail-closed transcript-existence check: kept at Step 6, then DROPPED post-spike (2026-06-06)** — T0.1 proved `claude --resume <missing>` errors (not silent-fresh), so the error→cold path suffices; owner: "not a fan of defense-in-depth when the trade-off is added complexity." Dropping it removed the Principle III(b)/Enforcement/CI-audit amendment + the OS-cwd encoding. **Principle III is now UNCHANGED** and the constitution amendment is Principle I + Domain invariant 3 only.
   3. **Constitution bump: MAJOR** — partial reversal of Principle I (over the MINOR III(b)-exemption precedent).
-- C5 sequencing (stale-result enforcement first/together vs. standalone) remains an owner decision at apply (task 0.3).
+- C5 sequencing DISSOLVED (2026-06-06): the source-level fork transcript-growth gate (D5, spiked) fixes the `--resume` stale race for every turn, so there is no separate stale-result-enforcement change to sequence. Task 0.3 is now the trivial "land the fork gate + repin" prerequisite.

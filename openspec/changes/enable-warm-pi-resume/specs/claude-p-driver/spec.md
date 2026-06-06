@@ -38,6 +38,20 @@ validation fails) THE driver SHALL cold-start.
 - **IF** a sidecar exists on restart but its recorded `claude` version differs from the installed version
 - **THEN** the cached session is dropped and the first post-resume turn cold-starts
 
+## ADDED Requirements
+
+### Requirement: Resume Returns The Live Turn, Never A Replayed Prior Turn
+
+WHEN the driver serves a `--resume` turn, THE driver SHALL emit a result that reflects the LIVE turn only: it SHALL gate result emission on the transcript growing past a baseline captured before the live prompt is submitted (a new assistant turn must be appended), and SHALL ignore any Stop signal received before the live prompt is submitted. IF the transcript does not grow past the baseline (no live assistant turn appears), THEN THE driver SHALL return an error rather than a replayed prior-turn result, so the bridge cold-retries. (Source-level fix in the `claude-p` fork; this is why the bridge needs no stale-result detection of its own.)
+
+#### Scenario: A replayed prior turn is never emitted as the resume result
+- **WHEN** a `--resume` turn's transcript still ends at the prior turn (the live turn has not appended an assistant message) at the moment a Stop is observed
+- **THEN** the driver does NOT emit the prior turn's answer — it waits for the live turn (transcript-growth gate), and if the live turn never appears it errors (the bridge then cold-retries)
+
+#### Scenario: A Stop before submit is ignored
+- **WHEN** a Stop hook signal arrives before the driver has submitted the live prompt (state is not awaiting-stop)
+- **THEN** the driver ignores it (records only the transcript path) and does not treat it as the turn's completion
+
 ---
 
 ## Acceptance criterion quality checklist
@@ -45,3 +59,4 @@ validation fails) THE driver SHALL cold-start.
 | AC ID | Testable | Solution-free | Unambiguous | Consistent | Complete |
 |---|---|---|---|---|---|
 | claude-p-driver.cached-driver-session-is-a-hint-only | [x] | [x] | [x] | [x] | [x] |
+| claude-p-driver.resume-returns-the-live-turn-never-a-replayed-prior-turn | [x] | [x] | [x] | [x] | [x] |

@@ -8,10 +8,11 @@
   - intent: infra
   - files_allowed:
       - .spike-notes/**
-- [ ] 0.3 Owner decision (Clarify C5 / Risk R2): confirm sequencing vs. the broader stale-result enforcement change — land it first/together, or proceed with only the per-resume `staleSuspected` guard (now corrected + requiring the 3.3 plumbing to be load-bearing). Record the decision in review.md Execution Notes.
+- [ ] 0.3 PREREQUISITE — land the `claude-p` transcript-growth gate (D5; the source-level stale-result fix, spiked on fork branch `spike/resume-staleness-gate`: state-gate `.stop` + require `num_turns > baseline` before emitting). Merge it onto claude-p `main`, `zig build` + `zig build test` green, then bump the bridge's claude-p pin (`package.json`). This is what lets the bridge trust the driver's `--resume` result; dissolves the old bridge stale-guard + Thread B + C5.
   - intent: infra
   - files_allowed:
-      - openspec/changes/enable-warm-pi-resume/review.md
+      - package.json
+      - package-lock.json
 
 ## 1. Constitution amendment (D8)
 
@@ -43,23 +44,16 @@
 
 ## 3. Validation gate (D2, D4, D5, D6) — tests first
 
-- [ ] 3.1 Write failing unit tests for the validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-or-corrupt-sidecar → cold; `staleSuspected` true → stale → cold-retry; dangling-tool-call sidecar → still warm (D6, **confirmed by T0.2**). Pure-function seam, no real claude-p.
+- [ ] 3.1 Write failing unit tests for the **pre-spawn** validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-or-corrupt-sidecar → cold. NO staleness logic — the fork's transcript-growth gate (0.3) guarantees a live result, so the bridge has no `staleSuspected` input. Pure-function seam, no real claude-p.
   - intent: feature
   - files_allowed:
       - tests/unit-warm-resume-gate.mjs
-- [ ] 3.2 Implement the validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version + post-spawn `staleSuspected`; output = `{ warm: boolean, reason }`. Make 3.1 pass.
+- [ ] 3.2 Implement the pre-spawn validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version; output = `{ warm: boolean, reason }`. Make 3.1 pass.
   - intent: feature
   - files_allowed:
       - index.ts
       - src/resume-store.ts
       - tests/unit-warm-resume-gate.mjs
-- [ ] 3.3 Plumb the stale signal to the bridge (D5, **net-new** — without this 4.3 is unbuildable): surface `staleSuspected` (and optionally `numTurns`) from the parser's detection-only `onResumeDiag` (`stream.ts:615`) onto `ClaudePDoneResult` (`claudeP.ts:473-486`) and through the resilience wrapper (`claudeP.ts:896`). Tests-first: a stale `--resume` stream yields `staleSuspected: true` on the done result; a clean live turn yields `false`.
-  - intent: feature
-  - files_allowed:
-      - src/driver/claudeP.ts
-      - src/driver/stream.ts
-      - tests/unit-driver-claude-p.mjs
-      - tests/unit-driver-stream.mjs
 
 ## 4. Bridge wiring (D1, D2, D4, D5, D6, D7)
 
@@ -71,13 +65,13 @@
   - intent: feature
   - files_allowed:
       - index.ts
-- [ ] 4.3 Add the post-spawn stale-result guard on a warm turn (D5): if the done result reports `staleSuspected` (replay boundary seen, no live prompt after — plumbed in 3.3), discard the result, drop the cache+sidecar, and cold-retry.
+- [ ] 4.3 (NO bridge stale guard — D5 is fixed in the fork, task 0.3.) The bridge treats a driver `result` as authoritative and a driver error as an ordinary cold-retry trigger (existing error→cold path + D7 sidecar invalidation). Just confirm no bridge-side stale detection exists/is added.
   - intent: feature
   - files_allowed:
       - index.ts
 ## 5. End-to-end validation + verify
 
-- [ ] 5.1 Add pi-TUI scenarios (pi-tui-scenario-tests): (a) WARM — multi-turn session, restart/resume pi, assert the first post-resume turn is warm (bridge log shows `resume=<id>`, not a cold full-history re-pack) and the model retains context (coherence probe, paired positive+negative regex); (b) `/compact`-between-sessions forces COLD; (c) the stale guard fires on a real stale replay (assert cold-retry end-to-end, not just the pure helper); (d) an aborted-mid-tool prior turn then warm-resumes without the guard misfiring; (e) a session whose last turn ran a SUBAGENT then resumes to the MAIN session (asserts the subagent-no-sidecar guard — `--resume` reattaches the main session, not the subagent's). RED check (no kill-switch to toggle): with the sidecar removed/cleared, the SAME WARM scenario must cold-start — proving the sidecar is what drove the warm path (guards the false-pass where the scenario is green without exercising warm).
+- [ ] 5.1 Add pi-TUI scenarios (pi-tui-scenario-tests): (a) WARM — multi-turn session, restart/resume pi, assert the first post-resume turn is warm (bridge log shows `resume=<id>`, not a cold full-history re-pack) and the model retains context (coherence probe, paired positive+negative regex); (b) `/compact`-between-sessions forces COLD; (c) **no-stale-under-load** — drive several `--resume` turns with unique tokens under CPU load and assert every turn returns its OWN live answer (the fork transcript-growth gate; adapt `.spike-notes/claude-p-gate/resume-staleness-gate-e2e.mjs`); (d) an aborted-mid-tool prior turn then warm-resumes cleanly (R7); (e) a session whose last turn ran a SUBAGENT then resumes to the MAIN session (subagent-no-sidecar guard — `--resume` reattaches the main session). RED check (no kill-switch to toggle): with the sidecar removed/cleared, the SAME WARM scenario must cold-start — proving the sidecar drove the warm path.
   - intent: feature
   - files_allowed:
       - scripts/run-scenario-s*.sh
@@ -87,7 +81,7 @@
   - intent: infra
   - files_allowed:
       - "**/*"
-- [ ] 5.3 Author `verify.md` (Verification Mode = retained-required): record the spike outcomes (0.1 characterization, 0.2 D6 confirm/invert), the sequencing decision (0.3), the stale-signal plumbing test (3.3), unit results, and the scenario results (5.1 a–e incl. the sidecar-removed RED check); Completion Decision RED→GREEN.
+- [ ] 5.3 Author `verify.md` (Verification Mode = retained-required): record the spike outcomes (T0.1 missing-resume errors; T0.2 R7 confirmed; the **source-level resume-staleness gate** spike — `zig build test` + the under-load e2e), the fork-land + repin (0.3), unit results, and the scenario results (5.1 a–e incl. the sidecar-removed RED check); Completion Decision RED→GREEN.
   - intent: infra
   - files_allowed:
       - openspec/changes/enable-warm-pi-resume/verify.md

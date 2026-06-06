@@ -61,7 +61,7 @@ The artifacts use informal `R#` shorthand for `warm-pi-resume` requirements; the
 | R3 | validated-warm-resume-on-pi-resume |
 | R4a | cold-start-when-validation-does-not-pass |
 | R4b | cold-start-on-unreadable-or-malformed-sidecar |
-| R5 | post-spawn-stale-result-guard |
+| R5 | driver-guarantees-a-live-resume-result (fork transcript-growth gate) |
 | R-err | sidecar-invalidated-on-turn-error |
 | R6 | divergence-baseline-rehydrated-on-warm-resume |
 | R7 | aborted-mid-tool-sessions-remain-resumable (confirmed by T0.2) |
@@ -138,21 +138,19 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 **4-point test:** lasting ✓, constrains future ✓; low disagreement → record as a constraint (not a full ADR).
 
-### D5: Post-spawn stale-result guard via the driver's `staleSuspected` signal; depends on stale-result enforcement
+### D5: Fix the stale-result race at the SOURCE in the `claude-p` fork (transcript-growth gate) — not a bridge-side guard
 
-**Choice:** After a warm spawn, gate on the driver's stale-turn signal `staleSuspected = sawReplayBoundary && !livePromptAfterBoundary` (claude-p replayed the prior terminal state but no live prompt followed the final replay boundary → the live turn never ran), **but only when `stopReason === "result"`** (a clean turn-end). On stale: discard the result, drop the cache + sidecar, and cold-retry. `num_turns` (frozen-vs-advanced) is at most a corroborating cross-check, **not** the primary gate.
+**Choice (revised after the source-level spike, 2026-06-06):** the `--resume` stale-result race is fixed **inside the fork** (`claude-p`), so claude-p never emits a stale result and the bridge needs no stale handling at all. Two deterministic gates in `src/driver.zig` (reusing `transcript.parse`'s existing `num_turns`):
+1. **State gate:** treat a Stop as the turn's completion only when `state == .awaiting_stop` (the live prompt was submitted). A Stop before submit is a replayed/prior signal → ignored.
+2. **Transcript-growth gate (core):** snapshot `baseline_turns = transcript.turnCountFile()` at echo-confirm (pre-submit); the post-Stop parse accepts a result ONLY once `num_turns > baseline_turns` (the live turn appended a new assistant turn). If the count never grows, claude-p returns an error (`StopTimeout`) rather than the prior answer → the bridge cold-retries.
 
-**Abort false-positive guard (Round 2):** `emitResumeDiag` fires at end-of-stream whenever `suppressResumeReplay` (= `useResume`) is true — *including on a user-aborted warm turn* (`stream.ts:334`). On an abort during/just-after replay, `sawReplayBoundary` can be true with no live prompt yet → `staleSuspected: true` spuriously. So the bridge MUST only honor `staleSuspected` on `stopReason === "result"`, never on `aborted`/`error` — otherwise it would discard a legitimate aborted partial and force an unwanted cold-retry. (Spec R5 + the abort scenario.)
+**Why this over a bridge-side guard (the original D5):** the original plan let claude-p emit a possibly-stale result, then had the bridge detect `staleSuspected` (a terminal-stream heuristic) and discard + cold-retry — a downstream band-aid that needed net-new signal plumbing onto `ClaudePDoneResult`, an abort-false-positive special-case, and a dependency on a broader "Thread B" enforcement for non-first turns (the C5 sequencing question). The source fix is **deterministic** (gates on the authoritative transcript, not terminal timing), **covers every `--resume` turn** (not just the first-post-restart), and is the **same philosophy as `275dde9`** (never let the bad turn happen). It DISSOLVES: the bridge stale-guard, the signal plumbing, the abort special-case, Thread B, and C5.
 
-**Retry-layer interaction (Round 2):** a `staleSuspected` turn returns `stopReason: "result"` (not an error), so the resilience wrapper's internal retry (gated by `shouldRetry: !router.everRoutedToolCall`, `index.ts:1659` — it retries only an un-routed spawn, never a clean `result`) does NOT fire on it — the bridge-level guard is the sole stale cold-retry. State this so the guard is wired at the bridge layer, not duplicated in the wrapper.
+**Spiked + proven (fork branch `spike/resume-staleness-gate`):** `zig build test` green incl. a deterministic unit test (prior-only transcript → `final_text="Paris"`/`num_turns=1`; +live turn → `"4"`/`num_turns=2`); live e2e under 6× CPU load — fresh + 4 `--resume` turns, every one returned its own live answer, 0 stale emits. See `.spike-notes/claude-p-gate/resume-staleness-gate-claude-haiku-4-5-2026-06-06T22-02-26Z/`.
 
-**Why not `num_turns` as primary (corrected):** the in-tree detection code (commit `404c76c`, `src/driver/stream.ts:57-80`) already designates `livePromptAfterBoundary`/`staleSuspected` as "the **primary** stale discriminator — self-contained, no text/count heuristic," and ranks `num_turns` as a weaker signal. `num_turns` semantics are also less robust across multi-round turns. Use the signal the driver author already proved out for exactly this bug.
+**Bridge side:** the bridge keeps `suppressResumeReplay` for STREAM-replay dedup (claude-p still streams the replayed prior-turn lines — a separate concern from the RESULT). A fuller fork change could also skip streaming pre-baseline lines and let the bridge drop `suppressResumeReplay` too (noted as a follow-on, not in scope).
 
-**Plumbing required (net-new — was overstated as "already plumbed"):** today these signals exist ONLY in the parser's detection-only `onResumeDiag` callback (`src/driver/claudeP.ts:653`, which logs + writes a diag file). They are NOT on `ClaudePDoneResult` (`claudeP.ts:473-486`) — the value `finalizeClaudePFrame` and the turn loop actually consume (it carries only `stopReason`/`sessionId`/`exitCode`/`signal`). So this decision requires surfacing the stale signal from the parser onto `ClaudePDoneResult` (and through the resilience wrapper at `claudeP.ts:896`) so the bridge can enforce on it. Tracked as an explicit task; without it the guard is unbuildable.
-
-**Rationale:** warm resume rides the same `--resume` replay path as the known warm-resume stale-result bug. This per-resume guard is implementable here once plumbed; the broader in-process stale-result enforcement is a **named dependency** (Thread B). (Clarify C5 — deferred for owner triage; note the per-resume guard is only load-bearing AFTER the plumbing + correct discriminator land, so "proceed standalone" is conditional on this decision being implemented faithfully.)
-
-**4-point test:** multiple approaches ✓, lasting ✓, disagreement ✓, constrains future ✓ → **ADR candidate: YES.**
+**4-point test:** multiple approaches ✓ (source vs. bridge guard was the contested fork), lasting ✓, disagreement ✓, constrains future ✓ → **ADR candidate: YES.**
 
 ### D6: A dangling tool call is NOT a fallback trigger (spike-proven)
 
@@ -193,7 +191,7 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 | # | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|---|
 | R1 | `claude --resume` of a deleted/cleaned transcript | Low | Low | **T0.1 (DONE): `claude --resume <missing>` ERRORS** (exit 1 direct / exit 2 via claude-p) — it does NOT silently start fresh. So a deleted transcript → `--resume` error → D7 invalidates the sidecar → next turn cold-starts (one errored turn in this rare case). No existence pre-check needed (dropped per owner). Residual: a future claude version that changes this behavior — covered by the `claudeVersion` gate. |
-| R2 | Stale-result replay-latch returns a wrong (previous) answer | Medium | High | D5 `staleSuspected` guard (`num_turns` is at most a corroborator) + the named stale-enforcement dependency; cold-retry on detect. The MCP-attach-race instance of this ("coldstart perpetuation") is already fixed at source by the `275dde9` readiness gate; a gated/failed attempt persists no sidecar (D7), so a sidecar can never point at a poisoned transcript. Residual risk is the genuine replay-latch only. |
+| R2 | Stale-result replay-latch returns a wrong (previous) answer | Low | High | **Fixed at the source** — the `claude-p` fork transcript-growth gate (D5) never emits a result until the live turn appends a new assistant turn; otherwise it errors → cold-retry. Deterministic, covers every `--resume` turn (spiked + proven). No bridge-side detection; no Thread B dependency. The MCP-attach-race instance ("coldstart perpetuation") was already fixed by the `275dde9` readiness gate. |
 | R3 | `claude` upgrade reformats transcripts; old session unresumable | Medium | Low | D2 version gate → cold-start on skew |
 | R4 | Principle-I "content-free" creeps toward storing content | Low | High | D8 amendment scoped to fingerprints; analyze check 3 + design review of the sidecar schema |
 | R5 | Sidecar grows unbounded (one file per session) | Low | Low | TTL/size cap + prune on read; keyed cleanup |
@@ -207,8 +205,9 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
   invariant floor (D4) is what makes this safe without a runtime toggle.
 - Rollback: `git revert` the change and/or delete `~/.pi/agent/resume/`. No
   durable state in pi or `~/.claude/` is touched.
-- Sequencing: land the stale-result enforcement dependency first or together
-  (D5 / Clarify C5).
+- Sequencing: land the `claude-p` fork transcript-growth gate (D5, spiked on
+  branch `spike/resume-staleness-gate`) on claude-p `main` + bump the bridge's
+  claude-p pin before the bridge warm-resumes. No "Thread B" / C5 sequencing.
 
 ## Open Questions
 
@@ -221,10 +220,11 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
   existence check was DROPPED** (owner: no defense-in-depth complexity). This
   removed the entire Principle III(b)/Enforcement/CI-audit amendment and the
   OS-cwd encoding work; the warm path now adds no `~/.claude` access at all.
-- **C5:** Sequencing — does this change wait on the broader stale-result
-  enforcement, or ship with only the per-resume `staleSuspected` guard
-  (corrected + plumbed per D5)? *Owner
-  decision.*
+- **C5 — DISSOLVED (source-level fix, 2026-06-06):** there is no longer a separate
+  "stale-result enforcement" change to sequence against. The `claude-p` fork
+  transcript-growth gate (D5) fixes the race at the source for EVERY `--resume`
+  turn. The only sequencing left is trivial: land the fork gate + bump the pin
+  before the bridge warm-resumes.
 - **D6 limit — RESOLVED (T0.2 spike DONE 2026-06-06):** ran the dangling-tool_use
   resume through the full `claude-p` + `suppressResumeReplay` path
   (`.spike-notes/claude-p-gate/d6-dangling-claudep-claude-haiku-4-5-2026-06-06T19-21-34Z/`

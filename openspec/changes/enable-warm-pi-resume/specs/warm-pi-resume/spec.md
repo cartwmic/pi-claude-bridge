@@ -65,21 +65,17 @@ IF the sidecar is unreadable or malformed, THEN THE bridge SHALL cold-start the 
 - **IF** the sidecar file is present but unreadable or malformed (e.g. a torn concurrent write)
 - **THEN** the bridge cold-starts and discards the unusable sidecar
 
-### Requirement: Post-Spawn Stale-Result Guard
+### Requirement: Driver Guarantees A Live-Resume Result (no bridge-side stale guard)
 
-WHILE serving a warm-resume turn that ends cleanly (stop reason `result`), IF the driver reports the live turn did not run — a replay boundary was seen but no live user prompt followed it (the driver's `staleSuspected` condition) — THEN THE bridge SHALL discard the resumed output, drop the cached session AND the persisted sidecar, and cold-start a retry. THE bridge SHALL NOT apply this guard to a turn whose stop reason is `aborted` or `error` (the diagnostic also fires at end-of-stream on a user-abort and would otherwise false-positive).
+THE warm-resume path SHALL rely on the `claude-p` driver's guarantee that a `--resume` turn's result reflects the LIVE turn — the driver's transcript-growth gate emits a result only once the transcript shows a new assistant turn appended past the pre-submit baseline (see the `claude-p-driver` capability). THE bridge SHALL NOT implement its own stale-result detection, `staleSuspected` heuristic, or discard/retry: it treats a driver `result` as authoritative, and a driver error (the gate's refusal, surfaced as an error stop reason) as an ordinary cold-retry trigger.
 
-#### Scenario: Stale replay is caught and retried
-- **IF** a warm-resume spawn ends with stop reason `result` having replayed the prior terminal state with no live prompt after the final replay boundary (the prior turn's result was latched)
-- **THEN** the bridge discards that result, clears the cache, and re-runs the turn as a cold-start
+#### Scenario: Warm turn returns the live answer
+- **WHEN** a warm-resume turn completes with a `result`
+- **THEN** the bridge delivers that result as-is — it is guaranteed by the driver to be the live turn's — with no staleness re-check
 
-#### Scenario: A healthy warm turn is delivered, not discarded
-- **WHEN** a warm-resume turn ends with stop reason `result` and a live prompt followed the replay boundary (`staleSuspected` is false)
-- **THEN** the bridge delivers the warm result and does NOT cold-retry (pinning the no-false-positive direction — an implementation that cold-retries every warm turn must fail this)
-
-#### Scenario: An aborted warm turn is NOT treated as stale
-- **WHEN** a warm-resume turn is user-aborted (stop reason `aborted`) and the end-of-stream diagnostic reports `staleSuspected` true
-- **THEN** the bridge does NOT treat it as a stale replay — it commits the aborted partial as today and does not force a cold-retry
+#### Scenario: Driver refuses a stale turn → bridge cold-retries
+- **IF** the driver cannot confirm the live turn ran (its transcript-growth gate fails and it returns an error rather than a replayed result)
+- **THEN** the bridge treats it as a turn error: invalidates the cache + sidecar and cold-starts the next turn, with no special staleness logic
 
 ### Requirement: Sidecar Invalidated On Turn Error
 
@@ -128,7 +124,7 @@ THE warm-resume path SHALL NOT write any path under `~/.claude/` and SHALL NOT i
 | warm-pi-resume.validated-warm-resume-on-pi-resume | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.cold-start-when-validation-does-not-pass | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.cold-start-on-unreadable-or-malformed-sidecar | [x] | [x] | [x] | [x] | [x] |
-| warm-pi-resume.post-spawn-stale-result-guard | [x] | [x] | [x] | [x] | [x] |
+| warm-pi-resume.driver-guarantees-a-live-resume-result | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.sidecar-invalidated-on-turn-error | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.divergence-baseline-rehydrated-on-warm-resume | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.aborted-mid-tool-sessions-remain-resumable | [x] | [x] | [x] | [x] | [x] (confirmed by spike T0.2 — no longer provisional) |

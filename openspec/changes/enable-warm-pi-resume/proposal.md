@@ -19,9 +19,12 @@ path users hit most (every resume; every post-error turn).
 - On `session_start:resume`, validate the sidecar against pi's freshly-loaded
   history (prefix-match) and the current `claude` version; if valid, **warm-resume**
   the prior `claude` session (`--resume`) instead of cold-starting.
-- Add a **post-spawn stale-result guard** (the driver's `staleSuspected`
-  live-turn-ran signal — replay boundary seen but no live prompt after it) before
-  trusting the resumed turn; on stale → discard → cold-retry.
+- Fix the `--resume` **stale-result race at the source in the `claude-p` fork**
+  (a transcript-growth gate: claude-p emits a result only once the transcript
+  shows the live turn appended a new assistant turn past a pre-submit baseline;
+  a Stop before submit, or one with no transcript growth, never yields a result).
+  The bridge **trusts claude-p's result** — no bridge-side stale detection or
+  discard/cold-retry. Spiked + proven (`.spike-notes/claude-p-gate/resume-staleness-gate-*`).
 - **Cold-start remains the always-safe fallback** on any missing/invalid sidecar,
   history divergence, version skew, or stale detection. Net: warm resume never
   produces a worse-than-cold *result*. (One honest caveat: a failed warm attempt
@@ -37,14 +40,12 @@ path users hit most (every resume; every post-error turn).
   is UNCHANGED** — the warm path adds no new `~/.claude` access (`--resume`
   delegates the transcript read to `claude-p`); the fail-closed existence `stat`
   was dropped after T0.1 showed `claude --resume <missing>` already errors.
-- **Depends on** the separate stale-result enforcement work — warm resume rides
-  the same `--resume` replay mechanism that the stale-result bug affects. Land it
-  first or together (default). Proceeding standalone on only the per-resume guard
-  is permissible ONLY after that guard is made load-bearing — i.e. the D5
-  discriminator is corrected to `staleSuspected` AND the signal is plumbed onto
-  `ClaudePDoneResult` (today it is detection-only). This reconciles the proposal's
-  "hard dependency" with Clarify C5 option (c): standalone is conditional, not a
-  free escape hatch. Owner decision at apply (C5).
+- **No external dependency on a separate stale-result enforcement change.** The
+  fork-level transcript-growth gate IS the enforcement, and it covers EVERY
+  `--resume` turn at the source — so the prior "Thread B" dependency and the C5
+  sequencing question are **dissolved**. The only sequencing requirement is
+  trivial: land the fork gate + bump the bridge's claude-p pin before the bridge
+  starts warm-resuming.
 - **Preserves** the no-poison-perpetuation property established by the recent
   MCP-readiness gate (commit `275dde9`): a lost MCP-attach race used to make a
   warm `--resume` retry replay a tool-less, leaked-text transcript ("coldstart
@@ -77,16 +78,18 @@ path users hit most (every resume; every post-error turn).
 - new module (e.g. `src/resume-store.ts`): sidecar read/write under `~/.pi/agent/`,
   keyed by the **literal** spawn cwd + full `sessionId` (no realpath); atomic
   (temp+rename) writes; content-free one-way (`sha256`) fingerprint chain.
-- `src/driver/claudeP.ts` + `src/driver/stream.ts`: surface the `staleSuspected`
-  stale-turn signal onto `ClaudePDoneResult` (today detection-only via
-  `onResumeDiag`) so the bridge can enforce the D5 guard.
+- **`claude-p` fork** (`src/driver.zig` + `src/transcript.zig`): the transcript-growth
+  gate (state gate on `.stop` + `num_turns > baseline` before emitting a result).
+  Spiked on branch `spike/resume-staleness-gate`; land on claude-p `main` + bump
+  the bridge's claude-p pin. NO bridge-side stale plumbing is needed.
 - `openspec/constitution.md`: amend Principle I (Principle III unchanged).
 - `openspec/domain.md`: amend Domain invariant 3 (restart no longer unconditional cold).
 
 **Dependencies / systems**
-- Dependency: stale-result enforcement change — land first/together by default;
-  standalone only after the per-resume guard is corrected + plumbed (see What
-  Changes; Clarify C5).
+- Dependency: the `claude-p` fork's transcript-growth gate (spiked) must land on
+  claude-p `main` + be repinned before the bridge warm-resumes. No separate
+  "stale-result enforcement" change and no C5 sequencing (the fork gate covers
+  all `--resume` turns at the source).
 - `claude` upgrade transcript-format skew → version-gated invalidation.
 - Out of scope: the capture path (always single-shot, never resumes) and the
   persistent-process driver (orthogonal; composable later).

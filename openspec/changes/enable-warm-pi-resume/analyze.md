@@ -35,7 +35,8 @@ remediation; the rest minor. See Check 9 for the adversarial Round 1 disposition
 | warm-pi-resume.validated-warm-resume-on-pi-resume | D2, D3, D4 | covered |
 | warm-pi-resume.cold-start-when-validation-does-not-pass | D4 | covered |
 | warm-pi-resume.cold-start-on-unreadable-or-malformed-sidecar | D4 | covered |
-| warm-pi-resume.post-spawn-stale-result-guard | D5 (`staleSuspected`, result-only; + 3.3 plumbing) | covered |
+| warm-pi-resume.driver-guarantees-a-live-resume-result | D5 (source-level fork transcript-growth gate; bridge trusts the driver) | covered |
+| claude-p-driver.resume-returns-the-live-turn-never-a-replayed-prior-turn | D5 | covered |
 | warm-pi-resume.sidecar-invalidated-on-turn-error | D7 | covered |
 | warm-pi-resume.divergence-baseline-rehydrated-on-warm-resume | D2, D4 | covered |
 | warm-pi-resume.aborted-mid-tool-sessions-remain-resumable | D6 | covered |
@@ -48,7 +49,7 @@ remediation; the rest minor. See Check 9 for the adversarial Round 1 disposition
 |---|---|---|
 | D1 (persist content-free sidecar) | 4/4 | YES |
 | D2 (pi-side validation, no claude-transcript hash) | 4/4 | YES |
-| D5 (stale-result guard + dependency) | 4/4 | YES |
+| D5 (source-level fork transcript-growth gate — was "bridge stale guard + dependency") | 4/4 | YES |
 | D8 (amend Principle I; reaffirm III) | 4/4 — constitutional | YES (mandatory) |
 | D6 (dangling tool call not a fallback) | 2/4 | optional; spike is the record |
 | D3, D4, D7 | <3/4 | recorded as constraints, no ADR |
@@ -72,7 +73,7 @@ remediation; the rest minor. See Check 9 for the adversarial Round 1 disposition
 | # | Finding | Status | Carried as |
 |---|---|---|---|
 | C4 | Does `claude --resume <missing-transcript>` error or silently start fresh? | **RESOLVED — T0.1 spike DONE 2026-06-06** | `claude --resume <missing>` ERRORS (exit 1 direct / exit 2 via claude-p) — NOT silent-fresh. The hole is refuted; the committed fail-closed check (R4b) is belt-and-suspenders. |
-| C5 | Sequencing vs. broader stale-result enforcement (dependency) | deferred | Design Open Question + Risk R2 → **owner decision before apply** (standalone now conditional on the corrected+plumbed `staleSuspected` guard) |
+| C5 | Sequencing vs. broader stale-result enforcement (dependency) | **DISSOLVED 2026-06-06** | Source-level fix: the `claude-p` fork transcript-growth gate (D5, spiked) fixes the `--resume` stale race for every turn → no separate enforcement change, no sequencing. Trivial prerequisite only (land fork gate + repin, task 0.3). |
 | D6-limit | Re-run the dangling-tool_use resume through the full `claude-p` + suppression path | **RESOLVED — T0.2 spike DONE 2026-06-06** | R7 CONFIRMED through the full claude-p + suppression path (exit 0, result, live prompt answered, `staleSuspected:false`); the abort path self-closes the round anyway. R7 de-provisionalized. |
 
 ## Check 8 — Repo drift since proposal (re-validation 2026-06-06)
@@ -148,5 +149,10 @@ Two blind reviewers (claude-opus-4-8). Trajectory converged sharply (P0+P1: R1=9
 - **Adversarial Round 1 (Check 9):** 2 P0 + 7 P1, all applied.
 - **Adversarial Round 2 (Check 10):** 2 P0 (domain invariant 3; literal-cwd transcript keying) + ~8 P1 — all verified against ground truth and applied. Round 2 dug deeper than Round 1 (the fixes exposed the next layer); it added a Principle III(b) widening + Domain invariant 3 amendment. *(The III(b) widening was later DROPPED post-spike — see Outstanding — leaving only the Domain invariant 3 amendment.)*
 - **Adversarial Round 3 (Check 11):** 1 P0 (persisted-chain plaintext leak) + 4 P1 — verified and applied; trajectory converged (P0+P1 9→10→5). The content-free premise is enforced by an opaque `sha256` digest + a sentinel test. *(Round 3 also completed the III(b)/Enforcement/CI-audit amendment end-to-end; that whole branch was later DROPPED post-spike when T0.1 removed the need for the existence check.)*
-- **Outstanding (pre-apply):** only the **C5 sequencing** owner decision remains. Both spikes are DONE (2026-06-06): **T0.1** — `claude --resume <missing>` ERRORS (not silent-fresh) → the fail-closed existence check was **DROPPED** (owner: no defense-in-depth complexity), shrinking the constitution amendment to Principle I + Domain invariant 3 only (Principle III untouched); **T0.2** — R7 CONFIRMED (dangling tool_use resumes cleanly through claude-p + suppression; `staleSuspected` does not misfire; the abort path self-closes the round anyway). Step-6 owner calls resolved: no kill-switch; constitution bump MAJOR.
+- **Spikes (all DONE 2026-06-06):** **T0.1** — `claude --resume <missing>` ERRORS (not silent-fresh) → fail-closed existence check DROPPED, shrinking the constitution amendment to Principle I + Domain invariant 3 (Principle III untouched); **T0.2** — R7 CONFIRMED; **source-level resume-staleness gate** — proven in the `claude-p` fork (zig tests + under-load e2e), which moved the stale-result fix to the source (D5) and **dissolved the bridge stale-guard + signal plumbing + Thread B + the C5 sequencing question** (Check 12).
+- **Outstanding (pre-apply):** only the trivial prerequisite — land the fork gate on claude-p `main` + bump the pin (task 0.3). Step-6 owner calls resolved: no kill-switch; constitution bump MAJOR.
 - **Repo drift (Check 8):** re-validated at HEAD `275dde9`; no scope change from drift.
+
+## Check 12 — Source-level stale-result fix (2026-06-06)
+
+Owner pushed back on the bridge-side stale guard as smelly (detect-emit-bad-then-discard). Spiked a source-level fix in the maintained `claude-p` fork instead: a **transcript-growth gate** (state-gate `.stop` on `awaiting_stop`; require `num_turns > pre-submit baseline` before emitting a `--resume` result; else error → cold-retry). Proven on fork branch `spike/resume-staleness-gate` (`zig build test` green incl. a deterministic unit test; live under-load e2e — 4 resume turns, 0 stale emits). This is deterministic and covers every `--resume` turn, vs. the bridge heuristic's first-turn-only + timing-dependent + abort-special-case. **Dissolved:** the bridge stale-result detection (old D5/`staleSuspected`), the `ClaudePDoneResult` signal plumbing (old task 3.3), the abort false-positive special-case, "Thread B", and the C5 sequencing decision. The bridge keeps `suppressResumeReplay` for stream-replay dedup (a fuller fork change could shed that too — noted as a follow-on, out of scope).

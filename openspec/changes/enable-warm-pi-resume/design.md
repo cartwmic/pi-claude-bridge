@@ -26,8 +26,9 @@ This design is constrained by:
 - **Constitution Principle I** — "the bridge MUST NOT persist conversation
   history of its own" (enforcement: design review of any new persistent state).
 - **Constitution Principle III** — no writes under `~/.claude/`; reads only via a
-  hook payload or a bridge-generated deterministic path (III(b)) — which is what
-  the R4 fail-closed transcript-existence stat relies on.
+  hook payload or a bridge-generated deterministic path (III(b)). (Unchanged by
+  this design — the fail-closed transcript-existence stat that would have used
+  III(b) was dropped; the warm path adds no new `~/.claude` access.)
 - **Domain invariant 3** — a driver session id is a cache hint only.
 
 **Note on `~/.pi/agent/`:** this is not the bridge's first write there — claude-p
@@ -59,11 +60,11 @@ The artifacts use informal `R#` shorthand for `warm-pi-resume` requirements; the
 | R2 | sidecar-stores-no-conversation-content |
 | R3 | validated-warm-resume-on-pi-resume |
 | R4a | cold-start-when-validation-does-not-pass |
-| R4b | cold-start-on-unreadable-or-unconfirmable-sidecar-state |
+| R4b | cold-start-on-unreadable-or-malformed-sidecar |
 | R5 | post-spawn-stale-result-guard |
 | R-err | sidecar-invalidated-on-turn-error |
 | R6 | divergence-baseline-rehydrated-on-warm-resume |
-| R7 | aborted-mid-tool-sessions-remain-resumable (provisional, T0.2) |
+| R7 | aborted-mid-tool-sessions-remain-resumable (confirmed by T0.2) |
 | R8 | warm-path-performs-no-new-claude-config-access |
 | R9 | claude-p-driver.cached-driver-session-is-a-hint-only (delta) |
 
@@ -73,7 +74,7 @@ The artifacts use informal `R#` shorthand for `warm-pi-resume` requirements; the
 
 ### D1: Persist a content-free resume sidecar under `~/.pi/agent/`
 
-**Choice:** On each non-error main-turn finalize (this **intentionally includes the abort path** — abort is non-error and reaches the cache-set branch `index.ts:1402-1407` — so an aborted-mid-tool session stays resumable, which is what makes R7 work; do NOT gate persist on a clean-stop-only condition), write `{ claudeSessionId, spawnCwd, piSessionId, historyHashChain, claudeVersion }` to `~/.pi/agent/resume/<key>.json`. `spawnCwd` is the literal cwd (D3). No message content, and no `lastNumTurns` — the D5 stale guard uses the self-contained `staleSuspected`, which needs no persisted counter baseline.
+**Choice:** On each non-error main-turn finalize (this **intentionally includes the abort path** — abort is non-error and reaches the cache-set branch `index.ts:1402-1407` — so an aborted-mid-tool session stays resumable, which is what makes R7 work; do NOT gate persist on a clean-stop-only condition), write `{ claudeSessionId, piSessionId, historyHashChain, claudeVersion }` to `~/.pi/agent/resume/<key>.json`, where `<key>` encodes the literal cwd + full pi `sessionId` (D3). No message content, and no `lastNumTurns` — the D5 stale guard uses the self-contained `staleSuspected`, which needs no persisted counter baseline. (No `spawnCwd` field: the cwd lives in the key; the dropped transcript-existence check was its only other consumer.)
 
 **Chain snapshot timing + write-side provenance:** `lastSentMessageHashes` is set at turn-start (`index.ts:1493`), so a sidecar written at finalize records the chain the turn was *built on* (pre-this-turn). That is harmless — pi's resumed history is a forward-extension, so the prefix-match still passes. Concretely: compute the persisted `sha256` chain at turn-start over `context.messages` (a `computeSha256Chain` helper in the resume-store) and **stash it on the frame** (e.g. `frame.sha256Chain`), since `finalizeClaudePFrame(frame, res)` does not receive the messages. Do not recompute post-turn (that would fail the next prefix-match). The `piSessionId` argument at finalize comes from the module-global `piExtCtx.sessionManager.getSessionId()` (full id, not the truncating helper).
 
@@ -102,7 +103,7 @@ The artifacts use informal `R#` shorthand for `warm-pi-resume` requirements; the
 **Implementation reuse:** the version reader already exists — `claudeP.ts:332` (`claude --version` → `"2.1.159"`); the sidecar's `claudeVersion` field reuses it, no new code path.
 
 **Where the two gates live (R3 resume-validation vs. the in-process baseline) — refined for the opaque digest:** there are two distinct hash uses, and the opaque-digest fix (D1) means they CANNOT share one representation:
-- **Resume-time validation (R3/R4):** compute the `sha256` chain over pi's freshly-loaded history and prefix-compare it to the sidecar's persisted `sha256` chain. This is a small new helper (`detectHistoryDivergence` is parameterized by, or duplicated for, the digest fn — it operates on string arrays already; just feed it the sha256 chains). Plus the `claudeVersion` match + the R4 transcript-existence check. Version-gating MUST happen at resume time (when the sidecar is read).
+- **Resume-time validation (R3/R4):** compute the `sha256` chain over pi's freshly-loaded history and prefix-compare it to the sidecar's persisted `sha256` chain. This is a small new helper (`detectHistoryDivergence` is parameterized by, or duplicated for, the digest fn — it operates on string arrays already; just feed it the sha256 chains). Plus the `claudeVersion` match. Version-gating MUST happen at resume time (when the sidecar is read). (No transcript-existence check — dropped per the owner decision; a deleted transcript surfaces as a `--resume` error → cold, see Risk R1.)
 - **In-process baseline (R6):** set `lastSentMessageHashes = computeMessageHashes(context.messages)` — recomputed **locally** from pi's loaded history in the **in-memory `hashMessage` format** (NOT rehydrated from the sidecar, which is sha256). This is content-clean (in-memory) and keeps the existing turn-start `detectHistoryDivergence` (`index.ts:1484`) working for subsequent in-process turns.
 
 So the warm decision is made by the sha256 resume-validation (where `frame.cwd` is known, see D4), which then sets `cachedSessionId`/`cachedSessionCwd` so `useResume` (`index.ts:1495`) takes the warm branch; the in-process baseline is recomputed locally. Do not conflate the two hash formats.
@@ -111,25 +112,25 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 ### D3: Key the sidecar on the LITERAL spawn cwd + the FULL pi `sessionId`
 
-**Choice:** Key on the literal cwd the bridge spawns claude-p with (`frame.cwd`) plus the **full** pi `sessionId`. Do NOT use `realpath(cwd)`. Record that literal cwd in the sidecar (`spawnCwd`) so the R4 existence check can encode the same path claude used.
+**Choice:** Key on the literal cwd the bridge spawns claude-p with (`frame.cwd`) plus the **full** pi `sessionId`. Do NOT use `realpath(cwd)`.
 
 **Rationale (REVERSED in adversarial Round 2 — the Round-1 realpath decision was wrong):** verified against the live filesystem — `claude` stores transcripts under a project dir encoded from the **literal** cwd: `~/.claude/projects/-Users-cartwmic-git-pi-claude-bridge` AND `-Volumes-Workshop-git-pi-claude-bridge` both exist for the same repo via the `/Users/cartwmic/git -> /Volumes/Workshop/git` symlink. `claude --resume <id>` resolves the session within the **current** cwd's project dir, so a resume from a different literal path (e.g. the symlink alias) cannot find a session created under the other path. Consequences:
-- Keying on `realpath` would (a) point the R4 existence check at the wrong project dir, and (b) let warm-resume be attempted across a literal-cwd change where `--resume` cannot succeed → silent-fresh/error. Wrong.
+- Keying on `realpath` would let warm-resume be attempted across a literal-cwd change where `--resume` cannot succeed → error/cold. Wrong.
 - Keying on the **literal** cwd is correct: a resume from a different literal path simply misses the sidecar → cold-start (the only correct outcome, since `--resume` would fail there anyway). The C1 "fragmentation" the original spike feared is claude's own reality, not a bug to mask.
 - Bonus: this **removes** the net-new `realpathSync` work — the bridge already has the literal `frame.cwd`.
 
 **Full sessionId required:** the C3 "no collision for two pi sessions in the same cwd" guarantee depends on distinct sessionIds → distinct keys. The existing `getPiSessionId()` helper returns `id.slice(0, 8)` (log-binding only, `index.ts:280`); an 8-char prefix materially raises collision risk. The store must key on the untruncated id (`piExtCtx.sessionManager.getSessionId()`), not the truncating helper.
 
-**Two distinct cwd uses — sidecar KEY vs. transcript-dir ENCODING (refined by T0.2):** the **sidecar key** just needs intra-session stability (persist and resume use the same `frame.cwd`), so the literal `frame.cwd` is fine. But the **R4b transcript-existence check** must encode the dir `claude` actually wrote to, and T0.2 observed `claude` records the **OS-resolved** cwd: spawned with `cwd=/tmp/d6-…`, the transcript landed under `~/.claude/projects/-private-tmp-d6-…/` (`/tmp`→`/private/tmp` firmlink). So the existence-check encoder must replicate claude's canonicalization — OS firmlink/symlink resolution AND the `/`-and-`.`→`-` substitution (and likely a `$PWD`-vs-`getcwd` preference, the probable cause of the earlier `-Users-`/`-Volumes-` split). A mis-encode only ever **false-colds** (cold is the floor → safe), so this is low-risk, but T2.4 must encode the resolved cwd, not the raw `spawnCwd` string.
+**The sidecar key only needs intra-session stability** (persist and resume both use the same `frame.cwd`), so the literal `frame.cwd` is fine. NOTE (from T0.2): `claude` records the *OS-resolved* cwd for its own transcript dir (`/tmp`→`/private/tmp` firmlink), which is why the realpath-vs-literal distinction mattered for the now-dropped existence check — but it does NOT affect the sidecar key (the bridge never reads claude's transcript dir).
 
 **4-point test:** multiple approaches ✓ (literal-vs-realpath was a real, consequential fork the review surfaced), lasting ✓, disagreement ✓ → **ADR candidate: borderline** — record as a constraint with the Round-2 correction.
 
 ### D4: Cold-start is the invariant floor; warm is a strict optimization
 
 **Choice:** Any failure falls back to cold-start — but the *granularity* differs by failure type (corrected Round 3):
-- **Pre-spawn validation failure** (missing/corrupt sidecar, divergence, version skew, unconfirmable transcript): cold-start **this turn**, transparently (no `--resume` is passed).
+- **Pre-spawn validation failure** (missing/corrupt sidecar, divergence, version skew): cold-start **this turn**, transparently (no `--resume` is passed).
 - **Result-only stale guard** (`staleSuspected` on a clean `result`): discard + cold-retry **this turn** (D5).
-- **`--resume` *runtime* error**: the resilience wrapper retries with the SAME `--resume` id (`buildRetryConfig` keeps the id, `claudeP.ts:~997`) up to its cap, then resolves `stopReason:"error"`; `finalizeClaudePFrame` invalidates the cache + sidecar (D7) so the **next** turn cold-starts. The current turn surfaces an error (Principle VII) — it is NOT transparently re-run cold in-turn. (If an in-turn cold-retry-on-warm-error is later wanted, it's a separate step.)
+- **`--resume` *runtime* error** (incl. a deleted/cleaned transcript — T0.1: `claude` reports "No conversation found"): the resilience wrapper retries with the SAME `--resume` id (`buildRetryConfig` keeps the id, `claudeP.ts:~997`) up to its cap, then resolves `stopReason:"error"`; `finalizeClaudePFrame` invalidates the cache + sidecar (D7) so the **next** turn cold-starts. The current turn surfaces an error (Principle VII) — it is NOT transparently re-run cold in-turn. (If an in-turn cold-retry-on-resume-error is later wanted — to make the rare deleted-transcript case transparent without an existence pre-check — it's a small, separate step.)
 
 **Keyed validation runs at turn-start, where `frame.cwd` exists (Round 3):** the sidecar key needs the literal spawn cwd (`frame.cwd` = `options.cwd ?? process.cwd()`, `index.ts:1451`), which is turn-scoped — the `session_start` event carries no cwd. So the keyed sidecar read + validation is performed at the first post-resume turn in `startFreshQuery` (before `useResume` is computed), NOT in the `session_start` handler. `session_start:resume` only sets a one-shot "warm-resume pending" flag (and still performs its frame-drain side effects); it does NOT do the keyed read. This makes Clarify A3's "first turn with empty cache + present sidecar" the canonical, and only, trigger mechanism.
 
@@ -173,20 +174,17 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 **Guard condition:** the in-memory error-branch clear is *guarded* (`if (cachedSessionId === res.sessionId || cachedSessionCwd === cwd)`, `index.ts:1397`) — so an error from a spawn whose session never became the cached one skips the clear. Sidecar invalidation must be **unconditional** on a main-turn error (delete by key regardless of which session id errored), because the persisted sidecar can outlive the in-memory cache and a stale key left on disk would warm-resume on the next restart. (Spec AC: "Sidecar Invalidated On Turn Error".)
 
-### D8: Amend Constitution Principle I AND widen Principle III(b); amend Domain invariant 3
+### D8: Amend Constitution Principle I; amend Domain invariant 3 (Principle III UNCHANGED)
 
-**Choice:** Three normative edits:
+**Choice:** Two normative edits (the III(b) widening was DROPPED with the existence check — owner decision: no defense-in-depth complexity):
 1. **Principle I** — permit a *content-free* resume-metadata sidecar (fingerprints + ids + version; never message content), stored outside `~/.claude/`.
-2. **Principle III(b)** — widen the permitted deterministic-path read AND reconcile its enforcement (Round-3 P1). Today III(b) permits reading a transcript path computed from a UUID the bridge generated **for the current PTY** and passed as `--session-id`. The warm path needs to `stat()` a path computed from a UUID generated in a **prior** session for this conversation (recorded in the bridge's own sidecar) and passed as `--resume`. Three coordinated edits:
-   - the III(b) **principle body** — widen to cover the prior-session id and clarify an existence `stat` (no content read) is permitted;
-   - the III **Enforcement** clause (`constitution.md:70-74`) — which today asserts the only readable `~/.claude/projects/` paths come from a current-PTY `--session-id` UUID or a hook payload — to bless an existence-only `stat` of the prior-session `--resume`-derived path;
-   - the **CI audit** (`tests/int-claude-dir-audit.mjs`) — which flags any `.claude` segment co-located with an FS call (incl. `stat`/`statSync`/`existsSync`) — to permit that one narrowly-scoped blessed stat while still rejecting content reads/writes (and add `src/resume-store.ts` to its `PROD_FILES` so the coverage stays honest).
-   Without all three, R4/R8's "III(b) permits" claim is an overclaim and the existing CI guard would fail the build.
-3. **Domain invariant 3** — remove the unconditional "restart → cold-start" rule; carve out the validated-warm-resume exception (see D4).
+2. **Domain invariant 3** — remove the unconditional "restart → cold-start" rule; carve out the validated-warm-resume exception (see D4).
+
+**Principle III is UNCHANGED.** Since the fail-closed transcript-existence `stat` was dropped (T0.1 proved `claude --resume <missing>` errors → the error→cold path suffices), the warm path introduces **no new `~/.claude` access at all** (`--resume` delegates the transcript read to claude-p). No III(b) body change, no III Enforcement change, no `int-claude-dir-audit.mjs` change. This is the main simplification from dropping the check.
 
 **Version bump: MAJOR (owner-ratified).** The Principle I relaxation is a partial reversal of "MUST NOT persist conversation history" → per the constitution's Versioning rule ("principle removed or reversed" = MAJOR). The owner ratified MAJOR over the MINOR alternative (the 2026-05-21 III(b)-exemption precedent), on the basis that relaxing a "MUST NOT" is a reversal, not a pure addition. Pin the exact version + changelog text in task 1.1.
 
-**Rationale:** the change is meaningless without one persisted bit of state and one bounded existence check; the amendments scope both tightly so Principle I's anti-divergence intent and Principle III's "no `~/.claude` content reads / no writes" intent are preserved (a `stat` is existence-only).
+**Rationale:** the change is meaningless without one persisted bit of state; the amendment scopes it tightly (content-free fingerprints only) so Principle I's anti-divergence intent is preserved, and Principle III is untouched.
 
 **4-point test:** lasting ✓, disagreement ✓, constrains future ✓ → **ADR candidate: YES** (constitutional).
 
@@ -194,7 +192,7 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 | # | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|---|
-| R1 | `claude --resume` of a deleted/cleaned transcript hangs or starts silently fresh | Medium | Medium | **Fail-closed existence pre-check (R4)** → cold when the transcript can't be confirmed present. This is now committed (not deferred) because the silent-fresh case produces a context-free live turn the D5 stale guard CANNOT catch (the turn does run). The C4 spike now only *characterizes* claude's behavior; it no longer gates safety. |
+| R1 | `claude --resume` of a deleted/cleaned transcript | Low | Low | **T0.1 (DONE): `claude --resume <missing>` ERRORS** (exit 1 direct / exit 2 via claude-p) — it does NOT silently start fresh. So a deleted transcript → `--resume` error → D7 invalidates the sidecar → next turn cold-starts (one errored turn in this rare case). No existence pre-check needed (dropped per owner). Residual: a future claude version that changes this behavior — covered by the `claudeVersion` gate. |
 | R2 | Stale-result replay-latch returns a wrong (previous) answer | Medium | High | D5 `staleSuspected` guard (`num_turns` is at most a corroborator) + the named stale-enforcement dependency; cold-retry on detect. The MCP-attach-race instance of this ("coldstart perpetuation") is already fixed at source by the `275dde9` readiness gate; a gated/failed attempt persists no sidecar (D7), so a sidecar can never point at a poisoned transcript. Residual risk is the genuine replay-latch only. |
 | R3 | `claude` upgrade reformats transcripts; old session unresumable | Medium | Low | D2 version gate → cold-start on skew |
 | R4 | Principle-I "content-free" creeps toward storing content | Low | High | D8 amendment scoped to fingerprints; analyze check 3 + design review of the sidecar schema |
@@ -219,11 +217,10 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
   (direct: exit 1 "No conversation found"; via `claude-p`: exit 2
   `SessionStartTimeout`). See `.spike-notes/claude-p-gate/c4-missing-transcript-claude-2.1.159-2026-06-06T19-17-24Z/`.
   So the silent-fresh correctness hole is **refuted** for 2.1.159 — the
-  `--resume`-error → cold path is the real safety. The committed fail-closed
-  existence check (R4b) is therefore **belt-and-suspenders** (owner kept it at
-  Step 6; it avoids a spawn+error cycle and is robust to future claude changes).
-  *Owner may now reconsider dropping it given T0.1 — left committed per the Step-6
-  decision.*
+  `--resume`-error → cold path is the real safety. **RESOLVED: the fail-closed
+  existence check was DROPPED** (owner: no defense-in-depth complexity). This
+  removed the entire Principle III(b)/Enforcement/CI-audit amendment and the
+  OS-cwd encoding work; the warm path now adds no `~/.claude` access at all.
 - **C5:** Sequencing — does this change wait on the broader stale-result
   enforcement, or ship with only the per-resume `staleSuspected` guard
   (corrected + plumbed per D5)? *Owner

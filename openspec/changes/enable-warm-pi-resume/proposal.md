@@ -23,20 +23,20 @@ path users hit most (every resume; every post-error turn).
   live-turn-ran signal — replay boundary seen but no live prompt after it) before
   trusting the resumed turn; on stale → discard → cold-retry.
 - **Cold-start remains the always-safe fallback** on any missing/invalid sidecar,
-  history divergence, version skew, unconfirmable transcript, or stale detection.
-  Net: warm resume never produces a worse-than-cold *result* when the guards hold.
-  (Two honest caveats: a failed warm attempt does extra spawn+detect work before
-  cold-retrying, so it is *slower* than a direct cold-start; and the
-  worse-than-cold *result* guarantee depends on the fail-closed transcript check
-  closing the silent-fresh hole — correctness, not latency, is the floor.)
+  history divergence, version skew, or stale detection. Net: warm resume never
+  produces a worse-than-cold *result*. (One honest caveat: a failed warm attempt
+  does extra spawn+detect work before cold-retrying, so it is *slower* than a
+  direct cold-start; correctness, not latency, is the floor. A deleted transcript
+  is a rare exception — it surfaces as one errored turn before the next cold turn,
+  since `claude --resume <missing>` errors (T0.1).)
 - **CONSTITUTION + DOMAIN (BREAKING):** (1) amends Principle I ("MUST NOT persist
   conversation history of its own") to permit content-free resume *metadata*;
-  (2) widens Principle III(b) to permit deriving the transcript path from a session
-  id recorded in the bridge's own *prior-session* sidecar and an existence-only
-  `stat` of it (still no `~/.claude/` writes and no content reads — `claude-p`
-  reads the transcript); (3) amends Domain invariant 3 — `domain.md:40-43` today
-  makes `restart` an unconditional cold-start trigger, which this change reverses
-  for the validated case ("restart **without a validated resume sidecar** → cold").
+  (2) amends Domain invariant 3 — `domain.md:40-43` today makes `restart` an
+  unconditional cold-start trigger, which this change reverses for the validated
+  case ("restart **without a validated resume sidecar** → cold"). **Principle III
+  is UNCHANGED** — the warm path adds no new `~/.claude` access (`--resume`
+  delegates the transcript read to `claude-p`); the fail-closed existence `stat`
+  was dropped after T0.1 showed `claude --resume <missing>` already errors.
 - **Depends on** the separate stale-result enforcement work — warm resume rides
   the same `--resume` replay mechanism that the stale-result bug affects. Land it
   first or together (default). Proceeding standalone on only the per-resume guard
@@ -76,12 +76,11 @@ path users hit most (every resume; every post-error turn).
   baseline rehydration on resume.
 - new module (e.g. `src/resume-store.ts`): sidecar read/write under `~/.pi/agent/`,
   keyed by the **literal** spawn cwd + full `sessionId` (no realpath); atomic
-  (temp+rename) writes; plus a transcript-existence `stat` helper (encodes the
-  deterministic `~/.claude/projects/<dash-substituted spawnCwd>/<id>.jsonl` path).
+  (temp+rename) writes; content-free one-way (`sha256`) fingerprint chain.
 - `src/driver/claudeP.ts` + `src/driver/stream.ts`: surface the `staleSuspected`
   stale-turn signal onto `ClaudePDoneResult` (today detection-only via
   `onResumeDiag`) so the bridge can enforce the D5 guard.
-- `openspec/constitution.md`: amend Principle I + widen Principle III(b).
+- `openspec/constitution.md`: amend Principle I (Principle III unchanged).
 - `openspec/domain.md`: amend Domain invariant 3 (restart no longer unconditional cold).
 
 **Dependencies / systems**

@@ -11,11 +11,11 @@ Principle III (no `~/.claude/` writes).
 
 ### Requirement: Resume Sidecar Persisted On Successful Turn
 
-WHEN the main-provider turn (not a subagent turn) completes without error — including the abort path, so an aborted-mid-tool session stays resumable per R7 — THE bridge SHALL persist a resume sidecar — driver session id, the literal cwd claude-p was spawned with (`spawnCwd`), the full pi `sessionId`, the pi message-history fingerprint chain, and the `claude` version — to a bridge-owned location outside `~/.claude/`, keyed by the literal spawn cwd + the full pi `sessionId`.
+WHEN the main-provider turn (not a subagent turn) completes without error — including the abort path, so an aborted-mid-tool session stays resumable per R7 — THE bridge SHALL persist a resume sidecar — driver session id, the pi message-history fingerprint chain (a one-way digest), and the `claude` version — to a bridge-owned location outside `~/.claude/`, keyed by the literal spawn cwd + the full pi `sessionId`.
 
 #### Scenario: Successful turn writes the sidecar
 - **WHEN** the main-provider turn finalizes with a non-error stop reason and a cached driver session id
-- **THEN** a sidecar file outside `~/.claude/` records that driver session id, the literal spawn cwd, the full pi session id, the history fingerprint chain, and the claude version
+- **THEN** a sidecar file outside `~/.claude/`, keyed by the literal spawn cwd + full pi session id, records that driver session id, the history fingerprint chain, and the claude version
 
 #### Scenario: A subagent turn does not write the sidecar
 - **WHEN** a subagent frame (not the top-of-stack main-provider turn) finalizes
@@ -31,15 +31,19 @@ THE resume sidecar SHALL contain only fingerprints and identifiers and SHALL NOT
 
 #### Scenario: Sidecar contains no message text
 - **WHEN** the sidecar is inspected after any turn (including one whose messages contain a known sentinel string)
-- **THEN** it contains opaque digests, ids, cwd, and version only — no message bodies, tool arguments, tool results, or counters — and NO substring of any input message (the sentinel does not appear)
+- **THEN** it contains opaque digests, ids, and version only — no message bodies, tool arguments, tool results, or counters — and NO substring of any input message (the sentinel does not appear)
 
 ### Requirement: Validated Warm Resume On Pi Resume
 
-WHEN the first post-resume turn runs (the first turn after a `session_start:resume` or a bare bridge restart whose in-memory cache is empty but a sidecar is present) AND a sidecar exists for the current literal cwd + full pi `sessionId` AND pi's loaded history is a prefix-extension of the sidecar's fingerprint chain AND the sidecar's `claude` version equals the current `claude` version AND the recorded transcript is confirmed present, THE bridge SHALL warm-resume the recorded driver session (`--resume <persisted-id>`) for that turn instead of cold-starting. The keyed validation is performed at turn-start (where the literal spawn cwd is known), NOT in the `session_start` handler (which carries no cwd).
+WHEN the first post-resume turn runs (the first turn after a `session_start:resume` or a bare bridge restart whose in-memory cache is empty but a sidecar is present) AND a sidecar exists for the current literal cwd + full pi `sessionId` AND pi's loaded history is a prefix-extension of the sidecar's fingerprint chain AND the sidecar's `claude` version equals the current `claude` version, THE bridge SHALL warm-resume the recorded driver session (`--resume <persisted-id>`) for that turn instead of cold-starting. The keyed validation is performed at turn-start (where the literal spawn cwd is known), NOT in the `session_start` handler (which carries no cwd).
 
 #### Scenario: Valid sidecar drives a warm first turn
-- **WHEN** the first post-resume turn runs and the sidecar validates (history prefix-match, version match, transcript present)
+- **WHEN** the first post-resume turn runs and the sidecar validates (history prefix-match, version match)
 - **THEN** that turn spawns `claude-p` with `--resume <persisted-id>` and types only the new user message (not the full history)
+
+#### Scenario: A deleted/cleaned transcript surfaces as an error then cold (no existence pre-check)
+- **WHEN** the sidecar validates but the recorded `claude` transcript was deleted/cleaned out-of-band
+- **THEN** the `--resume` spawn errors (spike T0.1: `claude` reports "No conversation found", a non-error-free exit), the bridge invalidates the cache + sidecar on that error, and the next turn cold-starts (no `~/.claude` existence pre-check is performed)
 
 ### Requirement: Cold Start When Validation Does Not Pass
 
@@ -53,13 +57,9 @@ WHEN no sidecar exists for the key, OR pi's loaded history is not a prefix-exten
 - **WHEN** the sidecar records a `claude` version different from the installed one
 - **THEN** the bridge cold-starts a normal turn (the on-disk transcript format may be incompatible)
 
-### Requirement: Cold Start On Unreadable Or Unconfirmable Sidecar State
+### Requirement: Cold Start On Unreadable Or Malformed Sidecar
 
-IF the sidecar is unreadable or malformed, OR the recorded `claude` transcript cannot be confirmed present (the existence check encodes the sidecar's literal `spawnCwd`, matching how `claude` names the project dir), THEN THE bridge SHALL cold-start the first post-resume turn as a normal turn and SHALL NOT pass `--resume`.
-
-#### Scenario: Unconfirmable transcript falls back to cold (fail-closed)
-- **IF** the sidecar otherwise validates but the recorded `claude` session transcript cannot be confirmed to exist (encoded from `spawnCwd`)
-- **THEN** the bridge cold-starts and does NOT pass `--resume` — preventing a silent context-free fresh session (the case where `claude --resume <missing>` would start clean rather than error, which the post-spawn stale guard cannot catch because the live turn does run)
+IF the sidecar is unreadable or malformed, THEN THE bridge SHALL cold-start the first post-resume turn as a normal turn and SHALL NOT pass `--resume`.
 
 #### Scenario: Corrupt sidecar falls back to cold
 - **IF** the sidecar file is present but unreadable or malformed (e.g. a torn concurrent write)
@@ -111,11 +111,11 @@ WHERE the recorded driver transcript ends with an unclosed tool call from a turn
 
 ### Requirement: Warm Path Performs No New Claude Config Access
 
-THE warm-resume path SHALL NOT write any path under `~/.claude/` and SHALL NOT read the CONTENT of any `~/.claude/` transcript; its only `~/.claude/` access is an existence `stat` of the bridge-derived deterministic transcript path, permitted by the amended Principle III(b) (which this change widens to cover a session id the bridge recorded in its own prior-session sidecar, and to permit existence-only stats). Reattachment is effected by passing `--resume` to the driver, which performs any transcript read itself.
+THE warm-resume path SHALL NOT write any path under `~/.claude/` and SHALL NOT introduce any new read of `~/.claude/` (no content read, no existence `stat`); Principle III is unchanged. Reattachment is effected by passing `--resume` to the driver, which performs any transcript read itself.
 
 #### Scenario: Warm resume touches only the bridge's own state
 - **WHEN** a warm resume runs
-- **THEN** the only files the bridge reads or writes are its own sidecar (outside `~/.claude/`) plus, for the fail-closed transcript check (R4), an existence `stat` (no content read) of the deterministic transcript path encoded from the sidecar's `spawnCwd` — permitted by the amended Principle III(b); it passes `--resume` to `claude-p` for the driver-side transcript read
+- **THEN** the only files the bridge reads or writes are its own sidecar (outside `~/.claude/`); it passes `--resume` to `claude-p` for the driver-side transcript read, and never opens any `~/.claude/` path itself
 
 ---
 
@@ -127,7 +127,7 @@ THE warm-resume path SHALL NOT write any path under `~/.claude/` and SHALL NOT r
 | warm-pi-resume.sidecar-stores-no-conversation-content | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.validated-warm-resume-on-pi-resume | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.cold-start-when-validation-does-not-pass | [x] | [x] | [x] | [x] | [x] |
-| warm-pi-resume.cold-start-on-unreadable-or-unconfirmable-sidecar-state | [x] | [x] | [x] | [x] | [x] |
+| warm-pi-resume.cold-start-on-unreadable-or-malformed-sidecar | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.post-spawn-stale-result-guard | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.sidecar-invalidated-on-turn-error | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.divergence-baseline-rehydrated-on-warm-resume | [x] | [x] | [x] | [x] | [x] |

@@ -14,10 +14,10 @@ remediation; the rest minor. See Check 9 for the adversarial Round 1 disposition
 |---|---|---|---|
 | I. Pi owns conversation state | violated → remediated | The resume sidecar is new persistent state (Principle I: "MUST NOT persist conversation history of its own"). It stores fingerprints only, never content, and design **D8** amends Principle I to permit content-free resume metadata. | major (resolved by D8 / tasks amendment) |
 | II. Bridge is inference-only | compliant | No new tool execution, domain logic, or pi-UI mutation; sidecar is bridge-internal cache metadata. | — |
-| III. No `~/.claude/` filesystem coupling | compliant-via-amendment | Sidecar lives under `~/.pi/agent/`, never `~/.claude/`. The warm path adds exactly ONE new `~/.claude` access: an existence-only `stat` of a deterministic `~/.claude/projects/...` path (the R4 fail-closed check), blessed by the D8 widening of Principle III(b) + its Enforcement clause + the `int-claude-dir-audit.mjs` carve-out (tasks 1.1/1.3). No content reads, no writes; `--resume` delegates the transcript read to `claude-p`. | major (resolved by D8 III(b)/Enforcement amendment) |
+| III. No `~/.claude/` filesystem coupling | compliant (UNCHANGED) | Sidecar lives under `~/.pi/agent/`, never `~/.claude/`. The warm path adds **no new `~/.claude` access at all** — the fail-closed existence `stat` was DROPPED after T0.1 showed `claude --resume <missing>` errors (error→cold suffices). `--resume` delegates the transcript read to `claude-p`. No III(b)/Enforcement/CI-audit change. | — |
 | IV. Native Claude tools disallowed | inapplicable | No change to the tool surface / `--disallowedTools`. | — |
 | V. System-prompt fidelity per path | compliant | Warm vs cold only changes *which* prompt is assembled; system-prompt delivery (`--system-prompt`) is unchanged. | — |
-| VI. Concurrent paths share no state | compliant | Sidecar keyed by literal `spawnCwd` + full `sessionId`; atomic (temp+rename) writes so a concurrent reader never sees a torn file; capture path excluded; Domain invariant 1 preserved (clarify C3). | — |
+| VI. Concurrent paths share no state | compliant | Sidecar keyed by the literal cwd + full `sessionId`; atomic (temp+rename) writes so a concurrent reader never sees a torn file; capture path excluded; Domain invariant 1 preserved (clarify C3). | — |
 | VII. Failures surface; degradation is explicit | compliant (strengthens) | Sidecar write-fail logged; stale/skew/divergence → logged cold-retry; every fallback is explicit. | — |
 
 ## Check 2 — EARS pattern check (major, human-triage)
@@ -34,7 +34,7 @@ remediation; the rest minor. See Check 9 for the adversarial Round 1 disposition
 | warm-pi-resume.sidecar-stores-no-conversation-content | D1, D8 | covered |
 | warm-pi-resume.validated-warm-resume-on-pi-resume | D2, D3, D4 | covered |
 | warm-pi-resume.cold-start-when-validation-does-not-pass | D4 | covered |
-| warm-pi-resume.cold-start-on-unreadable-or-unconfirmable-sidecar-state | D4 + R1/C4 fail-closed transcript check (D2/D3 spawnCwd encoding, III(b) D8) | covered |
+| warm-pi-resume.cold-start-on-unreadable-or-malformed-sidecar | D4 | covered |
 | warm-pi-resume.post-spawn-stale-result-guard | D5 (`staleSuspected`, result-only; + 3.3 plumbing) | covered |
 | warm-pi-resume.sidecar-invalidated-on-turn-error | D7 | covered |
 | warm-pi-resume.divergence-baseline-rehydrated-on-warm-resume | D2, D4 | covered |
@@ -146,7 +146,7 @@ Two blind reviewers (claude-opus-4-8). Trajectory converged sharply (P0+P1: R1=9
 - **Blockers:** 0 after Round 3 — apply may proceed once pre-apply gates clear.
 - **Majors:** 1 — Principle I violation, remediated in-change by the D8 amendment + Scale L (tracked into tasks).
 - **Adversarial Round 1 (Check 9):** 2 P0 + 7 P1, all applied.
-- **Adversarial Round 2 (Check 10):** 2 P0 (domain invariant 3; literal-cwd transcript keying) + ~8 P1 — all verified against ground truth and applied. Round 2 dug deeper than Round 1 (the fixes exposed the next layer); the constitution amendment now also widens Principle III(b) and amends Domain invariant 3.
-- **Adversarial Round 3 (Check 11):** 1 P0 (persisted-chain plaintext leak) + 4 P1 — verified and applied; trajectory converged (P0+P1 9→10→5). The content-free premise is now enforced by an opaque `sha256` digest + a sentinel test, and the III(b) amendment is completed end-to-end (principle body + Enforcement clause + CI audit).
-- **Outstanding (pre-apply):** only the **C5 sequencing** owner decision remains. Both spikes are DONE (2026-06-06): **T0.1** — `claude --resume <missing>` ERRORS (not silent-fresh), so the fail-closed check is belt-and-suspenders; **T0.2** — R7 CONFIRMED (dangling tool_use resumes cleanly through claude-p + suppression; `staleSuspected` does not misfire; the abort path self-closes the round anyway). Step-6 owner calls resolved: no kill-switch; fail-closed check kept; constitution bump MAJOR.
+- **Adversarial Round 2 (Check 10):** 2 P0 (domain invariant 3; literal-cwd transcript keying) + ~8 P1 — all verified against ground truth and applied. Round 2 dug deeper than Round 1 (the fixes exposed the next layer); it added a Principle III(b) widening + Domain invariant 3 amendment. *(The III(b) widening was later DROPPED post-spike — see Outstanding — leaving only the Domain invariant 3 amendment.)*
+- **Adversarial Round 3 (Check 11):** 1 P0 (persisted-chain plaintext leak) + 4 P1 — verified and applied; trajectory converged (P0+P1 9→10→5). The content-free premise is enforced by an opaque `sha256` digest + a sentinel test. *(Round 3 also completed the III(b)/Enforcement/CI-audit amendment end-to-end; that whole branch was later DROPPED post-spike when T0.1 removed the need for the existence check.)*
+- **Outstanding (pre-apply):** only the **C5 sequencing** owner decision remains. Both spikes are DONE (2026-06-06): **T0.1** — `claude --resume <missing>` ERRORS (not silent-fresh) → the fail-closed existence check was **DROPPED** (owner: no defense-in-depth complexity), shrinking the constitution amendment to Principle I + Domain invariant 3 only (Principle III untouched); **T0.2** — R7 CONFIRMED (dangling tool_use resumes cleanly through claude-p + suppression; `staleSuspected` does not misfire; the abort path self-closes the round anyway). Step-6 owner calls resolved: no kill-switch; constitution bump MAJOR.
 - **Repo drift (Check 8):** re-validated at HEAD `275dde9`; no scope change from drift.

@@ -31,7 +31,7 @@ Controlled-vocabulary mode switchboard for `apply`.
   flag — "no conditional logic; we can always revert." Cold-start is the invariant
   floor (D4), so rollback is `git revert` + delete `~/.pi/agent/resume/`.
 - **Two pre-apply spikes — both DONE 2026-06-06 (Analyze Check 7):**
-  1. T0.1 (C4) — `claude --resume <missing>` **ERRORS, not silent-fresh** (exit 1 direct / exit 2 via claude-p) → fail-closed check is belt-and-suspenders.
+  1. T0.1 (C4) — `claude --resume <missing>` **ERRORS, not silent-fresh** (exit 1 direct / exit 2 via claude-p) → fail-closed existence check DROPPED (error→cold suffices); constitution amendment shrinks to Principle I + Domain invariant 3.
   2. T0.2 (D6-limit) — **R7 CONFIRMED**: a dangling tool_use resumes cleanly through claude-p + suppression (`staleSuspected` does not misfire); the abort path self-closes the round anyway.
   Spike notes under `.spike-notes/claude-p-gate/c4-missing-transcript-*` and `d6-dangling-claudep-*`.
 - **Adversarial review recommended:** given the Principle I amendment (D8) and
@@ -43,6 +43,6 @@ Controlled-vocabulary mode switchboard for `apply`.
 
 - **Owner decisions (Step 6 of adversarial-review-cycle, 2026-06-06):**
   1. **No kill-switch** — ship without a feature flag; rollback via `git revert` + delete `~/.pi/agent/resume/`.
-  2. **Fail-closed transcript-existence check: keep committed** — the warm path always `stat`s the transcript before resuming (closes the silent-fresh hole); this is why the constitution amendment widens Principle III(b) + Enforcement + the CI audit.
+  2. **Fail-closed transcript-existence check: kept at Step 6, then DROPPED post-spike (2026-06-06)** — T0.1 proved `claude --resume <missing>` errors (not silent-fresh), so the error→cold path suffices; owner: "not a fan of defense-in-depth when the trade-off is added complexity." Dropping it removed the Principle III(b)/Enforcement/CI-audit amendment + the OS-cwd encoding. **Principle III is now UNCHANGED** and the constitution amendment is Principle I + Domain invariant 3 only.
   3. **Constitution bump: MAJOR** — partial reversal of Principle I (over the MINOR III(b)-exemption precedent).
 - C5 sequencing (stale-result enforcement first/together vs. standalone) remains an owner decision at apply (task 0.3).

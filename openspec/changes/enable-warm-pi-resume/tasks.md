@@ -1,6 +1,6 @@
 ## 0. Pre-apply gates (spikes + sequencing)
 
-- [x] 0.1 DONE 2026-06-06 — Spike (Clarify C4 / Risk R1): `claude --resume <missing>` **ERRORS, not silent-fresh** (direct: exit 1 "No conversation found"; via claude-p: exit 2 `SessionStartTimeout`). Silent-fresh hole refuted → the fail-closed existence check (4.2) is belt-and-suspenders, not the sole safety. Notes: `.spike-notes/claude-p-gate/c4-missing-transcript-claude-2.1.159-2026-06-06T19-17-24Z/`.
+- [x] 0.1 DONE 2026-06-06 — Spike (Clarify C4 / Risk R1): `claude --resume <missing>` **ERRORS, not silent-fresh** (direct: exit 1 "No conversation found"; via claude-p: exit 2 `SessionStartTimeout`). Silent-fresh hole refuted → the fail-closed existence check was **DROPPED** (owner: no defense-in-depth complexity); a deleted transcript surfaces as a `--resume` error → cold (D7). Notes: `.spike-notes/claude-p-gate/c4-missing-transcript-claude-2.1.159-2026-06-06T19-17-24Z/`.
   - intent: infra
   - files_allowed:
       - .spike-notes/**
@@ -15,14 +15,10 @@
 
 ## 1. Constitution amendment (D8)
 
-- [ ] 1.1 Amend the constitution (D8): (a) **Principle I** — permit a content-free resume-metadata sidecar (fingerprints + ids + version; never message content, no counters; the fingerprint chain is a one-way digest) stored outside `~/.claude/`; (b) **Principle III(b) body** — widen to permit deriving the transcript path from a session id the bridge recorded in its own *prior-session* sidecar AND an existence-only `stat` of it (no content read); (c) **Principle III Enforcement clause** (`constitution.md:70-74`) — bless that existence-only `stat` (today it only allows current-PTY `--session-id` UUID reads / hook payloads). Bump constitution version — this partial reversal of Principle I is a **MAJOR** bump per the Versioning rule; pin the exact version + changelog text.
+- [ ] 1.1 Amend the constitution (D8): **Principle I only** — permit a content-free resume-metadata sidecar (fingerprints + ids + version; never message content, no counters; the fingerprint chain is a one-way digest) stored outside `~/.claude/`. Bump constitution version — this partial reversal of Principle I is a **MAJOR** bump per the Versioning rule; pin the exact version + changelog text. (Principle III is UNCHANGED — the fail-closed existence `stat` was dropped, so the warm path adds no new `~/.claude` access; no III(b)/Enforcement/CI-audit edits.)
   - intent: infra
   - files_allowed:
       - openspec/constitution.md
-- [ ] 1.3 Update the Constitution-III CI audit (`tests/int-claude-dir-audit.mjs`) to permit the one blessed existence-`stat` of the prior-session `--resume`-derived transcript path while still rejecting `~/.claude/` writes and content reads; add `src/resume-store.ts` to its `PROD_FILES`. NOTE: the carve-out must cover ALL three relevant assertions the audit runs — the FS-call scan (`stat`/`statSync`/`existsSync` in `FS_ACCESS_CALLS`), the **homedir()-base positive** (`join(homedir(), ".claude", …)`), and the self-check — not just the FS-call scan, or adding resume-store.ts to `PROD_FILES` will red the build.
-  - intent: infra
-  - files_allowed:
-      - tests/int-claude-dir-audit.mjs
 - [ ] 1.2 Amend Domain invariant 3 (`domain.md:40-43`): `restart` is no longer an unconditional cold-start trigger — "restart **without a validated resume sidecar** → cold-start." Bump domain.md version. (Round-2 P0: today's invariant 3 literally contradicts this change.)
   - intent: infra
   - files_allowed:
@@ -34,12 +30,7 @@
   - intent: feature
   - files_allowed:
       - tests/unit-resume-store.mjs
-- [ ] 2.2 Implement `src/resume-store.ts`: `readSidecar(cwd, sessionId)`, `writeSidecar(...)`, `invalidate(...)` over `~/.pi/agent/resume/<key>.json`; key = the **literal** `frame.cwd` + the full `sessionId` (from `sessionManager.getSessionId()`, not the truncating helper); schema = `{ claudeSessionId, spawnCwd, piSessionId, historyHashChain, claudeVersion }` where `historyHashChain` is a per-position **`sha256(role+":"+len+":"+content)`** one-way digest (NOT the in-memory `hashMessage`, which leaks plaintext) — NO `lastNumTurns` (the D5 guard uses the self-contained `staleSuspected`). Atomic writes (`<key>.json.tmp` + rename), best-effort (log + continue on failure). Make 2.1 pass.
-  - intent: feature
-  - files_allowed:
-      - src/resume-store.ts
-      - tests/unit-resume-store.mjs
-- [ ] 2.4 Implement + test the transcript-existence helper (R4 fail-closed; load-bearing safety code): given a sidecar, encode the deterministic `~/.claude/projects/<encoded spawnCwd>/<claudeSessionId>.jsonl` path and `stat` it (existence only, no content read). **Encoding rule (verified empirically; refined by T0.2):** `claude` records the **OS-resolved** cwd (T0.2: `cwd=/tmp/…` → dir `-private-tmp-…` via the `/tmp`→`/private/tmp` firmlink) and replaces `/` AND `.` (and any non-`[A-Za-z0-9]` run) with `-`, e.g. `/Volumes/…/pi-claude-bridge/.spike-notes` → `-Volumes-…-pi-claude-bridge--spike-notes`. So the encoder MUST canonicalize the cwd the same way claude does (firmlink/symlink resolution + possibly `$PWD`-vs-`getcwd`), not just dash-substitute the raw `spawnCwd`. Tests: present → ok; missing → cold; a symlink-alias / firmlink cwd resolves to claude's actual dir; a **dotted-path** cwd encodes to the matching real claude dir name. A mis-encode only false-colds (safe). (Permitted by the amended Principle III(b)/Enforcement, tasks 1.1/1.3.)
+- [ ] 2.2 Implement `src/resume-store.ts`: `readSidecar(cwd, sessionId)`, `writeSidecar(...)`, `invalidate(...)` over `~/.pi/agent/resume/<key>.json`; key = the **literal** `frame.cwd` + the full `sessionId` (from `sessionManager.getSessionId()`, not the truncating helper); schema = `{ claudeSessionId, piSessionId, historyHashChain, claudeVersion }` where `historyHashChain` is a per-position **`sha256(role+":"+len+":"+content)`** one-way digest (NOT the in-memory `hashMessage`, which leaks plaintext) — NO `lastNumTurns` (the D5 guard uses the self-contained `staleSuspected`), and NO `spawnCwd` (the cwd lives in the key; the dropped existence check was its only other consumer). Atomic writes (`<key>.json.tmp` + rename), best-effort (log + continue on failure). Make 2.1 pass.
   - intent: feature
   - files_allowed:
       - src/resume-store.ts
@@ -52,11 +43,11 @@
 
 ## 3. Validation gate (D2, D4, D5, D6) — tests first
 
-- [ ] 3.1 Write failing unit tests for the validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-sidecar / **unconfirmable-transcript (fail-closed, R4)** → cold; `staleSuspected` true → stale → cold-retry; dangling-tool-call sidecar → still warm (D6, **confirmed by T0.2**). Pure-function seam, no real claude-p.
+- [ ] 3.1 Write failing unit tests for the validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-or-corrupt-sidecar → cold; `staleSuspected` true → stale → cold-retry; dangling-tool-call sidecar → still warm (D6, **confirmed by T0.2**). Pure-function seam, no real claude-p.
   - intent: feature
   - files_allowed:
       - tests/unit-warm-resume-gate.mjs
-- [ ] 3.2 Implement the validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version + transcript-present flag + post-spawn `staleSuspected`; output = `{ warm: boolean, reason }`. Make 3.1 pass.
+- [ ] 3.2 Implement the validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version + post-spawn `staleSuspected`; output = `{ warm: boolean, reason }`. Make 3.1 pass.
   - intent: feature
   - files_allowed:
       - index.ts
@@ -76,7 +67,7 @@
   - intent: feature
   - files_allowed:
       - index.ts
-- [ ] 4.2 Perform validated warm-resume at the **first post-resume turn in `startFreshQuery`** (where the literal `frame.cwd` exists) — NOT in the `session_start` handler, which carries no cwd. The `session_start:resume` handler (`index.ts:1698-1704`) keeps its existing side-effects (frame-drain + abort of leftover frames at `index.ts:1691-1696`, in-memory cache clear) and additionally sets a one-shot "warm-resume pending" flag; it does NOT read the sidecar. At the first turn with that flag + empty in-memory cache: read the sidecar by literal `frame.cwd` + full sessionId; run the gate (`sha256` prefix-match over pi's loaded history + `claude` version match + fail-closed transcript-existence check R4b: confirm the transcript present via the III(b) `stat`; on any fail → cold, no `--resume`); on pass set `cachedSessionId`/`cachedSessionCwd` and set the in-memory divergence baseline by recomputing `computeMessageHashes(context.messages)` **locally** (R6 — NOT from the sidecar's sha256 chain) so `useResume` (`index.ts:1495`) takes the warm branch. Satisfies `claude-p-driver.cached-driver-session-is-a-hint-only`.
+- [ ] 4.2 Perform validated warm-resume at the **first post-resume turn in `startFreshQuery`** (where the literal `frame.cwd` exists) — NOT in the `session_start` handler, which carries no cwd. The `session_start:resume` handler (`index.ts:1698-1704`) keeps its existing side-effects (frame-drain + abort of leftover frames at `index.ts:1691-1696`, in-memory cache clear) and additionally sets a one-shot "warm-resume pending" flag; it does NOT read the sidecar. At the first turn with that flag + empty in-memory cache: read the sidecar by literal `frame.cwd` + full sessionId; run the gate (`sha256` prefix-match over pi's loaded history + `claude` version match; on any fail → cold, no `--resume`); on pass set `cachedSessionId`/`cachedSessionCwd` and set the in-memory divergence baseline by recomputing `computeMessageHashes(context.messages)` **locally** (R6 — NOT from the sidecar's sha256 chain) so `useResume` (`index.ts:1495`) takes the warm branch. (No transcript-existence pre-check — a deleted transcript surfaces as a `--resume` error → cold via D7, per T0.1.) Satisfies `claude-p-driver.cached-driver-session-is-a-hint-only`.
   - intent: feature
   - files_allowed:
       - index.ts

@@ -1,5 +1,5 @@
 diff --git a/src/driver.zig b/src/driver.zig
-index 6664886..d20904f 100644
+index 6664886..adbd14b 100644
 --- a/src/driver.zig
 +++ b/src/driver.zig
 @@ -464,6 +464,12 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
@@ -53,14 +53,25 @@ index 6664886..d20904f 100644
                          },
                          .unknown => {},
                      }
-@@ -733,38 +756,54 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
-     // fall back to `last_assistant_message` from the Stop payload.
+@@ -728,9 +751,14 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
+ 
+     const tp = transcript_path orelse return RunError.TranscriptUnavailable;
+ 
+-    // The Stop hook can fire a few milliseconds before claude flushes the
+-    // assistant message line into the transcript JSONL. Retry briefly, then
+-    // fall back to `last_assistant_message` from the Stop payload.
++    // ONE rule: the result is the LIVE turn or it is an error. The transcript
++    // must have grown past the pre-submit baseline (a new assistant turn
++    // appended) AND its text (or an error) must be present. The Stop hook can
++    // fire a few ms before claude flushes the assistant line, so retry briefly.
++    // If the live turn does not materialize in the transcript within the window
++    // we FAIL (StopTimeout) — no Stop-payload fallback, no fresh-vs-resume
++    // special-case: an error gives the caller visibility (it cold-retries),
++    // rather than papering over a slow/absent write with a guessed answer.
      var summary = blk: {
          var attempt: u32 = 0;
-+        var saw_growth = false;
          while (attempt < 40) : (attempt += 1) {
-             var maybe = transcript_mod.parseFile(allocator, tp) catch |e| switch (e) {
-                 error.NoAssistantMessage, error.FileNotFound => null,
+@@ -739,32 +767,15 @@ pub fn run(allocator: std.mem.Allocator, opts: Options) !Result {
                  else => return e,
              };
              if (maybe) |valid| {
@@ -69,15 +80,8 @@ index 6664886..d20904f 100644
 -                // assistant message was flushed (the early lines only have
 -                // thinking + tool_use blocks). Retry until text appears.
 -                if (valid.final_text.len > 0 or valid.is_error) break :blk valid;
-+                // Resume-staleness gate: only trust a parse once the live turn
-+                // has appended a NEW assistant turn past the pre-submit baseline.
-+                // Until then the transcript still ends at the REPLAYED prior turn,
-+                // and `final_text` would be the prior answer (the production bug).
-+                if (valid.num_turns > baseline_turns) {
-+                    saw_growth = true;
-+                    // The assistant RECORD exists; wait for its text block to
-+                    // flush (early lines may be thinking/tool_use only).
-+                    if (valid.final_text.len > 0 or valid.is_error) break :blk valid;
++                if (valid.num_turns > baseline_turns and (valid.final_text.len > 0 or valid.is_error)) {
++                    break :blk valid;
 +                }
                  maybe.?.deinit(allocator);
              }
@@ -97,33 +101,10 @@ index 6664886..d20904f 100644
 -                    .usage = .{},
 -                    .jsonl_replay = try allocator.dupe(u8, ""),
 -                };
-+        // Fall back to the Stop payload's last_assistant_message ONLY when it is
-+        // safe to do so: the live turn's record landed (saw_growth) but its text
-+        // hasn't flushed, OR this was a fresh turn (baseline 0 → no prior turn to
-+        // be stale). Otherwise the count never grew → the Stop was stale/replayed
-+        // (or the live turn produced no assistant turn): refuse to emit the prior
-+        // answer and fail so the caller cold-retries.
-+        if (saw_growth or baseline_turns == 0) {
-+            if (stop_payload_owned) |payload| {
-+                const last = try hook_mod.extractLastAssistantMessage(allocator, payload);
-+                if (last) |text| {
-+                    const sid = (try hook_mod.extractSessionId(allocator, payload)) orelse try allocator.dupe(u8, "");
-+                    break :blk transcript_mod.Summary{
-+                        .final_text = text,
-+                        .session_id = sid,
-+                        .is_error = false,
-+                        .num_turns = baseline_turns + 1,
-+                        .total_cost_usd = 0.0,
-+                        .duration_api_ms = 0,
-+                        .usage = .{},
-+                        .jsonl_replay = try allocator.dupe(u8, ""),
-+                    };
-+                }
-             }
-+            return RunError.TranscriptUnavailable;
-         }
+-            }
+-        }
 -        return RunError.TranscriptUnavailable;
-+        traceFmt(opts, trace_start, "resume-staleness guard: transcript never grew past baseline ({d}) — refusing to emit a replayed prior turn (StopTimeout)", .{baseline_turns});
++        traceFmt(opts, trace_start, "resume-staleness guard: no live turn past baseline ({d}) within window — failing for visibility (StopTimeout)", .{baseline_turns});
 +        return RunError.StopTimeout;
      };
      errdefer summary.deinit(allocator);

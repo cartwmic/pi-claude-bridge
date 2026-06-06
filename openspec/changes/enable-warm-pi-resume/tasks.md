@@ -1,10 +1,10 @@
 ## 0. Pre-apply gates (spikes + sequencing)
 
-- [ ] 0.1 Spike (Clarify C4 / Risk R1 — characterization only; the fail-closed existence pre-check is now COMMITTED regardless, see 4.2): determine `claude --resume <missing-transcript-id>` behavior — hard error vs. silent fresh session. Record result; it validates the committed III(b) existence pre-check but no longer gates the safety floor.
+- [x] 0.1 DONE 2026-06-06 — Spike (Clarify C4 / Risk R1): `claude --resume <missing>` **ERRORS, not silent-fresh** (direct: exit 1 "No conversation found"; via claude-p: exit 2 `SessionStartTimeout`). Silent-fresh hole refuted → the fail-closed existence check (4.2) is belt-and-suspenders, not the sole safety. Notes: `.spike-notes/claude-p-gate/c4-missing-transcript-claude-2.1.159-2026-06-06T19-17-24Z/`.
   - intent: infra
   - files_allowed:
       - .spike-notes/**
-- [ ] 0.2 Spike (Design D6-limit): re-run the dangling-tool_use resume through the full `claude-p` + warm-resume-suppression path (not just `claude` direct). Confirm the driver still self-repairs the unclosed tool call. Record result.
+- [x] 0.2 DONE 2026-06-06 — Spike (Design D6-limit / R7): a crafted dangling tool_use resumes cleanly through the full `claude-p` + `suppressResumeReplay` path (exit 0, terminal result, live prompt answered, `staleSuspected:false` — no misfire). **R7 confirmed, NOT inverted.** Also found: the bridge's abort/kill path self-closes the round — killing claude-p drops the MCP shim and `claude` writes an `is_error` tool_result ("MCP error -32000: Connection closed") before exiting — so a dangling transcript only arises from a crash mid-write (also covered). Notes: `.spike-notes/claude-p-gate/d6-dangling-claudep-claude-haiku-4-5-2026-06-06T19-21-34Z/`.
   - intent: infra
   - files_allowed:
       - .spike-notes/**
@@ -39,7 +39,7 @@
   - files_allowed:
       - src/resume-store.ts
       - tests/unit-resume-store.mjs
-- [ ] 2.4 Implement + test the transcript-existence helper (R4 fail-closed; load-bearing safety code): given a sidecar, encode the deterministic `~/.claude/projects/<encoded spawnCwd>/<claudeSessionId>.jsonl` path and `stat` it (existence only, no content read). **Encoding rule (verified empirically — NOT just `/`):** `claude` replaces `/` AND `.` (and, confirm during T0.1, any non-`[A-Za-z0-9]` run) with `-`, e.g. `/Volumes/…/pi-claude-bridge/.spike-notes` → `-Volumes-…-pi-claude-bridge--spike-notes`. Tests: present → ok; missing → cold; uses `spawnCwd` not realpath (a symlink-alias cwd encodes to a DIFFERENT dir); a **dotted-path** cwd (e.g. one containing `.spike-notes`) encodes to the matching real claude dir name. (Permitted by the amended Principle III(b)/Enforcement, tasks 1.1/1.3.)
+- [ ] 2.4 Implement + test the transcript-existence helper (R4 fail-closed; load-bearing safety code): given a sidecar, encode the deterministic `~/.claude/projects/<encoded spawnCwd>/<claudeSessionId>.jsonl` path and `stat` it (existence only, no content read). **Encoding rule (verified empirically; refined by T0.2):** `claude` records the **OS-resolved** cwd (T0.2: `cwd=/tmp/…` → dir `-private-tmp-…` via the `/tmp`→`/private/tmp` firmlink) and replaces `/` AND `.` (and any non-`[A-Za-z0-9]` run) with `-`, e.g. `/Volumes/…/pi-claude-bridge/.spike-notes` → `-Volumes-…-pi-claude-bridge--spike-notes`. So the encoder MUST canonicalize the cwd the same way claude does (firmlink/symlink resolution + possibly `$PWD`-vs-`getcwd`), not just dash-substitute the raw `spawnCwd`. Tests: present → ok; missing → cold; a symlink-alias / firmlink cwd resolves to claude's actual dir; a **dotted-path** cwd encodes to the matching real claude dir name. A mis-encode only false-colds (safe). (Permitted by the amended Principle III(b)/Enforcement, tasks 1.1/1.3.)
   - intent: feature
   - files_allowed:
       - src/resume-store.ts
@@ -52,7 +52,7 @@
 
 ## 3. Validation gate (D2, D4, D5, D6) — tests first
 
-- [ ] 3.1 Write failing unit tests for the validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-sidecar / **unconfirmable-transcript (fail-closed, R4)** → cold; `staleSuspected` true → stale → cold-retry; dangling-tool-call sidecar → still warm (D6, **provisional pending T0.2**). Pure-function seam, no real claude-p.
+- [ ] 3.1 Write failing unit tests for the validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-sidecar / **unconfirmable-transcript (fail-closed, R4)** → cold; `staleSuspected` true → stale → cold-retry; dangling-tool-call sidecar → still warm (D6, **confirmed by T0.2**). Pure-function seam, no real claude-p.
   - intent: feature
   - files_allowed:
       - tests/unit-warm-resume-gate.mjs

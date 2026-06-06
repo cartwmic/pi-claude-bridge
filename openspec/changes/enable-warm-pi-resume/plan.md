@@ -18,19 +18,18 @@ AC IDs are canonical: `<capability>.<requirement-slug>`.
   - `claude` + `claude-p` on PATH; OAuth-authed binary available (spikes hit the real binary).
   - `.spike-notes/claude-p-gate/` writable.
 - **Action (ordered — NOT TDD; these unblock the rest):**
-  1. **C4 spike:** create a sidecar pointing at a deleted/non-existent transcript id; run `claude --resume <missing-id>` (then the same through `claude-p`). Record exact behavior: hard error vs. silent fresh session. Write `.spike-notes/.../c4-missing-transcript-*/`.
-  2. **C4 decision:** if it silently starts fresh, add a Principle-III(b) deterministic-path existence pre-check to the gate scope (note it in design D2/Open-Q resolution); if it errors, the existing error→cold guard suffices — record that.
-  3. **D6-limit spike:** reproduce a dangling-`tool_use` transcript (abort mid-tool), then resume it through the **full `claude-p` + warm-resume-suppression path** (not `claude` direct). Confirm exit 0 + new prompt answered + no synthetic tool_result persisted. Write `.spike-notes/.../d6-dangling-claudep-*/`. **Reuse the existing harness** from the `275dde9` readiness-gate work — `.spike-notes/claude-p-gate/mcp-ready-gate-e2e.mjs` plus the `coldstart-perpetuation-*` / `mcp-attach-race-proof-*` runs already drive warm `--resume` through the full claude-p path (for the tool-less-leak transcript); adapt it to the dangling-tool_use transcript rather than building a new driver.
-  4. **C5 owner decision:** decide sequence vs. the broader stale-result enforcement change — (a) land it first, (b) land together, or (c) proceed with only the per-resume `staleSuspected` guard (D5, corrected + plumbed via step 3.3). Record verbatim in `review.md` → Execution Notes.
+  1. **C4 spike — DONE 2026-06-06:** ran `claude --resume <missing-id>` directly AND through `claude-p`. Result: **ERRORS, not silent-fresh** (direct exit 1 "No conversation found"; via claude-p exit 2 `SessionStartTimeout`). Notes: `.spike-notes/claude-p-gate/c4-missing-transcript-claude-2.1.159-2026-06-06T19-17-24Z/`.
+  2. **C4 decision — DONE:** silent-fresh is refuted, so the error→cold guard already suffices; the committed fail-closed existence check (R4b) stands as belt-and-suspenders per the Step-6 owner decision. (Owner may now reconsider dropping it.)
+  3. **D6-limit spike — DONE 2026-06-06:** crafted a genuinely-dangling tool_use transcript and resumed it through the **full `claude-p` + `suppressResumeReplay` path**: exit 0, terminal result, live prompt answered, `staleSuspected:false` (no misfire). **R7 CONFIRMED, not inverted.** Bonus: the bridge's abort/kill path self-closes the round (claude writes an `is_error` tool_result on MCP disconnect), so dangling only arises from a crash mid-write. Notes: `.spike-notes/claude-p-gate/d6-dangling-claudep-claude-haiku-4-5-2026-06-06T19-21-34Z/` (+ harness `d6-dangling-*.mjs`).
+  4. **C5 owner decision — STILL OPEN:** decide sequence vs. the broader stale-result enforcement change — (a) land it first, (b) land together, or (c) proceed with only the per-resume `staleSuspected` guard (D5, corrected + plumbed via step 3.3). Record verbatim in `review.md` → Execution Notes.
 - **Verification:**
-  - Three artifacts exist: two spike-note dirs + the C5 decision line in `review.md`.
-  - If C4 = silent-fresh, the gate scope (step 3) includes an existence check before this plan proceeds.
+  - Two spike-note dirs exist with CONCLUSION.md (DONE); the C5 decision line in `review.md` is the only remaining Step-0 item.
 - **Rollback:** none (read-only experiments + a doc line). Delete spike-note dirs if abandoning.
 - **Observed Failure (the bug this gate de-risks):**
   - Verbatim (from the named dependency / warm-resume stale-result bug): a `--resume` spawn replays prior terminal state and returns the *previous* turn's answer because the live turn never ran — a replay boundary was seen with no live prompt after it (`sawReplayBoundary && !livePromptAfterBoundary` → `staleSuspected`).
 - **Debugging Trail:**
-  - Spike already run via `claude` direct (design D6): dangling `mcp__custom-tools__bash` tool_use resumed clean (exit 0). Ruled out: "dangling tool call is a hard blocker." NOT yet ruled out: the same through `claude-p`'s suppression path — hence T0.2.
-  - C4 untested either way — hence T0.1, before any code relies on `--resume` of a possibly-absent transcript.
+  - D6 (claude direct) ruled out "dangling = hard blocker." T0.2 (DONE) extended this through claude-p's suppression path: still clean, and `staleSuspected` correctly stayed false (live prompt ran after the replay boundary).
+  - T0.1 (DONE): `claude --resume <missing>` errors, so no code relies on resuming an absent transcript silently.
 
 ## Plan step 1: Amend Constitution (Principle I + III(b)) and Domain invariant 3 (D8)
 
@@ -79,7 +78,7 @@ AC IDs are canonical: `<capability>.<requirement-slug>`.
        - `warm-pi-resume.cold-start-when-validation-does-not-pass` — no sidecar / divergence / version-skew → `{ warm: false, reason }` (normal cold).
        - `warm-pi-resume.cold-start-on-unreadable-or-unconfirmable-sidecar-state` — corrupt/torn sidecar / **unconfirmable-transcript (fail-closed)** → `{ warm: false, reason }`.
        - `warm-pi-resume.post-spawn-stale-result-guard` — `staleSuspected: true` → `{ warm: false, reason: 'stale' }` (cold-retry signal).
-       - `warm-pi-resume.aborted-mid-tool-sessions-remain-resumable` — a sidecar whose recorded transcript ended mid-tool still validates `{ warm: true }` (dangling tool call is NOT a gate trigger, D6 — **provisional pending T0.2**).
+       - `warm-pi-resume.aborted-mid-tool-sessions-remain-resumable` — a sidecar whose recorded transcript ended mid-tool still validates `{ warm: true }` (dangling tool call is NOT a gate trigger, D6 — **confirmed by T0.2**).
      - `tests/unit-driver-*.mjs` (T3.3 plumbing): a stale `--resume` stream surfaces `staleSuspected: true` on `ClaudePDoneResult`; a clean live turn surfaces `false`.
   2. **Run** the unit tests → **expect FAIL** (gate + done-result field absent).
   3. **Minimal impl** — (a) **plumb** `staleSuspected` from the parser's `onResumeDiag` (`stream.ts:615`) onto `ClaudePDoneResult` (`claudeP.ts:473-486`) + through the resilience wrapper (`claudeP.ts:896`); (b) pure gate helper consumed by the bridge: inputs = sidecar + pi history hashes + current `claude` version + transcript-present flag + post-spawn `staleSuspected`; output = `{ warm, reason }`. No real `claude-p` in the gate seam.
@@ -134,7 +133,7 @@ AC IDs are canonical: `<capability>.<requirement-slug>`.
 
 ## Manual Adjustments
 
-- **Step 0 precedes all code** for sequencing (C5) and to characterize C4/D6; note C4's existence pre-check is now COMMITTED (fail-closed) regardless of the spike, and D6/R7 is provisional pending T0.2 (if it inverts, a dangling tool call becomes a cold trigger).
+- **Step 0 precedes all code** for sequencing (C5). The two spikes are DONE (2026-06-06): C4/T0.1 — `claude --resume <missing>` errors, not silent-fresh (the committed fail-closed check is belt-and-suspenders); D6/T0.2 — R7 CONFIRMED (dangling tool_use resumes clean through claude-p + suppression; does not invert). Only the C5 sequencing decision remains open.
 - **Steps 2–3 are strict TDD** (tdd-preferred + cleanly unit-testable pure logic — incl. the step-3 stale-signal plumbing test); **steps 1, 4, 5 are ordered lists** — doc edit (1), integration wiring proven end-to-end in step 5 (4), and the scenario/verify pass itself (5). This matches review.md: "Resume end-to-end is spike/integration-gated."
 - **Debug Mode = systematic-debugging** → every code/latch step carries Observed Failure + Debugging Trail; for greenfield steps the RED test is the observed failure, for the latch (step 4.3) it is the real warm-resume stale-result bug.
 - **Scale = L** (set in review.md, mandated by the constitution's Governance clause for a Principle-I amendment): mandates ADR promotion of D1/D2/D5/D8 at archive and the adversarial-review-cycle (run). This plan reflects three adversarial rounds: R1 (discriminator → `staleSuspected`; stale-signal plumbing; subagent-frame persist gated; full-sessionId; fail-closed transcript check; sidecar-invalidation AC; pruning; Scale M→L), R2 (literal-cwd keying — no realpath; III(b) widening; Domain invariant 3 amendment; abort false-positive guard; R4 EARS split; atomic writes), and R3 (opaque `sha256` digest so the sidecar leaks no plaintext; III Enforcement + CI-audit reconciliation; turn-start keyed validation; exact transcript-path encoding; `--resume`-error fallback granularity).

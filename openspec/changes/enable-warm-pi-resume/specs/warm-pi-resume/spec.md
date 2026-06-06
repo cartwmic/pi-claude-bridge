@@ -101,13 +101,13 @@ WHEN the bridge warm-resumes from a sidecar, THE bridge SHALL set its in-memory 
 - **WHEN** a warm resume succeeds and the user then `/fork`s within the same process
 - **THEN** the bridge detects divergence against the recomputed in-memory baseline and cold-starts that turn
 
-### Requirement: Aborted-Mid-Tool Sessions Remain Resumable (provisional pending spike T0.2)
+### Requirement: Aborted-Mid-Tool Sessions Remain Resumable
 
-WHERE the recorded driver transcript ends with an unclosed tool call from a turn that was aborted mid-tool, THE bridge SHALL still warm-resume it and SHALL NOT cold-start solely because of the unclosed tool call, relying on the driver's request-construction repair of the dangling tool call. NOTE: this requirement is **provisional** — it is proven only via `claude` direct, not the full `claude-p` + `suppressResumeReplay` path. If spike T0.2 shows the driver does NOT self-repair through that path, this requirement INVERTS: a dangling tool call becomes a cold-start trigger (moved into "Cold Start On Unreadable Or Unconfirmable Sidecar State"). It MUST NOT be treated as settled before T0.2.
+WHERE the recorded driver transcript ends with an unclosed tool call from a turn that was aborted mid-tool, THE bridge SHALL still warm-resume it and SHALL NOT cold-start solely because of the unclosed tool call, relying on the driver's request-construction repair of the dangling tool call. CONFIRMED by spike T0.2 (2026-06-06) through the full `claude-p` + `suppressResumeReplay` path: a crafted dangling tool_use resumed with exit 0, a terminal result, the live prompt answered, and `staleSuspected:false` (no misfire). Separately, the bridge's own abort/kill path does NOT even produce a dangling transcript — killing claude-p closes the MCP shim, and `claude` writes a synthetic `is_error` tool_result ("MCP error -32000: Connection closed") for the pending call before exiting — so this requirement covers only the rarer crash-mid-write case, which is also proven safe.
 
-#### Scenario: Dangling tool call does not block warm resume (subject to T0.2)
-- **WHEN** the prior turn was aborted while a bridged tool was held (leaving a dangling tool call in the driver transcript) and the sidecar otherwise validates
-- **THEN** the bridge warm-resumes and the driver proceeds with the new turn without error (if T0.2 falsifies this, the bridge cold-starts instead)
+#### Scenario: Dangling tool call does not block warm resume
+- **WHEN** the prior turn left a dangling tool call in the driver transcript and the sidecar otherwise validates
+- **THEN** the bridge warm-resumes and the driver proceeds with the new turn without error
 
 ### Requirement: Warm Path Performs No New Claude Config Access
 
@@ -131,5 +131,5 @@ THE warm-resume path SHALL NOT write any path under `~/.claude/` and SHALL NOT r
 | warm-pi-resume.post-spawn-stale-result-guard | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.sidecar-invalidated-on-turn-error | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.divergence-baseline-rehydrated-on-warm-resume | [x] | [x] | [x] | [x] | [x] |
-| warm-pi-resume.aborted-mid-tool-sessions-remain-resumable | [x] | [x] | [x] | [x] | [~] provisional pending spike T0.2 (may invert to a cold trigger) |
+| warm-pi-resume.aborted-mid-tool-sessions-remain-resumable | [x] | [x] | [x] | [x] | [x] (confirmed by spike T0.2 — no longer provisional) |
 | warm-pi-resume.warm-path-performs-no-new-claude-config-access | [x] | [x] | [x] | [x] | [x] |

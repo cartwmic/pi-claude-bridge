@@ -120,6 +120,8 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 **Full sessionId required:** the C3 "no collision for two pi sessions in the same cwd" guarantee depends on distinct sessionIds → distinct keys. The existing `getPiSessionId()` helper returns `id.slice(0, 8)` (log-binding only, `index.ts:280`); an 8-char prefix materially raises collision risk. The store must key on the untruncated id (`piExtCtx.sessionManager.getSessionId()`), not the truncating helper.
 
+**Two distinct cwd uses — sidecar KEY vs. transcript-dir ENCODING (refined by T0.2):** the **sidecar key** just needs intra-session stability (persist and resume use the same `frame.cwd`), so the literal `frame.cwd` is fine. But the **R4b transcript-existence check** must encode the dir `claude` actually wrote to, and T0.2 observed `claude` records the **OS-resolved** cwd: spawned with `cwd=/tmp/d6-…`, the transcript landed under `~/.claude/projects/-private-tmp-d6-…/` (`/tmp`→`/private/tmp` firmlink). So the existence-check encoder must replicate claude's canonicalization — OS firmlink/symlink resolution AND the `/`-and-`.`→`-` substitution (and likely a `$PWD`-vs-`getcwd` preference, the probable cause of the earlier `-Users-`/`-Volumes-` split). A mis-encode only ever **false-colds** (cold is the floor → safe), so this is low-risk, but T2.4 must encode the resolved cwd, not the raw `spawnCwd` string.
+
 **4-point test:** multiple approaches ✓ (literal-vs-realpath was a real, consequential fork the review surfaced), lasting ✓, disagreement ✓ → **ADR candidate: borderline** — record as a constraint with the Round-2 correction.
 
 ### D4: Cold-start is the invariant floor; warm is a strict optimization
@@ -157,7 +159,9 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 **Rationale:** Live spike — `claude --resume` of a transcript ending in a dangling `mcp__custom-tools__bash` tool_use returned cleanly (exit 0, answered the new prompt); claude repairs the dangling call at request-construction time (no synthetic result persisted). So the feared abort edge is handled by the driver, not the bridge. *Limit:* tested via `claude` directly, not the full `claude-p` + suppression path → see Open Questions.
 
-**Spec AC R7 is provisional pending T0.2.** It is written as a firm SHALL on the strength of the `claude`-direct spike. If T0.2 (the full `claude-p` + `suppressResumeReplay` path) shows the driver does NOT self-repair the dangling call, R7 inverts — a dangling tool call becomes a cold-start trigger (add it to R4's IF-list) rather than a warm-resume case. T0.2 is therefore a hard pre-apply gate, not a confirmation.
+**T0.2 RESULT (2026-06-06) — R7 CONFIRMED, no longer provisional.** Ran the dangling-tool_use resume through the full `claude-p` + `suppressResumeReplay` path (`.spike-notes/claude-p-gate/d6-dangling-claudep-claude-haiku-4-5-2026-06-06T19-21-34Z/`):
+- **Finding B (R7's literal precondition):** a crafted transcript ending in an unclosed `tool_use` resumed cleanly — exit 0, terminal `result`, live prompt answered, `danglingErrorSeen:false`, and `staleSuspected:false` / `livePromptAfterBoundary:true` (the guard does NOT misfire). The driver repairs the dangling call at request-construction. **R7 holds; it does not invert.**
+- **Finding A (production path):** the bridge's own abort/kill path does NOT even produce a dangling transcript — killing claude-p kills the MCP shim, and `claude` writes a synthetic `is_error` tool_result ("MCP error -32000: Connection closed") for the pending call before exiting. So the abort case leaves a *closed* round; the dangling case only arises from a crash mid-write, which Finding B also covers.
 
 **4-point test:** disagreement ✓ (it was the scariest edge), lasting ✓ → ADR candidate: borderline; record the spike as the decisive evidence.
 
@@ -210,23 +214,25 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 
 ## Open Questions
 
-- **C4 (resolved → fail-closed):** Originally deferred ("does `claude --resume
-  <missing-transcript-id>` error or silently start fresh?"). Resolved during
-  adversarial review: regardless of which, the warm path now requires a
-  Principle-III(b) deterministic-path existence check and falls back to cold when
-  the transcript can't be confirmed (R4 + the "Unconfirmable transcript" AC) —
-  because the silent-fresh branch is a silent correctness regression the D5 stale
-  guard cannot catch. The T0.1 spike remains (it characterizes claude's behavior
-  and validates the check), but it no longer gates the safety floor.
+- **C4 (resolved → fail-closed; T0.1 SPIKE DONE 2026-06-06):** Spike result —
+  `claude --resume <missing>` **ERRORS, it does not silently start fresh**
+  (direct: exit 1 "No conversation found"; via `claude-p`: exit 2
+  `SessionStartTimeout`). See `.spike-notes/claude-p-gate/c4-missing-transcript-claude-2.1.159-2026-06-06T19-17-24Z/`.
+  So the silent-fresh correctness hole is **refuted** for 2.1.159 — the
+  `--resume`-error → cold path is the real safety. The committed fail-closed
+  existence check (R4b) is therefore **belt-and-suspenders** (owner kept it at
+  Step 6; it avoids a spawn+error cycle and is robust to future claude changes).
+  *Owner may now reconsider dropping it given T0.1 — left committed per the Step-6
+  decision.*
 - **C5:** Sequencing — does this change wait on the broader stale-result
   enforcement, or ship with only the per-resume `staleSuspected` guard
   (corrected + plumbed per D5)? *Owner
   decision.*
-- **D6 limit:** Re-run the dangling-tool_use resume through the full
-  `claude-p` + warm-resume-suppression path (not just `claude` direct) before
-  relying on D6. *Owner: spike before apply.* A harness for warm `--resume`
-  through the full claude-p path now exists from the `275dde9` work
-  (`.spike-notes/claude-p-gate/mcp-ready-gate-e2e.mjs` + the
-  `coldstart-perpetuation-*` / `mcp-attach-race-proof-*` spike runs, which
-  characterized warm `--resume` through claude-p for the tool-less-leak
-  transcript) — adapt it to drive the dangling-tool_use transcript.
+- **D6 limit — RESOLVED (T0.2 spike DONE 2026-06-06):** ran the dangling-tool_use
+  resume through the full `claude-p` + `suppressResumeReplay` path
+  (`.spike-notes/claude-p-gate/d6-dangling-claudep-claude-haiku-4-5-2026-06-06T19-21-34Z/`
+  + harness `d6-dangling-*.mjs`). A crafted dangling tool_use resumed clean
+  (exit 0, result, live prompt answered, `staleSuspected:false`). **R7 holds, no
+  invert.** Bonus: the abort/kill path self-closes the round (claude writes an
+  `is_error` tool_result on MCP disconnect), so the dangling case only arises
+  from a crash mid-write — also covered.

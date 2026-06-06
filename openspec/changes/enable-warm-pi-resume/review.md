@@ -30,10 +30,10 @@ Controlled-vocabulary mode switchboard for `apply`.
 - **No kill-switch (owner decision, Step 6):** the change ships with NO feature
   flag — "no conditional logic; we can always revert." Cold-start is the invariant
   floor (D4), so rollback is `git revert` + delete `~/.pi/agent/resume/`.
-- **Two spikes are pre-apply gates (Analyze Check 7):**
-  1. C4 — `claude --resume <missing-transcript>` behavior (error vs. silent-fresh).
-  2. D6-limit — re-run the dangling-tool_use resume through the full
-     `claude-p` + warm-resume-suppression path (only `claude` direct was tested).
+- **Two pre-apply spikes — both DONE 2026-06-06 (Analyze Check 7):**
+  1. T0.1 (C4) — `claude --resume <missing>` **ERRORS, not silent-fresh** (exit 1 direct / exit 2 via claude-p) → fail-closed check is belt-and-suspenders.
+  2. T0.2 (D6-limit) — **R7 CONFIRMED**: a dangling tool_use resumes cleanly through claude-p + suppression (`staleSuspected` does not misfire); the abort path self-closes the round anyway.
+  Spike notes under `.spike-notes/claude-p-gate/c4-missing-transcript-*` and `d6-dangling-claudep-*`.
 - **Adversarial review recommended:** given the Principle I amendment (D8) and
   the prior Scale-L lesson (end-to-end validation against the real OAuth-authed
   binary before marking implementation complete), consider setting Review Status

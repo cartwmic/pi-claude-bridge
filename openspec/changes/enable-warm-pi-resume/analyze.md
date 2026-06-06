@@ -71,9 +71,9 @@ remediation; the rest minor. See Check 9 for the adversarial Round 1 disposition
 
 | # | Finding | Status | Carried as |
 |---|---|---|---|
-| C4 | Does `claude --resume <missing-transcript>` error or silently start fresh? | **resolved (adversarial Round 1)** | Fail-closed existence pre-check now COMMITTED (R4 + "Unconfirmable transcript" AC); the silent-fresh case is a context-free live turn the stale guard can't catch. T0.1 spike remains as characterization only. |
+| C4 | Does `claude --resume <missing-transcript>` error or silently start fresh? | **RESOLVED — T0.1 spike DONE 2026-06-06** | `claude --resume <missing>` ERRORS (exit 1 direct / exit 2 via claude-p) — NOT silent-fresh. The hole is refuted; the committed fail-closed check (R4b) is belt-and-suspenders. |
 | C5 | Sequencing vs. broader stale-result enforcement (dependency) | deferred | Design Open Question + Risk R2 → **owner decision before apply** (standalone now conditional on the corrected+plumbed `staleSuspected` guard) |
-| D6-limit | Re-run the dangling-tool_use resume through the full `claude-p` + suppression path (only `claude` direct was tested) | open (harness now exists) | Design Open Question → **spike before apply**; commit `275dde9` already drove warm `--resume` through the full claude-p path (`.spike-notes/claude-p-gate/mcp-ready-gate-e2e.mjs` + `coldstart-perpetuation-*`) for the tool-less-leak transcript — adapt it to the dangling case |
+| D6-limit | Re-run the dangling-tool_use resume through the full `claude-p` + suppression path | **RESOLVED — T0.2 spike DONE 2026-06-06** | R7 CONFIRMED through the full claude-p + suppression path (exit 0, result, live prompt answered, `staleSuspected:false`); the abort path self-closes the round anyway. R7 de-provisionalized. |
 
 ## Check 8 — Repo drift since proposal (re-validation 2026-06-06)
 
@@ -148,5 +148,5 @@ Two blind reviewers (claude-opus-4-8). Trajectory converged sharply (P0+P1: R1=9
 - **Adversarial Round 1 (Check 9):** 2 P0 + 7 P1, all applied.
 - **Adversarial Round 2 (Check 10):** 2 P0 (domain invariant 3; literal-cwd transcript keying) + ~8 P1 — all verified against ground truth and applied. Round 2 dug deeper than Round 1 (the fixes exposed the next layer); the constitution amendment now also widens Principle III(b) and amends Domain invariant 3.
 - **Adversarial Round 3 (Check 11):** 1 P0 (persisted-chain plaintext leak) + 4 P1 — verified and applied; trajectory converged (P0+P1 9→10→5). The content-free premise is now enforced by an opaque `sha256` digest + a sentinel test, and the III(b) amendment is completed end-to-end (principle body + Enforcement clause + CI audit).
-- **Outstanding (pre-apply):** T0.1 spike (C4 characterization — safety closed fail-closed), T0.2 spike (D6 — R7 provisional; harness exists), and one owner decision (C5 sequencing). The Step-6 owner calls are resolved: no kill-switch; fail-closed check kept; constitution bump MAJOR.
+- **Outstanding (pre-apply):** only the **C5 sequencing** owner decision remains. Both spikes are DONE (2026-06-06): **T0.1** — `claude --resume <missing>` ERRORS (not silent-fresh), so the fail-closed check is belt-and-suspenders; **T0.2** — R7 CONFIRMED (dangling tool_use resumes cleanly through claude-p + suppression; `staleSuspected` does not misfire; the abort path self-closes the round anyway). Step-6 owner calls resolved: no kill-switch; fail-closed check kept; constitution bump MAJOR.
 - **Repo drift (Check 8):** re-validated at HEAD `275dde9`; no scope change from drift.

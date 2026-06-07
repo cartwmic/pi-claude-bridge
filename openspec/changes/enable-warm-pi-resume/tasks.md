@@ -44,11 +44,11 @@
 
 ## 3. Validation gate (D2, D4, D5, D6) — tests first
 
-- [ ] 3.1 Write failing unit tests for the **pre-spawn** validation gate: prefix-extension match (reuse `detectHistoryDivergence`) + version match + **no unseen intervening messages** (only the new turn's message(s) appended beyond the sidecar chain; Risk R7 / D2(c)) → warm; divergence / version-skew / missing-or-corrupt-sidecar / **unseen intervening messages (e.g. a provider-switch turn between persist and resume)** → cold. NO staleness logic — the fork's transcript-growth gate (0.3) guarantees a live result, so the bridge has no `staleSuspected` input. Pure-function seam, no real claude-p.
+- [x] 3.1 DONE 2026-06-06 — Write failing unit tests for the **pre-spawn** validation gate: prefix-extension match (reuse `detectHistoryDivergence`) + version match + **no unseen intervening messages** (only the new turn's message(s) appended beyond the sidecar chain; Risk R7 / D2(c)) → warm; divergence / version-skew / missing-or-corrupt-sidecar / **unseen intervening messages (e.g. a provider-switch turn between persist and resume)** → cold. NO staleness logic — the fork's transcript-growth gate (0.3) guarantees a live result, so the bridge has no `staleSuspected` input. Pure-function seam, no real claude-p.
   - intent: feature
   - files_allowed:
       - tests/unit-warm-resume-gate.mjs
-- [ ] 3.2 Implement the pre-spawn validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version + the count/identity of messages `claude` actually saw; output = `{ warm: boolean, reason }`. Warm only when the appended messages beyond the chain are exactly the new turn's (R7 — `claude` saw every prefix message); else cold. Make 3.1 pass. (Same invariant as the separate `syncSharedSession` cross-provider missed-message bug — Check 13.)
+- [x] 3.2 DONE 2026-06-06 — Implement the pre-spawn validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version + the count/identity of messages `claude` actually saw; output = `{ warm: boolean, reason }`. Warm only when the appended messages beyond the chain are exactly the new turn's (R7 — `claude` saw every prefix message); else cold. Make 3.1 pass. (Same invariant as the separate `syncSharedSession` cross-provider missed-message bug — Check 13.)
   - intent: feature
   - files_allowed:
       - index.ts

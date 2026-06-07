@@ -204,3 +204,74 @@ export function invalidateSidecar(cwd: string, sessionId: string): void {
 		/* ignore */
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Pre-spawn warm/cold validation gate (pure).
+// ---------------------------------------------------------------------------
+
+export interface WarmResumeDecision {
+	warm: boolean;
+	/** Machine-readable reason for the decision (logged; never user-facing). */
+	reason:
+		| "ok"
+		| "no-sidecar"
+		| "history-divergence"
+		| "version-skew"
+		| "unseen-intervening-messages"
+		| "no-new-turn";
+}
+
+/**
+ * Pure pre-spawn warm/cold decision for the first post-resume turn. Warm ONLY
+ * when ALL hold:
+ *  - a (readable, well-formed) sidecar exists — a corrupt/missing one arrives
+ *    here as `null` (readSidecar collapses it) -> cold;
+ *  - its `sha256` history chain is a prefix of pi's freshly-loaded history (no
+ *    `/compact`, `/fork`, `/tree`, or truncation divergence);
+ *  - the recorded `claude` version equals the installed one (no transcript-format
+ *    skew; an unreadable installed version is treated conservatively as skew);
+ *  - **no unseen intervening messages (Risk R7):** the segment appended beyond
+ *    the recorded chain is claude's own response (assistant/toolResult roles —
+ *    which already live in claude's transcript) followed by EXACTLY ONE new
+ *    user-role message, the last. More than one appended user message means a
+ *    turn claude never saw was inserted (e.g. a provider switch between persist
+ *    and resume); a warm `--resume` types only the new prompt and would silently
+ *    drop it, so cold-start (re-pack) instead.
+ *
+ * Otherwise cold-start — the always-safe floor. There is NO staleness logic: the
+ * claude-p fork's transcript-growth gate guarantees a live `--resume` result, so
+ * the bridge has no `staleSuspected` input.
+ */
+export function validateWarmResume(input: {
+	sidecar: ResumeSidecar | null;
+	currentMessages: ReadonlyArray<{ role: string; text: string }>;
+	currentClaudeVersion: string | null;
+}): WarmResumeDecision {
+	const { sidecar, currentMessages, currentClaudeVersion } = input;
+	if (!sidecar) return { warm: false, reason: "no-sidecar" };
+
+	// Prefix-match: every recorded position must be unchanged in the current
+	// history (forward growth is a prefix-extension; any earlier-position change
+	// or a truncation is divergence).
+	const chain = sidecar.historyHashChain;
+	const currentChain = computeSha256Chain(currentMessages);
+	if (chain.length > currentChain.length) return { warm: false, reason: "history-divergence" };
+	for (let i = 0; i < chain.length; i++) {
+		if (chain[i] !== currentChain[i]) return { warm: false, reason: "history-divergence" };
+	}
+
+	// Version gate (transcript-format skew). Require a confirmed equal match.
+	if (sidecar.claudeVersion === null || sidecar.claudeVersion !== currentClaudeVersion) {
+		return { warm: false, reason: "version-skew" };
+	}
+
+	// R7: the appended segment must be exactly the new turn.
+	const appended = currentMessages.slice(chain.length);
+	if (appended.length === 0) return { warm: false, reason: "no-new-turn" };
+	const userCount = appended.reduce((n, m) => (m.role === "user" ? n + 1 : n), 0);
+	if (userCount !== 1 || appended[appended.length - 1].role !== "user") {
+		return { warm: false, reason: "unseen-intervening-messages" };
+	}
+
+	return { warm: true, reason: "ok" };
+}

@@ -10,9 +10,7 @@ claude-p emulates it by driving the interactive TUI in its own PTY. The bridge
 delegates PTY management, ANSI terminal-probe responses, the workspace-trust
 dialog, hook registration, and prompt-typing to claude-p, and reads nothing
 under `~/.claude/` (events arrive on claude-p's stdout; see `transcript-stream`).
-
 ## Requirements
-
 ### Requirement: claude-p spawn with model selection
 
 WHEN the bridge starts a fresh turn for a model registered under provider `claude-bridge`, THE driver SHALL spawn the `claude-p` binary as a subprocess whose arguments include the resolved model id via `--model`, the system prompt for this path via `--system-prompt <text>` (or `--input-file <path>` when the assembled prompt is large or multiline; verbatim on the capture path, pi-combined on the main-provider path), `--mcp-config <inline-json-or-path>` pointing at the bridge's stdio MCP shim, `--disallowedTools <native-tool-list>` enforcing constitution principle IV, isolation flags `--strict-mcp-config` and `--setting-sources ""` (forwarded to `claude`), `--permission-mode bypassPermissions`, `--session-id <pre-generated-uuid>` (fresh turns) or `--resume <cached-id>` (warm resume), `--output-format stream-json`, `--verbose`, and a `--timeout` large enough to accommodate the longest expected tool round. THE driver SHALL NOT pass `--settings` (claude-p reserves it) and SHALL NOT pass `-p`/`--print`.
@@ -104,7 +102,16 @@ WHEN claude-p injects the delivered prompt into the interactive `claude` session
 
 ### Requirement: Cached driver session is a hint only
 
-THE driver SHALL treat the cached driver session id as an in-memory cache hint and SHALL drop the cache on cwd change, pi history divergence (per the bridge's existing hash-chain check), `/fork`, `/compact`, restart, or any pi lifecycle event pi exposes as a divergence signal.
+THE driver SHALL treat the cached driver session id as a cache hint. The hint MAY
+be persisted across a process restart ONLY as a content-free fingerprint sidecar
+per the `warm-pi-resume` capability (never as conversation content; constitution
+Principle I). THE driver SHALL drop the cache and cold-start on cwd change, pi
+history divergence (per the bridge's existing hash-chain check), `/fork`,
+`/compact`, `claude` version skew, or any pi lifecycle event pi exposes as a
+divergence signal. WHERE a validated resume sidecar exists on a pi
+restart/resume (per `warm-pi-resume`), THE driver SHALL pass `--resume
+<persisted-id>` for the first post-resume turn; otherwise (no sidecar, or
+validation fails) THE driver SHALL cold-start.
 
 #### Scenario: Cwd change drops cache
 - **WHEN** a new turn arrives with `context.cwd` different from the cached cwd
@@ -114,6 +121,14 @@ THE driver SHALL treat the cached driver session id as an in-memory cache hint a
 #### Scenario: History divergence drops cache
 - **WHEN** the bridge detects pi history-hash divergence at the start of a turn
 - **THEN** the cached driver session id is cleared and a structured log entry records the drop
+
+#### Scenario: Validated restart warm-resumes instead of cold-starting
+- **WHEN** pi resumes a session for which a sidecar exists and validates (history prefix-match and matching `claude` version)
+- **THEN** the first post-resume claude-p spawn passes `--resume <persisted-id>` and does NOT re-pack the full history
+
+#### Scenario: Version skew on restart drops cache
+- **IF** a sidecar exists on restart but its recorded `claude` version differs from the installed version
+- **THEN** the cached session is dropped and the first post-resume turn cold-starts
 
 ### Requirement: Abort propagates to the claude-p subprocess
 
@@ -249,3 +264,18 @@ WHEN pi delivers a new user message while a main-provider turn is still in fligh
 - **THEN** the driver aborts the in-flight claude-p subprocess
 - **AND** dispatches the steering message as a fresh turn
 - **AND** the next assistant response can reference both the abandoned topic and the redirection (pi history retains both user messages)
+
+### Requirement: Resume Returns The Live Turn, Never A Replayed Prior Turn
+
+WHEN the driver serves a `--resume` turn, THE driver SHALL emit a result that reflects the LIVE turn only: it SHALL gate result emission on the transcript growing past a baseline captured before the live prompt is submitted (a new assistant turn must be appended), and SHALL ignore any Stop signal received before the live prompt is submitted. IF the transcript does not grow past the baseline (no live assistant turn appears), THEN THE driver SHALL return an error rather than a replayed prior-turn result — the error surfaces to the bridge (which invalidates the session so the next turn cold-starts). (Source-level fix in the `claude-p` fork; this is why the bridge needs no stale-result detection of its own.)
+
+#### Scenario: A replayed prior turn is never emitted as the resume result
+- **WHEN** a `--resume` turn's transcript still ends at the prior turn (the live turn has not appended an assistant message) at the moment a Stop is observed
+- **THEN** the driver does NOT emit the prior turn's answer — it waits for the live turn (transcript-growth gate), and if the live turn never appears it errors (the error surfaces; the bridge drops the session so the next turn cold-starts)
+
+#### Scenario: A Stop before submit is ignored
+- **WHEN** a Stop hook signal arrives before the driver has submitted the live prompt (state is not awaiting-stop)
+- **THEN** the driver ignores it (records only the transcript path) and does not treat it as the turn's completion
+
+---
+

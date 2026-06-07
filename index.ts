@@ -1402,20 +1402,25 @@ function onRouterPark(frame: QueryFrame, info: ParkedCallInfo): void {
 	frame.log.debug({ piId: info.piId, name: info.name }, `onRouterPark: routed tools/call to pi (piId=${info.piId})`);
 }
 
-/** Close any still-open inline (text/thinking) blocks before a tool call / turn end. */
-function closeOpenInlineBlocks(frame: QueryFrame): void {
+/**
+ * Close still-open inline (text/thinking) blocks before a tool call / turn end —
+ * or, with `onlyType`, close only blocks of that type so a thinking→text (or
+ * text→thinking) transition finalizes the prior trace before the next one opens.
+ * Syncs content after each close so `partial.content` reflects the committed block.
+ */
+function closeOpenInlineBlocks(frame: QueryFrame, onlyType?: "text" | "thinking"): void {
 	if (!frame.currentPiStream) return;
 	for (let i = 0; i < frame.turnBlocks.length; i++) {
 		const b = frame.turnBlocks[i];
 		if (b.index === undefined) continue;
-		const wasOpen = b.index;
+		if (onlyType && b.type !== onlyType) continue;
 		delete b.index;
+		syncTurnContent(frame);
 		if (b.type === "text") {
 			frame.currentPiStream.push({ type: "text_end", contentIndex: i, content: b.text, partial: frame.turnOutput });
 		} else if (b.type === "thinking") {
 			frame.currentPiStream.push({ type: "thinking_end", contentIndex: i, content: b.thinking, partial: frame.turnOutput });
 		}
-		void wasOpen;
 	}
 }
 
@@ -1433,28 +1438,41 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 		case "text-delta": {
 			if (!frame.currentPiStream) return;
 			ensureTurnStarted(frame);
+			// Answer text starts/continues → finalize any open thinking trace first so
+			// it is committed and rendered as a distinct reasoning block before the answer.
+			closeOpenInlineBlocks(frame, "thinking");
 			let block = frame.turnBlocks.find((b) => b.type === "text" && b.index !== undefined);
 			if (!block) {
 				block = { type: "text", text: "", index: frame.turnBlocks.length };
 				frame.turnBlocks.push(block);
-				frame.currentPiStream.push({ type: "text_start", contentIndex: frame.turnBlocks.length - 1, partial: frame.turnOutput });
+				// Sync BEFORE the push: pi renders solely from event.partial.content, so the
+				// new block must already be present in turnOutput.content when the event fires.
+				syncTurnContent(frame);
+				frame.currentPiStream.push({ type: "text_start", contentIndex: frame.turnBlocks.indexOf(block), partial: frame.turnOutput });
 			}
 			const idx = frame.turnBlocks.indexOf(block);
 			block.text += ev.text;
+			syncTurnContent(frame);
 			frame.currentPiStream.push({ type: "text_delta", contentIndex: idx, delta: ev.text, partial: frame.turnOutput });
 			return;
 		}
 		case "thinking-delta": {
 			if (!frame.currentPiStream) return;
 			ensureTurnStarted(frame);
+			// A new thinking run after answer text would be unusual, but keep blocks
+			// non-overlapping: close any open text block before opening the thinking one.
+			closeOpenInlineBlocks(frame, "text");
 			let block = frame.turnBlocks.find((b) => b.type === "thinking" && b.index !== undefined);
 			if (!block) {
 				block = { type: "thinking", thinking: "", thinkingSignature: "", index: frame.turnBlocks.length };
 				frame.turnBlocks.push(block);
-				frame.currentPiStream.push({ type: "thinking_start", contentIndex: frame.turnBlocks.length - 1, partial: frame.turnOutput });
+				// Sync BEFORE the push (see text-delta): partial.content is pi's only source.
+				syncTurnContent(frame);
+				frame.currentPiStream.push({ type: "thinking_start", contentIndex: frame.turnBlocks.indexOf(block), partial: frame.turnOutput });
 			}
 			const idx = frame.turnBlocks.indexOf(block);
 			block.thinking += ev.text;
+			syncTurnContent(frame);
 			frame.currentPiStream.push({ type: "thinking_delta", contentIndex: idx, delta: ev.text, partial: frame.turnOutput });
 			return;
 		}

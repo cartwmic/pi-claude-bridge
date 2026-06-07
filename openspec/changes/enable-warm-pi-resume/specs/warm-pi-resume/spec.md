@@ -35,11 +35,15 @@ THE resume sidecar SHALL contain only fingerprints and identifiers and SHALL NOT
 
 ### Requirement: Validated Warm Resume On Pi Resume
 
-WHEN the first post-resume turn runs (the first turn after a `session_start:resume` or a bare bridge restart whose in-memory cache is empty but a sidecar is present) AND a sidecar exists for the current literal cwd + full pi `sessionId` AND pi's loaded history is a prefix-extension of the sidecar's fingerprint chain AND the sidecar's `claude` version equals the current `claude` version, THE bridge SHALL warm-resume the recorded driver session (`--resume <persisted-id>`) for that turn instead of cold-starting. The keyed validation is performed at turn-start (where the literal spawn cwd is known), NOT in the `session_start` handler (which carries no cwd).
+WHEN the first post-resume turn runs (the first turn after a `session_start:resume` or a bare bridge restart whose in-memory cache is empty but a sidecar is present) AND a sidecar exists for the current literal cwd + full pi `sessionId` AND pi's loaded history is a prefix-extension of the sidecar's fingerprint chain AND the messages appended beyond that chain are ONLY the new turn's message(s) — i.e. no intervening messages were added that the recorded `claude` session never saw (a provider switch or parallel path between persist and resume) — AND the sidecar's `claude` version equals the current `claude` version, THE bridge SHALL warm-resume the recorded driver session (`--resume <persisted-id>`) for that turn instead of cold-starting. The keyed validation is performed at turn-start (where the literal spawn cwd is known), NOT in the `session_start` handler (which carries no cwd).
 
 #### Scenario: Valid sidecar drives a warm first turn
-- **WHEN** the first post-resume turn runs and the sidecar validates (history prefix-match, version match)
+- **WHEN** the first post-resume turn runs and the sidecar validates (prefix-match, version match) and the only new message beyond the chain is the new user prompt
 - **THEN** that turn spawns `claude-p` with `--resume <persisted-id>` and types only the new user message (not the full history)
+
+#### Scenario: Unseen intervening messages force cold (not warm)
+- **WHEN** pi's loaded history extends the sidecar chain by messages the recorded `claude` session never saw (e.g. a turn ran on a different provider between persist and resume, so `claude` was not sent those messages)
+- **THEN** the bridge cold-starts (re-packs the full history) rather than warm-resuming — because a warm `--resume` would type only the new prompt and silently drop the unseen messages (the cross-provider "missed messages" failure mode). Prefix-match alone is NOT sufficient for warm-safety; `claude` must have seen every message in the prefix.
 
 #### Scenario: A deleted/cleaned transcript surfaces as an error then cold (no existence pre-check)
 - **WHEN** the sidecar validates but the recorded `claude` transcript was deleted/cleaned out-of-band

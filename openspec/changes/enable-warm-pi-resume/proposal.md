@@ -16,9 +16,11 @@ path users hit most (every resume; every post-error turn).
   recoverable plaintext — + the `claude` version), keyed by
   the **literal** spawn cwd + the **full** pi `sessionId`, stored OUTSIDE `~/.claude/`
   (under `~/.pi/agent/`). It stores fingerprints, **never conversation content**.
-- On `session_start:resume`, validate the sidecar against pi's freshly-loaded
-  history (prefix-match) and the current `claude` version; if valid, **warm-resume**
-  the prior `claude` session (`--resume`) instead of cold-starting.
+- On the first post-resume turn, validate the sidecar against pi's freshly-loaded
+  history (prefix-match), the current `claude` version, AND that `claude` saw every
+  message in the prefix (no unseen intervening messages — e.g. a provider switch;
+  Risk R7); if valid, **warm-resume** the prior `claude` session (`--resume`)
+  instead of cold-starting.
 - Fix the `--resume` **stale-result race at the source in the `claude-p` fork**
   (a transcript-growth gate: claude-p emits a result only once the transcript
   shows the live turn appended a new assistant turn past a pre-submit baseline;

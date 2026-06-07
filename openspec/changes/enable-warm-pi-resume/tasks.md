@@ -44,11 +44,11 @@
 
 ## 3. Validation gate (D2, D4, D5, D6) — tests first
 
-- [ ] 3.1 Write failing unit tests for the **pre-spawn** validation gate: prefix-extension match (reuse `detectHistoryDivergence`) → warm; divergence / version-skew / missing-or-corrupt-sidecar → cold. NO staleness logic — the fork's transcript-growth gate (0.3) guarantees a live result, so the bridge has no `staleSuspected` input. Pure-function seam, no real claude-p.
+- [ ] 3.1 Write failing unit tests for the **pre-spawn** validation gate: prefix-extension match (reuse `detectHistoryDivergence`) + version match + **no unseen intervening messages** (only the new turn's message(s) appended beyond the sidecar chain; Risk R7 / D2(c)) → warm; divergence / version-skew / missing-or-corrupt-sidecar / **unseen intervening messages (e.g. a provider-switch turn between persist and resume)** → cold. NO staleness logic — the fork's transcript-growth gate (0.3) guarantees a live result, so the bridge has no `staleSuspected` input. Pure-function seam, no real claude-p.
   - intent: feature
   - files_allowed:
       - tests/unit-warm-resume-gate.mjs
-- [ ] 3.2 Implement the pre-spawn validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version; output = `{ warm: boolean, reason }`. Make 3.1 pass.
+- [ ] 3.2 Implement the pre-spawn validation gate (pure helper consumed by the bridge): inputs = sidecar + pi history hashes + current claude version + the count/identity of messages `claude` actually saw; output = `{ warm: boolean, reason }`. Warm only when the appended messages beyond the chain are exactly the new turn's (R7 — `claude` saw every prefix message); else cold. Make 3.1 pass. (Same invariant as the separate `syncSharedSession` cross-provider missed-message bug — Check 13.)
   - intent: feature
   - files_allowed:
       - index.ts
@@ -61,7 +61,7 @@
   - intent: feature
   - files_allowed:
       - index.ts
-- [ ] 4.2 Perform validated warm-resume at the **first post-resume turn in `startFreshQuery`** (where the literal `frame.cwd` exists) — NOT in the `session_start` handler, which carries no cwd. The `session_start:resume` handler (`index.ts:1698-1704`) keeps its existing side-effects (frame-drain + abort of leftover frames at `index.ts:1691-1696`, in-memory cache clear) and additionally sets a one-shot "warm-resume pending" flag; it does NOT read the sidecar. At the first turn with that flag + empty in-memory cache: read the sidecar by literal `frame.cwd` + full sessionId; run the gate (`sha256` prefix-match over pi's loaded history + `claude` version match; on any fail → cold, no `--resume`); on pass set `cachedSessionId`/`cachedSessionCwd` and set the in-memory divergence baseline by recomputing `computeMessageHashes(context.messages)` **locally** (R6 — NOT from the sidecar's sha256 chain) so `useResume` (`index.ts:1495`) takes the warm branch. (No transcript-existence pre-check — a deleted transcript surfaces as a `--resume` error → cold via D7, per T0.1.) Satisfies `claude-p-driver.cached-driver-session-is-a-hint-only`.
+- [ ] 4.2 Perform validated warm-resume at the **first post-resume turn in `startFreshQuery`** (where the literal `frame.cwd` exists) — NOT in the `session_start` handler, which carries no cwd. The `session_start:resume` handler (`index.ts:1698-1704`) keeps its existing side-effects (frame-drain + abort of leftover frames at `index.ts:1691-1696`, in-memory cache clear) and additionally sets a one-shot "warm-resume pending" flag; it does NOT read the sidecar. At the first turn with that flag + empty in-memory cache: read the sidecar by literal `frame.cwd` + full sessionId; run the gate (`sha256` prefix-match over pi's loaded history + `claude` version match + **no unseen intervening messages** — only the new turn appended beyond the chain, R7; on any fail → cold, no `--resume`); on pass set `cachedSessionId`/`cachedSessionCwd` and set the in-memory divergence baseline by recomputing `computeMessageHashes(context.messages)` **locally** (R6 — NOT from the sidecar's sha256 chain) so `useResume` (`index.ts:1495`) takes the warm branch. (No transcript-existence pre-check — a deleted transcript surfaces as a `--resume` error → cold via D7, per T0.1.) Satisfies `claude-p-driver.cached-driver-session-is-a-hint-only`.
   - intent: feature
   - files_allowed:
       - index.ts

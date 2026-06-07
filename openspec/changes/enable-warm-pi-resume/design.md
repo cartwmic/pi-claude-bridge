@@ -68,7 +68,7 @@ The artifacts use informal `R#` shorthand for `warm-pi-resume` requirements; the
 | R8 | warm-path-performs-no-new-claude-config-access |
 | R9 | claude-p-driver.cached-driver-session-is-a-hint-only (delta) |
 
-**Note:** the **Risks** table below also uses `R1`–`R6` tokens, for a *different* namespace (risk rows). Risk rows are ALWAYS written with the word "Risk" (e.g. "Risk R2"); a bare `R#`/`R4a`/`R4b` always means a requirement. Prefer canonical slugs when in doubt.
+**Note:** the **Risks** table below also uses `R1`–`R7` tokens, for a *different* namespace (risk rows) — including a **Risk R7** ("unseen intervening messages") distinct from the requirement R7 (aborted-mid-tool). Risk rows are ALWAYS written with the word "Risk" (e.g. "Risk R7"); a bare `R#`/`R4a`/`R4b` always means a requirement. Prefer canonical slugs when in doubt.
 
 ## Decisions
 
@@ -93,7 +93,9 @@ The artifacts use informal `R#` shorthand for `warm-pi-resume` requirements; the
 
 ### D2: Validate with the pi-side fingerprint chain + version only — do NOT hash claude's transcript
 
-**Choice:** Validate a resume by (a) pi's loaded history is a prefix-extension of `historyHashChain` (reuse `detectHistoryDivergence`), and (b) `claudeVersion` matches. Do **not** read or hash claude's on-disk transcript.
+**Choice:** Validate a resume by (a) pi's loaded history is a prefix-extension of `historyHashChain` (reuse `detectHistoryDivergence`), (b) `claudeVersion` matches, AND (c) **no unseen intervening messages** — the messages appended beyond `historyHashChain` are exactly the new turn's (Risk R7). Do **not** read or hash claude's on-disk transcript.
+
+**Why (c) — prefix-match is not sufficient (Risk R7, surfaced 2026-06-06):** a prefix-extension can include messages the recorded `claude` session never saw (a provider switch / parallel path between persist and resume). A warm `--resume` types only the new prompt, so those unseen messages are silently dropped. The gate must require that `claude` saw every message in the prefix; otherwise cold-start (rebuild) so the missed messages reach `claude`. This is the **same invariant** as the pre-existing in-process `syncSharedSession` bug `int-session-resume.mjs` exposed — fix both to the same rule.
 
 **Alternatives considered:**
 - **Dual-hash (also hash claude's transcript each turn):** detects out-of-band tampering of the cache, but requires the bridge to *read* `~/.claude/` transcripts every turn — an expansion of Principle III reads we don't want. Deferred.
@@ -196,6 +198,7 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
 | R4 | Principle-I "content-free" creeps toward storing content | Low | High | D8 amendment scoped to fingerprints; analyze check 3 + design review of the sidecar schema |
 | R5 | Sidecar grows unbounded (one file per session) | Low | Low | TTL/size cap + prune on read; keyed cleanup |
 | R6 | Warm resume masks a real divergence the hash-chain misses | Low | Medium | Prefix-match is the same primitive used in-process today; cold floor on any miss |
+| R7 | **Prefix-extension with UNSEEN intervening messages → warm-resume drops them** (cross-provider "missed messages"). A provider switch (or parallel path) between persist and resume appends messages `claude` never saw; a warm `--resume` types only the new prompt, so those are lost. | Medium | High | **Prefix-match is NOT sufficient for warm-safety — `claude` must have seen every message in the prefix.** Warm only when the appended messages beyond the chain are exactly the new turn's; else cold-start (rebuild). Surfaced 2026-06-06 by `int-session-resume.mjs` (Turn 4) as a **pre-existing in-process `syncSharedSession` bug** — same invariant; fix there too (separate bug, see Open Questions). |
 
 ## Migration Plan
 
@@ -233,3 +236,13 @@ So the warm decision is made by the sha256 resume-validation (where `frame.cwd` 
   invert.** Bonus: the abort/kill path self-closes the round (claude writes an
   `is_error` tool_result on MCP disconnect), so the dangling case only arises
   from a crash mid-write — also covered.
+- **Cross-provider missed-messages (NEW — surfaced 2026-06-06; Risk R7):**
+  `int-session-resume.mjs` Turn 4 shows the bridge warm-resumes on a prefix-extension
+  that includes messages `claude` never saw (a codex turn between two claude-bridge
+  turns), silently dropping them. This is a **pre-existing in-process
+  `syncSharedSession` bug** — NOT the resume-staleness gate, which is verified
+  working (turn-4 resume-diag: `staleSuspected:false`, live generation). Captured
+  as a separate bug (mcp-memory). This change's warm gate must adopt the same rule
+  (D2(c) / R7): warm only when `claude` saw every prefix message, else cold-start.
+  *Owner: fix `syncSharedSession` separately; this change inherits the corrected
+  invariant.*

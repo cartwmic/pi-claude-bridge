@@ -1823,12 +1823,26 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
-		// Warm-pi-resume: only a `resume` arms a validated warm-resume attempt on the
-		// next turn (a `new`/`fork` must cold-start). The keyed sidecar read happens
-		// in startFreshQuery, where the literal frame cwd is known (design D4). The
-		// flag is one-shot; clearSession just zeroed the in-memory cache above.
-		if (event.reason === "resume") warmResumePending = true;
-		else if (event.reason === "new" || event.reason === "fork") warmResumePending = false;
+		// Warm-pi-resume: arm a validated warm-resume attempt on the next turn for any
+		// session_start that (re)loads into a session which MAY have a prior driver
+		// session to reattach. pi's reasons (verified against pi-coding-agent):
+		//   - "startup": a fresh PROCESS launch — INCLUDING a restart that resumes a
+		//     prior session via --session-id/--continue (the primary warm-resume case;
+		//     the spec's "bare bridge restart"). This is NOT "resume".
+		//   - "resume":  an in-session switch to another session (/resume).
+		//   - "reload":  an in-process extension reload (/reload) — module state may
+		//     have been recreated, leaving the in-memory cache empty.
+		//   - "new"/"fork": a brand-new or forked session — MUST cold-start.
+		// Arming broadly is safe: the gate validates (no/invalid sidecar, divergence,
+		// version skew, unseen intervening messages all fall back to cold), and the
+		// warm block only acts when the in-memory cache is empty (cachedSessionId ===
+		// null), so it never overrides a live in-process session.
+		if (event.reason === "new" || event.reason === "fork") {
+			warmResumePending = false;
+		} else {
+			warmResumePending = true; // startup | resume | reload
+			log.info({ reason: event.reason }, `session_start:${event.reason} — arming validated warm-resume attempt for the next turn`);
+		}
 	});
 	pi.on("session_shutdown", (_event?: any) => {
 		clearSession("session_shutdown");

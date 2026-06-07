@@ -344,6 +344,24 @@ function defaultReadClaudeVersion(): string | null {
 	}
 }
 
+/**
+ * Process-cached installed `claude` version (read once, lazily) for the
+ * warm-pi-resume sidecar's version gate. Returns the MAJOR.MINOR.PATCH string or
+ * null if unreadable. Cached because it is consulted on every persist/resume and
+ * the installed version is stable within a process (a `claude` upgrade is a
+ * cross-restart event, which the version gate is designed to catch).
+ */
+let _installedClaudeVersion: string | null | undefined;
+export function getInstalledClaudeVersion(): string | null {
+	if (_installedClaudeVersion === undefined) _installedClaudeVersion = defaultReadClaudeVersion();
+	return _installedClaudeVersion;
+}
+
+/** TEST-ONLY: clear the cached installed-claude-version. */
+export function __resetInstalledClaudeVersionForTests(): void {
+	_installedClaudeVersion = undefined;
+}
+
 /** Default real reader: claude-p package version from its package.json (no spawn). */
 function defaultReadClaudePVersion(): string | null {
 	try {

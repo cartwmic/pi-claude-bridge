@@ -43,12 +43,20 @@ import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import {
 	spawnClaudePWithResilience as _realSpawnClaudeP,
 	spawnClaudeP as _realSpawnClaudePSingle,
+	getInstalledClaudeVersion,
 	type ClaudePSpawnConfig,
 	type ClaudePHandle,
 	type ClaudePDoneResult,
 	type SystemPromptSource,
 	type PromptSource,
 } from "./src/driver/claudeP.js";
+import {
+	readSidecar,
+	writeSidecar,
+	invalidateSidecar,
+	validateWarmResume,
+	computeSha256Chain,
+} from "./src/resume-store.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
 import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
@@ -282,6 +290,17 @@ function getPiSessionId(): string | null {
 }
 
 /**
+ * The FULL pi session id (NOT the 8-char getPiSessionId truncation). The
+ * warm-resume sidecar key needs the untruncated id so two sessions sharing an
+ * 8-char prefix do not collide (design D3 / C3b). Null if unavailable.
+ */
+function getFullPiSessionId(): string | null {
+	try {
+		return piExtCtx?.sessionManager.getSessionId() ?? null;
+	} catch { return null; }
+}
+
+/**
  * In-memory session cache. The CC session_id is a hint for prompt cache
  * resume. We NEVER read or write ~/.claude/sessions/. On restart, on /fork,
  * on /tree, on /compact — anything that diverges history — this is dropped
@@ -289,6 +308,14 @@ function getPiSessionId(): string | null {
  */
 let cachedSessionId: string | null = null;
 let cachedSessionCwd: string | null = null;
+
+/**
+ * One-shot "attempt a validated warm-resume on the next turn" flag, set by the
+ * `session_start:resume` handler (which carries no cwd, so it cannot read the
+ * keyed sidecar itself — that happens at the first turn in startFreshQuery where
+ * the literal `frame.cwd` is known; design D4). Consumed exactly once.
+ */
+let warmResumePending = false;
 
 /**
  * Per-message fingerprints from the last context we sent. Used to detect
@@ -311,6 +338,19 @@ function hashMessage(m: Context["messages"][number]): string {
 
 function computeMessageHashes(messages: Context["messages"]): string[] {
 	return messages.map(hashMessage);
+}
+
+/**
+ * Flatten pi messages into { role, text } items for the resume-store's one-way
+ * `sha256` fingerprint chain (computeSha256Chain) and the warm-resume gate. The
+ * text is the same flattening hashMessage uses, but the resulting persisted
+ * digest is opaque (no plaintext recoverable) — see src/resume-store.ts.
+ */
+function messagesToFingerprintItems(messages: Context["messages"]): { role: string; text: string }[] {
+	return messages.map((m) => ({
+		role: m.role,
+		text: typeof m.content === "string" ? m.content : messageContentToText(m.content),
+	}));
 }
 
 /**
@@ -453,6 +493,11 @@ type QueryFrame = {
 	// startFreshQuery; stopped in finalizeClaudePFrame + abortFrame.
 	watchdog?: Watchdog;
 	donePromise: Promise<void>;
+	// Warm-pi-resume: the one-way sha256 fingerprint chain of pi's history as it
+	// stood at THIS turn's start (over context.messages). Stashed at turn-start so
+	// finalizeClaudePFrame — which does not receive the messages — can persist the
+	// content-free resume sidecar on a successful main-turn finalize (design D1).
+	sha256Chain?: string[];
 };
 
 const stack: QueryFrame[] = [];
@@ -1383,6 +1428,13 @@ function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 		}
 	}
 	const cwd = frame.cwd;
+	// Warm-pi-resume sidecar persist/invalidate is for the MAIN-provider turn only,
+	// never a subagent. The main turn is always the BOTTOM of the stack (stack[0]);
+	// a subagent nests above and is `top()` at its own finalize — so `stack[0] ===
+	// frame` (NOT `top() === frame`, which holds for a subagent too) is the correct
+	// "this is the main turn" discriminator (design D1). Persisting a subagent frame
+	// would make a later --resume reattach the wrong (subagent) transcript.
+	const isMainTurn = stack[0] === frame;
 	// Clear the cache on a spawn-level error OR a turn-level error so the next turn
 	// cold-starts — giving the MCP attach a fresh try.
 	if (res.stopReason === "error" || frame.turnOutput?.stopReason === "error") {
@@ -1398,12 +1450,39 @@ function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 			cachedSessionId = null;
 			cachedSessionCwd = null;
 		}
+		// D7: invalidate the persisted sidecar UNCONDITIONALLY by key (the in-memory
+		// clear above is session-id-guarded, but a stale sidecar left on disk would
+		// warm-resume on the next restart). Includes the McpNotReady fail-fast path
+		// (a gated, never-submitted attempt persists no resumable sidecar).
+		if (isMainTurn) {
+			const fullSid = getFullPiSessionId();
+			if (fullSid) invalidateSidecar(cwd, fullSid);
+		}
 		frame.log.warn({ stopReason: res.stopReason, turnStopReason: frame.turnOutput?.stopReason, exitCode: res.exitCode }, "finalizeClaudePFrame: error — cleared cached session");
 	} else if (res.sessionId) {
 		// Cache the session id for next-turn warm resume — even on abort, so the
 		// next turn can resume and the model sees the interrupted partial.
 		cachedSessionId = res.sessionId;
 		cachedSessionCwd = cwd;
+		// D1: persist the content-free resume sidecar for cross-restart warm resume.
+		// Main turn only (isMainTurn); abort is non-error and reaches here, so an
+		// aborted-mid-tool session stays resumable (R7). Best-effort: a write
+		// failure logs and the turn completes normally.
+		if (isMainTurn && frame.sha256Chain) {
+			const fullSid = getFullPiSessionId();
+			if (fullSid) {
+				try {
+					writeSidecar(cwd, fullSid, {
+						claudeSessionId: res.sessionId,
+						piSessionId: fullSid,
+						historyHashChain: frame.sha256Chain,
+						claudeVersion: getInstalledClaudeVersion(),
+					});
+				} catch (err) {
+					frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "finalizeClaudePFrame: resume sidecar write failed (ignored)");
+				}
+			}
+		}
 		frame.log.debug({ aborted: frame.wasAborted, session: res.sessionId.slice(0, 8) }, `finalizeClaudePFrame: caching session=${res.sessionId.slice(0, 8)}${frame.wasAborted ? " (aborted)" : ""}`);
 	}
 
@@ -1490,6 +1569,46 @@ async function startFreshQuery(
 		cachedSessionId = null;
 		cachedSessionCwd = null;
 	}
+
+	// Warm-pi-resume (design D4/D2): on the FIRST turn after a session_start:resume
+	// (where the literal frame cwd is finally known), read the keyed sidecar and
+	// run the pure validation gate. On a pass, set cachedSessionId/cachedSessionCwd
+	// so `useResume` below takes the warm `--resume` branch instead of cold-packing
+	// the full history. Any failure (no/invalid sidecar, divergence, version skew,
+	// unseen intervening messages) leaves the cache empty -> normal cold-start, the
+	// always-safe floor. A deleted transcript is NOT pre-checked here: it surfaces
+	// as a `--resume` runtime error -> sidecar invalidated -> next turn cold (T0.1).
+	const fingerprintItems = messagesToFingerprintItems(context.messages);
+	if (warmResumePending) {
+		warmResumePending = false; // one-shot, regardless of outcome
+		const fullSid = getFullPiSessionId();
+		if (cachedSessionId === null && fullSid) {
+			const sidecar = readSidecar(cwd, fullSid);
+			const decision = validateWarmResume({
+				sidecar,
+				currentMessages: fingerprintItems,
+				currentClaudeVersion: getInstalledClaudeVersion(),
+			});
+			const wlog = logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd });
+			if (decision.warm && sidecar) {
+				cachedSessionId = sidecar.claudeSessionId;
+				cachedSessionCwd = cwd;
+				wlog.info(
+					{ resume: sidecar.claudeSessionId.slice(0, 8), reason: decision.reason },
+					`startFreshQuery: warm-resume validated — resuming claude session ${sidecar.claudeSessionId.slice(0, 8)} (no cold re-pack)`,
+				);
+			} else {
+				wlog.info(
+					{ reason: decision.reason, hadSidecar: sidecar !== null },
+					`startFreshQuery: warm-resume not applicable (${decision.reason}) — cold-starting`,
+				);
+			}
+		}
+	}
+
+	// R6: set the in-memory divergence baseline by recomputing LOCALLY over pi's
+	// loaded history (hashMessage format) — NOT from the sidecar's sha256 chain —
+	// so subsequent in-process turns detect a fork after a warm resume.
 	lastSentMessageHashes = newHashes;
 
 	const useResume = cachedSessionId !== null && cachedSessionCwd === cwd;
@@ -1526,6 +1645,9 @@ async function startFreshQuery(
 		wasAborted: false,
 		driverErrored: false,
 		donePromise: Promise.resolve(),
+		// Content-free fingerprint of pi's history at this turn's start, for the
+		// resume sidecar persisted on a successful main-turn finalize (design D1).
+		sha256Chain: computeSha256Chain(fingerprintItems),
 	};
 	resetTurnState(frame);
 
@@ -1701,6 +1823,12 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
+		// Warm-pi-resume: only a `resume` arms a validated warm-resume attempt on the
+		// next turn (a `new`/`fork` must cold-start). The keyed sidecar read happens
+		// in startFreshQuery, where the literal frame cwd is known (design D4). The
+		// flag is one-shot; clearSession just zeroed the in-memory cache above.
+		if (event.reason === "resume") warmResumePending = true;
+		else if (event.reason === "new" || event.reason === "fork") warmResumePending = false;
 	});
 	pi.on("session_shutdown", (_event?: any) => {
 		clearSession("session_shutdown");

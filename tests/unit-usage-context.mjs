@@ -20,7 +20,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeReportedUsageFields, buildInProgressUsage } from "../index.js";
+import { computeReportedUsageFields, buildInProgressUsage, correctOpusPricing } from "../index.js";
 
 describe("usage: context-window totalTokens excludes cumulative output (multi-round)", () => {
 	it("totalTokens uses the LAST-call output, not the cumulative billing output", () => {
@@ -88,5 +88,45 @@ describe("usage: in-progress message seeds totalTokens (no mid-turn bar collapse
 	it("seed 0 (first turn / post-compaction) → totalTokens 0 so pi shows \"?\"", () => {
 		const u = buildInProgressUsage(0);
 		assert.equal(u.totalTokens, 0);
+	});
+});
+
+// pi-ai under-prices Claude Opus 4.5+ at 1/3 of Anthropic's published rate and
+// lacks opus-4-8. correctOpusPricing rewrites Opus to the real $/MTok rate so
+// reported cost is correct; Sonnet/Haiku (correct in pi-ai) are left alone.
+describe("usage: correctOpusPricing — bill Opus at the published rate", () => {
+	const REAL = { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 };
+
+	it("rewrites the 1/3 opus price ($5 base) to the published $15 base", () => {
+		const m = correctOpusPricing({ id: "claude-opus-4-7", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+		assert.deepEqual(m.cost, REAL);
+	});
+
+	it("opus-4-8 with missing cost gets the published rate", () => {
+		const m = correctOpusPricing({ id: "claude-opus-4-8" });
+		assert.deepEqual(m.cost, REAL);
+	});
+
+	it("already-correct opus ($15) stays $15", () => {
+		const m = correctOpusPricing({ id: "claude-opus-4-0", cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } });
+		assert.deepEqual(m.cost, REAL);
+	});
+
+	it("sonnet is left untouched (already correct in pi-ai)", () => {
+		const cost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+		const m = correctOpusPricing({ id: "claude-sonnet-4-6", cost });
+		assert.deepEqual(m.cost, cost);
+	});
+
+	it("haiku is left untouched (already correct in pi-ai)", () => {
+		const cost = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
+		const m = correctOpusPricing({ id: "claude-haiku-4-5", cost });
+		assert.deepEqual(m.cost, cost);
+	});
+
+	it("does not mutate the input model object", () => {
+		const orig = { id: "claude-opus-4-7", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } };
+		correctOpusPricing(orig);
+		assert.equal(orig.cost.input, 5, "original left intact (returns a copy)");
 	});
 });

@@ -1265,7 +1265,8 @@ function buildCaptureDeps(): CaptureDeps {
 		newTurnOutput,
 		buildColdStartPrompt,
 		cleanSchemaForSdk,
-		calculateCost,
+		// Opus-corrected so the capture path bills at Anthropic's published rate too.
+		calculateCost: calculateCostCorrected,
 		resolveShimPath,
 		shimNodeArgs,
 		resolveClaudePBin,
@@ -1320,6 +1321,30 @@ export function computeReportedUsageFields(context: DriverUsage, billing?: Drive
 	};
 }
 
+/** Anthropic's published Claude Opus 4.x rate, $/MTok: in/out + cache read/write. */
+const REAL_OPUS_COST = { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } as const;
+
+/**
+ * Return `model` with Claude Opus priced at Anthropic's published rate. pi-ai
+ * under-prices Opus 4.5+ at exactly 1/3 ($5/MTok input vs $15, $25 output vs $75,
+ * $0.5 cacheRead vs $1.5, $6.25 cacheWrite vs $18.75) and lacks claude-opus-4-8
+ * entirely (so it inherits the wrong 1/3 price). Token counts are correct (the
+ * fork reports them); only the per-MTok rate is wrong — so fixing it here makes
+ * cost correct. Sonnet/Haiku match published pricing in pi-ai and are untouched.
+ * Exported for the regression test.
+ */
+export function correctOpusPricing<M extends { id?: string; cost?: unknown }>(model: M): M {
+	if (typeof model?.id === "string" && model.id.includes("opus")) {
+		return { ...model, cost: { ...REAL_OPUS_COST } };
+	}
+	return model;
+}
+
+/** calculateCost with the Opus per-MTok correction applied to the model. */
+function calculateCostCorrected(model: Model<any>, usage: AssistantMessage["usage"]) {
+	return calculateCost(correctOpusPricing(model), usage);
+}
+
 function updateUsageFromDriver(frame: QueryFrame, context: DriverUsage, billing?: DriverUsage) {
 	const output = frame.turnOutput;
 	if (!output) return;
@@ -1337,7 +1362,7 @@ function updateUsageFromDriver(frame: QueryFrame, context: DriverUsage, billing?
 	// Cost is the whole turn's spend → compute from the CUMULATIVE billing usage,
 	// NOT from the (smaller) context tokens, then attach to the reported usage.
 	const billingUsage = { input: bill.input, output: bill.output, cacheRead: bill.cacheRead, cacheWrite: bill.cacheWrite, totalTokens: bill.totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-	output.usage.cost = calculateCost(frame.model, billingUsage as typeof output.usage);
+	output.usage.cost = calculateCostCorrected(frame.model, billingUsage as typeof output.usage);
 	// Emit the canonical usage log line so observability + cache-shape assertions
 	// have a stable structured record per turn. `ctx*` = reported context tokens;
 	// `bill*` = cumulative (cost basis).

@@ -65,6 +65,24 @@ function assistantBlocks(...blocks) {
 		message: { role: "assistant", content: blocks },
 	};
 }
+// An assistant line carrying a message id + per-call usage (the billing inputs).
+// `usage` is {input, output, cacheRead, cacheWrite}; mapped to claude-p field names.
+function assistantMsg(id, usage, ...blocks) {
+	return {
+		type: "assistant",
+		message: {
+			role: "assistant",
+			id,
+			content: blocks.length ? blocks : [{ type: "text", text: "ok" }],
+			usage: {
+				input_tokens: usage.input,
+				output_tokens: usage.output,
+				cache_read_input_tokens: usage.cacheRead,
+				cache_creation_input_tokens: usage.cacheWrite,
+			},
+		},
+	};
+}
 function textBlock(text) {
 	return { type: "text", text };
 }
@@ -131,7 +149,12 @@ describe("real fixture replay (expC-claude-p-stream.jsonl)", () => {
 		);
 
 		// usage event: `usage` = the LAST per-call usage (context-window occupancy);
-		// `billing` = the cumulative `result.usage` (sum over all rounds, for cost).
+		// `billing` = the live turn's DISTINCT rounds (deduped by message id), the
+		// cost basis. claude-p re-emits each assistant message ~2-3× and its terminal
+		// `result.usage` SUMS every emitted line (here in=48, out=2287, cacheRead=
+		// 127119, cacheWrite=103973) — that double-counting is exactly what inflated
+		// cost. The fixture has 3 distinct messages; deduped they total the values
+		// below (≈ half the raw result.usage).
 		const usage = events.filter((e) => e.kind === "usage");
 		assert.equal(usage.length, 1, "exactly one usage event");
 		assert.deepEqual(usage[0].usage, {
@@ -141,15 +164,18 @@ describe("real fixture replay (expC-claude-p-stream.jsonl)", () => {
 			cacheWrite: 113,
 			totalTokens: 6 + 27 + 38502 + 113,
 		}, "context usage = final per-call (not the cumulative sum)");
+		// 3 distinct messages: (10,694,29539,8952) + (6,89,0,38502) + (6,27,38502,113).
 		assert.deepEqual(usage[0].billing, {
-			input: 48,
-			output: 2287,
-			cacheRead: 127119,
-			cacheWrite: 103973,
-			totalTokens: 48 + 2287 + 127119 + 103973,
-		}, "billing usage = cumulative result.usage");
-		// The cumulative cacheRead must exceed the per-call (this is the whole bug).
-		assert.ok(usage[0].billing.cacheRead > usage[0].usage.cacheRead, "cumulative > per-call");
+			input: 22,
+			output: 810,
+			cacheRead: 68041,
+			cacheWrite: 47567,
+			totalTokens: 22 + 810 + 68041 + 47567,
+		}, "billing = deduped live-turn rounds, NOT the re-emit-summed result.usage");
+		// Billing must NOT equal the raw (duplicate-summed) result.usage.
+		assert.ok(usage[0].billing.cacheRead < 127119, "billing excludes re-emitted duplicates");
+		// Billing (all live rounds) still exceeds the single last per-call.
+		assert.ok(usage[0].billing.cacheRead > usage[0].usage.cacheRead, "turn billing > final per-call");
 
 		// done event after usage, reason result.
 		const done = events.filter((e) => e.kind === "done");
@@ -284,6 +310,97 @@ describe("multi-round turn", () => {
 		const done = events.filter((e) => e.kind === "done");
 		assert.equal(done.length, 1, "exactly one done, at result");
 		assert.equal(done[0].reason, "result");
+	});
+});
+
+// ── 2b. Billing: dedup re-emitted messages; exclude replayed prior turns ───
+//
+// claude-p's terminal `result.usage` SUMS every assistant line it streams, and
+// that stream over-counts two ways: it re-emits each message ~2-3× (same id),
+// and on --resume it replays the whole prior transcript before the live turn.
+// Using result.usage as the cost basis inflated session cost (observed billTotal
+// growing monotonically with session length). The parser must instead bill the
+// live turn's DISTINCT rounds: deduped by message id, replay discarded at each
+// user-prompt boundary. Context usage (last per-call) is unaffected.
+
+describe("billing: dedup re-emitted assistant messages (fresh turn)", () => {
+	it("counts each distinct message id once, NOT the re-emit-summed result.usage", () => {
+		const { parser, events } = newParser(makeLogger());
+		const uX = { input: 10, output: 100, cacheRead: 5000, cacheWrite: 200 };
+		const uY = { input: 8, output: 50, cacheRead: 6000, cacheWrite: 30 };
+		// Message X re-emitted 3×, message Y emitted 2× — exactly the claude-p pattern.
+		parser.write(line(assistantMsg("msg_X", uX, toolUseBlock("t1", "mcp__c__a", {}))) + "\n");
+		parser.write(line(assistantMsg("msg_X", uX, toolUseBlock("t1", "mcp__c__a", {}))) + "\n");
+		parser.write(line(assistantMsg("msg_X", uX, toolUseBlock("t1", "mcp__c__a", {}))) + "\n");
+		parser.write(line(userToolResult("t1", "r")) + "\n");
+		parser.write(line(assistantMsg("msg_Y", uY, textBlock("done"))) + "\n");
+		parser.write(line(assistantMsg("msg_Y", uY, textBlock("done"))) + "\n");
+		// result.usage = the inflated SUM of all 5 emitted lines (3×X + 2×Y).
+		const raw = {
+			input: 3 * uX.input + 2 * uY.input,
+			output: 3 * uX.output + 2 * uY.output,
+			cacheRead: 3 * uX.cacheRead + 2 * uY.cacheRead,
+			cacheWrite: 3 * uX.cacheWrite + 2 * uY.cacheWrite,
+		};
+		parser.write(line(resultLine({
+			input_tokens: raw.input, output_tokens: raw.output,
+			cache_read_input_tokens: raw.cacheRead, cache_creation_input_tokens: raw.cacheWrite,
+		})) + "\n");
+
+		const usage = events.filter((e) => e.kind === "usage");
+		assert.equal(usage.length, 1, "one usage event");
+		// Billing = X + Y (each distinct round once), NOT 3×X + 2×Y.
+		assert.deepEqual(usage[0].billing, {
+			input: uX.input + uY.input,
+			output: uX.output + uY.output,
+			cacheRead: uX.cacheRead + uY.cacheRead,
+			cacheWrite: uX.cacheWrite + uY.cacheWrite,
+			totalTokens: (uX.input + uY.input) + (uX.output + uY.output) + (uX.cacheRead + uY.cacheRead) + (uX.cacheWrite + uY.cacheWrite),
+		}, "billing dedups re-emits to distinct rounds");
+		assert.ok(usage[0].billing.cacheRead < raw.cacheRead, "billing is below the re-emit-summed result.usage");
+		// Context usage = the LAST per-call (message Y).
+		assert.equal(usage[0].usage.cacheRead, uY.cacheRead, "context usage = last per-call");
+	});
+});
+
+describe("billing: discard REPLAYED prior turns on --resume (boundary reset)", () => {
+	it("bills only the live turn's rounds, not the replayed transcript summed into result.usage", () => {
+		// Resume turn → suppressResumeReplay ON (mirrors index.ts: suppress = useResume).
+		const events = [];
+		const parser = new ClaudePStreamParser({
+			logger: makeLogger(),
+			onEvent: (e) => events.push(e),
+			suppressResumeReplay: true,
+		});
+		const uOld = { input: 1900, output: 80, cacheRead: 0, cacheWrite: 0 };
+		const uNew = { input: 2011, output: 60, cacheRead: 0, cacheWrite: 0 };
+		// Replayed prior turn: prompt boundary, then its assistant re-emitted 2×.
+		parser.write(line(userPrompt("old question")) + "\n");
+		parser.write(line(assistantMsg("msg_OLD", uOld, textBlock("old answer"))) + "\n");
+		parser.write(line(assistantMsg("msg_OLD", uOld, textBlock("old answer"))) + "\n");
+		parser.write(line(lastPromptLine("old question")) + "\n");
+		// LIVE prompt boundary → must discard the replayed OLD round's billing.
+		parser.write(line(userPrompt("live question")) + "\n");
+		parser.write(line(assistantMsg("msg_NEW", uNew, textBlock("live answer"))) + "\n");
+		parser.write(line(assistantMsg("msg_NEW", uNew, textBlock("live answer"))) + "\n");
+		// result.usage = SUM of all 4 emitted lines (2×OLD + 2×NEW) — replay+dup inflated.
+		parser.write(line(resultLine({
+			input_tokens: 2 * uOld.input + 2 * uNew.input,
+			output_tokens: 2 * uOld.output + 2 * uNew.output,
+			cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+		})) + "\n");
+
+		const usage = events.filter((e) => e.kind === "usage");
+		assert.equal(usage.length, 1, "one usage event");
+		// Billing = the LIVE round only (NEW), deduped — replayed OLD excluded.
+		assert.deepEqual(usage[0].billing, {
+			input: uNew.input,
+			output: uNew.output,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: uNew.input + uNew.output,
+		}, "billing = live turn only (replayed prior turn discarded at boundary)");
+		assert.equal(usage[0].usage.input, uNew.input, "context usage = live last per-call");
 	});
 });
 

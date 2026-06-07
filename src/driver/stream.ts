@@ -263,6 +263,21 @@ export class ClaudePStreamParser {
 	// the true window occupancy. Captured in handleAssistant, emitted at `result`.
 	private lastAssistantUsage: DriverStreamUsage | null = null;
 
+	// Per-message-id usage of the LIVE turn's rounds — the BILLING (cost) basis.
+	// claude-p's terminal `result.usage` sums EVERY assistant line it streams, and
+	// that stream is doubly polluted: (a) it RE-EMITS each message ~2-3× (same
+	// message id repeated), and (b) on `--resume` it REPLAYS the full prior
+	// transcript before the live turn. So `result.usage` over-counts billing by
+	// the duplicates AND the whole replayed history — observed as `billTotal`
+	// growing monotonically with session length and ≈2× the deduped total, which
+	// inflated session cost. Keying per message id collapses the re-emits; clearing
+	// on each user-prompt boundary (handleUser) discards replayed prior turns, so
+	// at `result` only the live turn's distinct rounds remain. Summed → true turn
+	// billing. (Context usage stays lastAssistantUsage — the last single per-call —
+	// so it was always correct; only billing was wrong.)
+	private liveBillingById = new Map<string, DriverStreamUsage>();
+	private liveBillingNoIdSeq = 0;
+
 	// ── Warm-resume stale-turn diagnostic (detection-only; see ResumeDiag) ──────
 	private readonly livePromptText?: string;
 	private readonly onResumeDiag?: (diag: ResumeDiag) => void;
@@ -486,8 +501,11 @@ export class ClaudePStreamParser {
 		if (this.livePromptText && promptTextMatches(rec, this.livePromptText)) {
 			this.diagLivePromptTextMatched = true;
 		}
-		// New prompt boundary → discard any buffered (replayed) prior-turn content.
+		// New prompt boundary → discard any buffered (replayed) prior-turn content
+		// AND its billing rounds, so only the live turn's usage survives to `result`.
 		this.liveTurnBuffer = [];
+		this.liveBillingById.clear();
+		this.liveBillingNoIdSeq = 0;
 	}
 
 	/**
@@ -526,6 +544,13 @@ export class ClaudePStreamParser {
 		const perCall = this.mapUsage((message as Record<string, unknown>).usage);
 		if (perCall.input + perCall.cacheRead + perCall.cacheWrite > 0) {
 			this.lastAssistantUsage = perCall;
+			// Record this round's usage for billing, keyed by message id so a
+			// re-emitted duplicate of the SAME message (claude-p echoes each line
+			// 2-3×) collapses to one entry rather than N-counting. A missing id
+			// (never observed) falls back to a unique key so the round still counts.
+			const mid = (message as Record<string, unknown>).id;
+			const key = typeof mid === "string" && mid.length > 0 ? mid : `__noid:${this.liveBillingNoIdSeq++}`;
+			this.liveBillingById.set(key, perCall);
 		}
 		const content = (message as Record<string, unknown>).content;
 		if (!Array.isArray(content)) return;
@@ -592,7 +617,11 @@ export class ClaudePStreamParser {
 		// use it for cost (billing). For the context-window indicator emit the LAST
 		// per-call usage (real window occupancy); fall back to billing if no
 		// assistant usage was seen (e.g. a zero-round turn).
-		const billing = this.mapUsage(rec.usage);
+		// BILLING is the live turn's distinct rounds (deduped, replay discarded) —
+		// NOT claude-p's `result.usage`, which over-counts re-emits + replayed
+		// history. Fall back to `result.usage` only if no live round carried usage
+		// (e.g. a zero-round turn), where the two coincide.
+		const billing = this.sumLiveBilling() ?? this.mapUsage(rec.usage);
 		const usage = this.lastAssistantUsage ?? billing;
 		this.onEvent({ kind: "usage", usage, billing });
 		this.resultSeen = true;
@@ -625,6 +654,24 @@ export class ClaudePStreamParser {
 			terminatedBy,
 			staleSuspected: this.diagSawReplayBoundary && !this.diagPromptAfterBoundary,
 		});
+	}
+
+	/**
+	 * Sum the live turn's per-round usage (already deduped by message id, with
+	 * replayed prior turns discarded at each prompt boundary) into the turn's
+	 * billing total. Returns null when no live round carried real usage so the
+	 * caller can fall back to `result.usage`.
+	 */
+	private sumLiveBilling(): DriverStreamUsage | null {
+		if (this.liveBillingById.size === 0) return null;
+		let input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
+		for (const u of this.liveBillingById.values()) {
+			input += u.input;
+			output += u.output;
+			cacheRead += u.cacheRead;
+			cacheWrite += u.cacheWrite;
+		}
+		return { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite };
 	}
 
 	private mapUsage(raw: unknown): DriverStreamUsage {

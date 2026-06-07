@@ -16,11 +16,11 @@
 
 ## 1. Constitution amendment (D8)
 
-- [ ] 1.1 Amend the constitution (D8): **Principle I only** — permit a content-free resume-metadata sidecar (fingerprints + ids + version; never message content, no counters; the fingerprint chain is a one-way digest) stored outside `~/.claude/`. Bump constitution version — this partial reversal of Principle I is a **MAJOR** bump per the Versioning rule; pin the exact version + changelog text. (Principle III is UNCHANGED — the fail-closed existence `stat` was dropped, so the warm path adds no new `~/.claude` access; no III(b)/Enforcement/CI-audit edits.)
+- [x] 1.1 DONE 2026-06-06 — Amend the constitution (D8): **Principle I only** — permit a content-free resume-metadata sidecar (fingerprints + ids + version; never message content, no counters; the fingerprint chain is a one-way digest) stored outside `~/.claude/`. Bump constitution version — this partial reversal of Principle I is a **MAJOR** bump per the Versioning rule; pin the exact version + changelog text. (Principle III is UNCHANGED — the fail-closed existence `stat` was dropped, so the warm path adds no new `~/.claude` access; no III(b)/Enforcement/CI-audit edits.)
   - intent: infra
   - files_allowed:
       - openspec/constitution.md
-- [ ] 1.2 Amend Domain invariant 3 (`domain.md:40-43`): `restart` is no longer an unconditional cold-start trigger — "restart **without a validated resume sidecar** → cold-start." Bump domain.md version. (Round-2 P0: today's invariant 3 literally contradicts this change.)
+- [x] 1.2 DONE 2026-06-06 — Amend Domain invariant 3 (`domain.md:40-43`): `restart` is no longer an unconditional cold-start trigger — "restart **without a validated resume sidecar** → cold-start." Bump domain.md version. (Round-2 P0: today's invariant 3 literally contradicts this change.)
   - intent: infra
   - files_allowed:
       - openspec/domain.md

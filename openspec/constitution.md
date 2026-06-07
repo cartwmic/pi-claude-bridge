@@ -1,9 +1,9 @@
 # pi-claude-bridge Constitution
 
-**Version:** 1.2.0
+**Version:** 2.0.0
 **Ratified:** 2026-05-20
-**Last updated:** 2026-05-31 (Principle IV wording reconciled: binding guarantee is non-routing/non-execution, not "blocked at emission")
-**Prior:** 2026-05-21 (Principle III amended: added the deterministic-path exemption — now DEAD under the claude-p driver, which reads no transcript)
+**Last updated:** 2026-06-06 (Principle I amended: permit a content-free resume-metadata sidecar for validated warm `--resume`; partial reversal of "MUST NOT persist conversation history" → MAJOR bump)
+**Prior:** 2026-05-31 (Principle IV wording reconciled: binding guarantee is non-routing/non-execution, not "blocked at emission"); 2026-05-21 (Principle III deterministic-path exemption — now DEAD under the claude-p driver, which reads no transcript)
 
 ## Core Principles
 
@@ -14,10 +14,29 @@ session lifecycle (fork/compact/tree). The bridge MUST treat
 pi's state as input on every turn and MUST NOT persist conversation
 history of its own.
 
+**Exception (amended 2026-06-06, v2.0.0) — content-free resume metadata.**
+The bridge MAY persist a *content-free* resume sidecar — a driver
+session id, a one-way fingerprint digest of pi's message history, and
+the `claude` version — to a bridge-owned location outside `~/.claude/`,
+solely to validate a warm `--resume` of the prior driver session across
+a pi restart. The sidecar MUST NOT contain any recoverable conversation
+content: the fingerprint chain MUST be a one-way digest (e.g. `sha256`
+per message position) from which no plaintext can be reconstructed, and
+the sidecar MUST carry no message bodies, tool arguments, tool results,
+thinking text, or turn counters. This is a *partial reversal* of "MUST
+NOT persist conversation history of its own" — it permits content-free
+*metadata about* the history, never the history itself — hence the MAJOR
+version bump.
+
 **Rationale:** prevents the divergence and replay deadlocks that
-defined the pre-2026-04 architecture. Pi is the single source of truth.
+defined the pre-2026-04 architecture. Pi remains the single source of
+truth; the resume sidecar stores only opaque fingerprints, so it cannot
+diverge from or replace pi's history — any mismatch is detected by
+prefix-comparison and discarded (cold-start, the always-safe floor).
 **Enforcement:** analyze artifact check 3 (AC↔design coverage); design
-review of any new persistent state.
+review of any new persistent state; the sidecar's content-free property
+is asserted by a sentinel test (no substring of any message appears in
+the serialized sidecar).
 
 ### II. Bridge is inference-only
 The bridge MUST NOT execute pi tools, MUST NOT contain domain

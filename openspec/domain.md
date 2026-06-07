@@ -1,7 +1,7 @@
 # pi-claude-bridge Domain
 
-**Version:** 1.0.0
-**Last updated:** 2026-05-20
+**Version:** 1.1.0
+**Last updated:** 2026-06-06 (invariant 3 amended: a pi restart/resume is no longer an unconditional cold-start trigger — a validated content-free resume sidecar warm-resumes the prior driver session; see `enable-warm-pi-resume`)
 
 ## Entities
 
@@ -39,8 +39,16 @@
    call. The bridge never synthesizes a "real" tool result.
 3. A driver session id is treated as a cache hint only; on any
    pi-side divergence event (history hash mismatch, `/fork`,
-   `/compact`, cwd change, restart) the cached id is dropped and the
-   next turn cold-starts.
+   `/compact`, cwd change) the cached id is dropped and the next turn
+   cold-starts. A pi restart/resume is NOT an unconditional cold-start
+   trigger: WHERE a validated content-free resume sidecar exists (keyed
+   by literal spawn cwd + full pi `sessionId`; pi-history prefix-match;
+   matching `claude` version; and no intervening messages the recorded
+   `claude` session never saw), the first post-resume turn warm-resumes
+   the recorded driver session via `--resume`. Restart *without* a
+   validated sidecar still cold-starts. (Amended 2026-06-06 for
+   `enable-warm-pi-resume`; see constitution Principle I and the
+   `warm-pi-resume` capability.)
 4. Native tools are disallowed: the binding guarantee is that no native
    tool is ROUTED, EXECUTED, or surfaced to pi — enforced via driver
    config (disallow/allow list) AND the MCP server (defense-in-depth).

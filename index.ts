@@ -309,6 +309,18 @@ function getFullPiSessionId(): string | null {
 let cachedSessionId: string | null = null;
 let cachedSessionCwd: string | null = null;
 
+// Context-window total (totalTokens) last reported to pi for the MAIN turn. Used
+// to SEED the in-progress assistant message's usage so pi's context bar holds at
+// the prior window while a turn streams, instead of collapsing to ~0. pi anchors
+// the bar on the last assistant message (getLastAssistantUsageInfo); during a
+// turn that is the in-progress message, and a truthy all-zero usage yields
+// calculateContextTokens()==0 — the "context resets mid-turn" symptom. We seed
+// ONLY totalTokens (components stay 0, so getSessionStats — which sums the
+// components, not totalTokens — is unaffected); the final round's real usage
+// overwrites the seed at turn end. Reset to 0 on session change (clearSession)
+// so a post-/compact turn shows "?" rather than a stale pre-compaction size.
+let lastReportedContextTotal = 0;
+
 /**
  * One-shot "attempt a validated warm-resume on the next turn" flag, set by the
  * `session_start:resume` handler (which carries no cwd, so it cannot read the
@@ -657,6 +669,22 @@ function commitAbortedPartial(frame: QueryFrame): AssistantMessage | null {
 	return frame.turnOutput;
 }
 
+/**
+ * Usage object for an IN-PROGRESS (not-yet-final) assistant message. `totalTokens`
+ * is seeded with the prior context window so pi's context bar holds steady while
+ * the turn streams; the component fields stay 0 so the message contributes nothing
+ * to pi's session-stat sums until its real usage lands at turn end. Pure +
+ * exported for the regression test (a revert to a 0 total would re-introduce the
+ * mid-turn bar collapse).
+ */
+export function buildInProgressUsage(priorContextTotal: number) {
+	return {
+		input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+		totalTokens: priorContextTotal,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
 function newTurnOutput(model: Model<any>): AssistantMessage {
 	return {
 		role: "assistant",
@@ -664,8 +692,7 @@ function newTurnOutput(model: Model<any>): AssistantMessage {
 		api: "anthropic-messages" as any,
 		provider: PROVIDER_ID as any,
 		model: model.id,
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: buildInProgressUsage(lastReportedContextTotal),
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
@@ -1303,6 +1330,10 @@ function updateUsageFromDriver(frame: QueryFrame, context: DriverUsage, billing?
 	output.usage.cacheWrite = fields.cacheWrite;
 	output.usage.output = fields.output;
 	output.usage.totalTokens = fields.totalTokens;
+	// Remember the MAIN turn's window so the next turn's in-progress message seeds
+	// its totalTokens (keeps pi's context bar steady mid-turn). Only the main turn
+	// (stack bottom) drives the user-visible bar; subagent frames must not.
+	if (stack[0] === frame) lastReportedContextTotal = fields.totalTokens;
 	// Cost is the whole turn's spend → compute from the CUMULATIVE billing usage,
 	// NOT from the (smaller) context tokens, then attach to the reported usage.
 	const billingUsage = { input: bill.input, output: bill.output, cacheRead: bill.cacheRead, cacheWrite: bill.cacheWrite, totalTokens: bill.totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -1829,6 +1860,9 @@ export default function (pi: ExtensionAPI) {
 		cachedSessionId = null;
 		cachedSessionCwd = null;
 		lastSentMessageHashes = null;
+		// Forget the seeded context window: a post-/compact (or /new, /fork, …) turn
+		// must show "?" until its real usage lands, not a stale prior size.
+		lastReportedContextTotal = 0;
 		// Drain any leftover frames (subagents that didn't clean up). Also
 		// drain pendingResolvers with synthetic text — Option H keeps frames
 		// on the stack post-abort waiting for pi to deliver real

@@ -20,7 +20,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeReportedUsageFields } from "../index.js";
+import { computeReportedUsageFields, buildInProgressUsage } from "../index.js";
 
 describe("usage: context-window totalTokens excludes cumulative output (multi-round)", () => {
 	it("totalTokens uses the LAST-call output, not the cumulative billing output", () => {
@@ -61,5 +61,32 @@ describe("usage: context-window totalTokens excludes cumulative output (multi-ro
 		const r = computeReportedUsageFields(context);
 		assert.equal(r.output, 50);
 		assert.equal(r.totalTokens, 5 + 100 + 0 + 50);
+	});
+});
+
+// pi anchors its context bar on the LAST assistant message; during a turn that's
+// the IN-PROGRESS message. A truthy all-zero usage → calculateContextTokens()==0
+// → the bar collapses to ~0 until the turn ends ("context resets mid-turn"). The
+// in-progress usage must therefore seed totalTokens with the prior window while
+// keeping the components 0 (so getSessionStats, which sums components not
+// totalTokens, is unaffected).
+describe("usage: in-progress message seeds totalTokens (no mid-turn bar collapse)", () => {
+	it("totalTokens = the prior context window (so the bar holds, not 0)", () => {
+		const u = buildInProgressUsage(343773);
+		assert.equal(u.totalTokens, 343773, "bar reads totalTokens; must be the prior window");
+	});
+
+	it("component fields are 0 — session-stat sums are not disturbed mid-turn", () => {
+		const u = buildInProgressUsage(343773);
+		assert.equal(u.input, 0);
+		assert.equal(u.output, 0);
+		assert.equal(u.cacheRead, 0);
+		assert.equal(u.cacheWrite, 0);
+		assert.equal(u.cost.total, 0, "no cost contribution until the real usage lands");
+	});
+
+	it("seed 0 (first turn / post-compaction) → totalTokens 0 so pi shows \"?\"", () => {
+		const u = buildInProgressUsage(0);
+		assert.equal(u.totalTokens, 0);
 	});
 });

@@ -52,7 +52,7 @@ turn_count() { grep -cE "caching session=" "$1" 2>/dev/null | head -1 | tr -d ' 
 launch() { # $1=bridgelog
 	"${TMUX_CMD[@]}" new-session -d -s w -x 200 -y 50 \
 		"cd '$REPO_DIR' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$1' CLAUDE_BRIDGE_RESUME_DIR='$RDIR' \
-		 pi --session-id '$SID' --session-dir '$SDIR' -ne -e '$REPO_DIR/dist/index.js' \
+		 pi --session-id '$SID' --session-dir '$SDIR' -ne -e '$REPO_DIR' \
 		 --provider claude-bridge --model '$MODEL'"
 	local deadline=$((SECONDS + 40))
 	while (( SECONDS < deadline )); do

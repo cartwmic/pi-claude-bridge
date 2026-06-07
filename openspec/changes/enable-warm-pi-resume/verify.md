@@ -75,50 +75,40 @@ Run against real pi + the installed fork binary (`node_modules/claude-p/zig-out/
 |---|---|---|
 | **S32 — no-stale-under-load** (the safety-critical AC `resume-returns-the-live-turn`) | ✅ **LIVE PASS** | `resume-staleness-gate-e2e.mjs` vs the INSTALLED binary, 4 `--resume` turns under 6× CPU load: **own-answer-correct 4/4, STALE emits 0**. Every resume turn returned its OWN live answer. |
 | **s0 — sanity** (bridge healthy, in-process warm path) | ✅ LIVE PASS | `run-scenario-s0.sh`: coherence + "1 cached session_id (warm path)" + usage propagation, all PASS. |
-| **S30 — warm-resume across a pi RESTART** (`run-scenario-s30-warm-resume.sh`) | ⚠️ **partial** — wiring proven, warm `--resume` demo blocked by infra | See below. |
+| **S30 — warm-resume across a pi RESTART** (`run-scenario-s30-warm-resume.sh`) | ✅ **LIVE PASS** (6/6) | Two pi PROCESSES sharing `--session-id`/`--session-dir`. See below. |
 
-**S30 detail.** Three of the four warm-path behaviors are confirmed live; the
-fourth (a clean warm `--resume`) is blocked by a change-independent boot race:
+**S30 detail — full live proof of the cross-restart warm path (6/6 PASS):**
 
-- ✅ **Arming on restart:** a fresh pi PROCESS reloading the session logs
-  `session_start:startup — arming validated warm-resume attempt`. (This is the bug
-  §3 fixed: the restart fires reason `startup`, not `resume`.)
-- ✅ **Gate executes + cold-fallback:** `startFreshQuery: warm-resume not applicable
-  (no-sidecar) — cold-starting` — correct, because launch-1 (fresh session) wrote no
-  sidecar.
-- ✅ **RED check:** with the sidecar removed, the restart cold-starts (`resume=no`).
-- ✅ **Cross-restart continuity:** the model recalls the planted word across the restart.
-- ⚠️ **Warm `--resume` not demonstrated live:** every claude-p spawn under
-  `pi --session-id <fixed> --session-dir` + rapid scripted restarts fails the MCP-shim
-  readiness handshake (`McpNotReady`, resilience retries exhausted → turn errors → no
-  sidecar persisted → next turn correctly cold-starts). This is a **pre-existing,
-  change-independent boot race in the bridge's MCP-shim spawn** (which this change does
-  NOT touch): `s0` with `--no-session` passes clean, and the claude-p binary itself
-  spawns fine (S32). Spaced real restarts give the shim time to settle; back-to-back
-  scripted `--session-id` relaunches do not. Tracked as a follow-up (mcp-memory).
+- ✅ **Sidecar persisted after launch 1** — launch-1 turn succeeded, `caching session=7b0c5c0e`, sidecar written.
+- ✅ **Arming on restart** — launch-2 (fresh process) logs `session_start:startup — arming validated warm-resume` (the §3 fix: restart fires reason `startup`, not `resume`).
+- ✅ **Warm `--resume`** — launch-2 logs `warm-resume validated — resuming claude session 7b0c5c0e (no cold re-pack)` and `fresh spawn … resume=7b0c5c0e` — i.e. it reattached **the same** `claude` session id persisted in launch-1, across a real pi restart.
+- ✅ **Coherence (paired +/−)** — the model recalled the planted secret word; no memory-disclaimer.
+- ✅ **RED check** — with the sidecar removed, launch-3 cold-starts (`warm-resume not applicable (no-sidecar)` → `resume=no`), proving the sidecar (not something else) drove the warm path.
 
-**Why the warm `--resume` path is nonetheless proven:**
-- The full persist → restart → validate → warm/cold decision is proven deterministically
-  by `unit-warm-resume-roundtrip.mjs` (7 cases mirroring the exact bridge flow).
-- The warm `--resume` SPAWN itself is the same `useResume → {kind:"resume"}` path
-  exercised live by `int-cache.sh` (4 warm-resume turns in-process) and `s0`.
-- The new piece on top is reading the sidecar to populate `cachedSessionId`, proven
-  end-to-end at the seam (roundtrip) and live-armed correctly (S30 arming + gate logs).
+**Test-harness note (resolved root cause of an earlier red herring).** Initial S30
+runs failed every turn with `McpNotReady`. Root cause was a **harness confound, not the
+product**: loading the extension as `-e $REPO_DIR/dist/index.js` makes `resolveShimPath`'s
+fallback compute a wrong doubled path (`…/dist/dist/src/mcp/shim.js`), so the MCP shim
+never spawns. Loading as `-e $REPO_DIR` (the way `s0` and real pi use load it) resolves
+the shim correctly and S30 passes. A/B confirmed the failure reproduced on pre-change
+code `dce458d`, so it was never warm-resume-related. (Latent robustness follow-up:
+harden `resolveShimPath` so loading the built entry file directly also resolves the
+shim — out of scope for this change.) The runtime binary was verified correct throughout:
+the bridge resolves `claude-p/bin/claude-p.js`, which prefers the fork's `zig-out/bin/claude-p`
+(#32800b2, with both the MCP-readiness gate and the transcript-growth gate; no `prebuilt/`
+to shadow it).
 
 **Scenarios s31/s33/s34 (cold-on-/compact, abort→warm, subagent→main):** covered
 deterministically — divergence/version cold paths (`unit-warm-resume-gate`,
 `unit-warm-resume-roundtrip`), abort-resumable (`aborted-mid-tool-sessions-remain-resumable`
 + spike T0.2 + the abort-persists wiring), subagent-no-sidecar (the `stack[0]===frame`
-gate). Live pi-TUI runs are gated behind the same MCP-shim-under-sessions boot race as
-S30 and are recommended as a follow-up once that is resolved.
+gate). Live pi-TUI variants can reuse the S30 two-process harness; not separately run.
 
-## Completion Decision: GREEN (with one documented, change-independent live gap)
+## Completion Decision: GREEN
 
 All deterministic validation gates pass (validate, typecheck, build, 349/349 unit,
-claude-dir-audit, int-cache session-resume); the safety-critical no-stale property is
-LIVE-proven against the installed binary; the warm-resume wiring is LIVE-confirmed
-(arming, gate, cold-fallback, RED check). The single remaining item — a clean warm
-`--resume` across a scripted restart — is blocked by a pre-existing MCP-shim boot race
-unrelated to this change, with the warm decision+spawn proven deterministically and
-in-process. **Net: the change is correct and apply-complete; cold-start (the invariant
-floor) guarantees no regression in any case.**
+claude-dir-audit, int-cache session-resume). The safety-critical no-stale property is
+LIVE-proven against the installed binary (S32). The full cross-restart warm path is
+LIVE-proven end-to-end (S30 6/6: persist → restart → warm `--resume` of the same session
+id → recall → sidecar-removed RED check). Cold-start remains the invariant floor, so the
+change cannot regress vs. today in any case. **The change is correct and apply-complete.**

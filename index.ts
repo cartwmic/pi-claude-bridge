@@ -1483,7 +1483,7 @@ function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 			const fullSid = getFullPiSessionId();
 			if (fullSid) invalidateSidecar(cwd, fullSid);
 		}
-		frame.log.warn({ stopReason: res.stopReason, turnStopReason: frame.turnOutput?.stopReason, exitCode: res.exitCode }, "finalizeClaudePFrame: error — cleared cached session");
+		frame.log.warn({ stopReason: res.stopReason, turnStopReason: frame.turnOutput?.stopReason, exitCode: res.exitCode, signal: res.signal }, `finalizeClaudePFrame: error (exitCode=${res.exitCode ?? "null"} signal=${res.signal ?? "null"}) — cleared cached session`);
 	} else if (res.sessionId) {
 		// Cache the session id for next-turn warm resume — even on abort, so the
 		// next turn can resume and the model sees the interrupted partial.

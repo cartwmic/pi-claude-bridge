@@ -36,7 +36,7 @@ import { homedir, tmpdir } from "os";
 import { randomBytes, randomUUID } from "crypto";
 import { writeFileSync } from "fs";
 import { createRequire } from "module";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { pascalCase } from "change-case";
 import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
@@ -233,10 +233,16 @@ if (DEBUG) {
 }
 
 // rotating-file-stream maintains the live file at DEBUG_LOG_PATH and moves
-// rotated content to numbered backups (DEBUG_LOG_PATH.1, .2). Total disk
+// rotated content to timestamped backups in the same directory. Total disk
 // bounded at ~3× DEBUG_MAX_BYTES (current + 2 backups).
+//
+// NOTE: pass the basename + a separate `path` (directory) option. The default
+// generator prepends a timestamp to the filename string, so passing the full
+// path yields a malformed *relative* name (`20260610-1436-01-/Users/.../x.log`)
+// that resolves against cwd — a different volume than ~/.pi → EXDEV on rename.
 const logStream = DEBUG
-	? createStream(DEBUG_LOG_PATH, {
+	? createStream(basename(DEBUG_LOG_PATH), {
+			path: dirname(DEBUG_LOG_PATH),
 			size: `${DEBUG_MAX_BYTES}B`,
 			maxFiles: 2,
 		})

@@ -710,10 +710,23 @@ function resetTurnState(frame: QueryFrame) {
 // ---------------------------------------------------------------------------
 
 function extractUserPrompt(messages: Context["messages"]): string | null {
+	// Warm-resume delta = the contiguous run of trailing `user` messages (every
+	// message added since the last assistant turn Claude already saw). We must
+	// forward ALL of them, not just the last: extensions (e.g. hindsight
+	// auto-recall) inject additional `custom` messages that `convertToLlm`
+	// flattens into trailing `user` messages AFTER the real prompt. Returning
+	// only the last message silently drops the user's actual text.
 	const last = messages[messages.length - 1];
 	if (!last || last.role !== "user") return null;
-	if (typeof last.content === "string") return last.content;
-	return messageContentToText(last.content) || "";
+	const run: string[] = [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "user") break;
+		const text = typeof m.content === "string" ? m.content : messageContentToText(m.content) || "";
+		if (text) run.push(text);
+	}
+	run.reverse();
+	return run.join("\n\n");
 }
 
 /**

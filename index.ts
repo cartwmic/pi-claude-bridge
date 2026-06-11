@@ -1175,20 +1175,22 @@ function drainPendingResolversAsAborted(frame: QueryFrame, reason: string) {
 // ===========================================================================
 
 /**
- * claude-p's own --timeout (seconds). This is a BACKSTOP, not the primary
- * liveness control: it counts held-tool idle time, so it must be >= the longest
- * held tool round (a subagent / slow tool — itself bounded by the tool's OWN
- * pi-enforced timeout) or it will kill a healthy in-progress tool. The bridge's
- * held-round-aware idle watchdog (WATCHDOG_IDLE_MS) is the fast wedge detector;
- * this is only the last-resort ceiling. Env override:
- * CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS (set very high, e.g. 86400, to make it
- * effectively inert and let the watchdog be the sole authority). Default 4h.
+ * claude-p's own --timeout (seconds), or `undefined` for NO wall-time cap — the
+ * DEFAULT. claude-p counts held-tool idle time against --timeout, so any finite
+ * cap risks killing a healthy in-progress tool (a parked subagent / human-in-the-
+ * loop tool can legitimately idle for hours). We therefore default to unlimited
+ * and make liveness the job of the held-round-aware idle watchdog
+ * (WATCHDOG_IDLE_MS, the fast wedge detector) plus pi's per-tool timeout and
+ * AbortSignal (the precise cancellation path). An operator who wants a hard
+ * ceiling — e.g. unattended batch with an auto-retry supervisor — opts in via
+ * CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS; it must then exceed the longest held
+ * tool round. Unset/empty/non-positive ⇒ no --timeout flag emitted (unlimited).
  */
-const CLAUDE_P_TIMEOUT_SECONDS = (() => {
+const CLAUDE_P_TIMEOUT_SECONDS: number | undefined = (() => {
 	const raw = process.env.CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS;
-	if (raw === undefined || raw === "") return 14_400; // 4h backstop
+	if (raw === undefined || raw === "") return undefined; // no cap (default)
 	const n = Number(raw);
-	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 14_400;
+	return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 })();
 const PROMPT_FILE_THRESHOLD_BYTES = 50 * 1024; // >50KB → tmpfile (argv-limit safety, constitution III)
 

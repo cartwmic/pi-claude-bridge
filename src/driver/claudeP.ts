@@ -176,11 +176,14 @@ export interface ClaudePSpawnConfig {
 	/** Session identity (fresh XOR resume). → --session-id | --resume */
 	session: SessionMode;
 	/**
-	 * Per-spawn wall-clock timeout in SECONDS (the bridge derives it large enough
-	 * to survive the longest held tool round; see spec "--timeout must not trip on
-	 * a held tool round"). → --timeout
+	 * Per-spawn wall-clock timeout in SECONDS, or `undefined`/omitted for NO cap
+	 * (the default). claude-p treats an absent `--timeout` as unlimited, deferring
+	 * liveness to the bridge's held-round-aware watchdog and pi's per-tool timeout
+	 * + AbortSignal. Only set when the operator opts into a wall-time ceiling via
+	 * CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS; it must then exceed the longest held
+	 * tool round or it will kill a healthy in-progress tool. → --timeout
 	 */
-	timeoutSeconds: number;
+	timeoutSeconds?: number;
 	/**
 	 * Optional MCP-readiness sentinel path. The shim creates it once it has served
 	 * `tools/list`; claude-p holds the submit Enter until it exists, so the turn
@@ -244,8 +247,12 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 	args.push("--output-format", "stream-json");
 	args.push("--verbose");
 
-	// --timeout <seconds>
-	args.push("--timeout", String(cfg.timeoutSeconds));
+	// --timeout <seconds>: ONLY when the operator opted into a cap. Absent →
+	// claude-p runs unlimited (no wall-time ceiling); the bridge watchdog + pi's
+	// per-tool timeout/AbortSignal are the liveness authority.
+	if (cfg.timeoutSeconds !== undefined) {
+		args.push("--timeout", String(cfg.timeoutSeconds));
+	}
 
 	// User prompt: positional arg XOR --input-file <path>. Positional goes LAST so
 	// it cannot be mistaken for a flag value.

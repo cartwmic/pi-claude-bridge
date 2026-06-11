@@ -133,9 +133,14 @@ describe("buildClaudePArgs — required flags", () => {
 		assert.ok(args.includes("--verbose"));
 	});
 
-	it("includes --timeout <seconds>", () => {
+	it("includes --timeout <seconds> when a cap is set", () => {
 		const args = buildClaudePArgs(baseCfg({ timeoutSeconds: 300 }));
 		assert.equal(valueAfter(args, "--timeout"), "300");
+	});
+
+	it("omits --timeout entirely when timeoutSeconds is undefined (unlimited default)", () => {
+		const args = buildClaudePArgs(baseCfg({ timeoutSeconds: undefined }));
+		assert.ok(!args.includes("--timeout"), "no --timeout flag should be emitted");
 	});
 });
 

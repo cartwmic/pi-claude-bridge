@@ -103,8 +103,8 @@ export interface CaptureDeps {
 	mcpWaitPreamble: (systemPrompt: string) => string;
 	/** >threshold bytes → tmpfile for system prompt / user prompt. */
 	promptFileThresholdBytes: number;
-	/** Per-spawn wall-clock timeout (seconds). */
-	timeoutSeconds: number;
+	/** Per-spawn wall-clock timeout (seconds), or undefined for no cap (default). */
+	timeoutSeconds?: number;
 	/** Spawn factory (test seam). Defaults to the real single-shot `spawnClaudeP`. */
 	spawnClaudeP: CaptureSpawnFactory;
 }

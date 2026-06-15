@@ -103,8 +103,10 @@ export interface CaptureDeps {
 	mcpWaitPreamble: (systemPrompt: string) => string;
 	/** >threshold bytes → tmpfile for system prompt / user prompt. */
 	promptFileThresholdBytes: number;
-	/** Per-spawn wall-clock timeout (seconds), or undefined for no cap (default). */
-	timeoutSeconds?: number;
+	/** Diagnostics directory for per-spawn child-stderr capture (driver-diagnostics). */
+	diagnosticsDir?: string;
+	/** Resolve the child claude's `--debug-file` path (or undefined when disabled). */
+	resolveDebugFile?: (sessionId: string) => string | undefined;
 	/** Spawn factory (test seam). Defaults to the real single-shot `spawnClaudeP`. */
 	spawnClaudeP: CaptureSpawnFactory;
 }
@@ -253,13 +255,14 @@ export async function runClaudePCapture(
 		: { kind: "positional", text: promptString };
 
 	// Capture sessions are NEVER warm-resumed (single-shot, hermetic). Fresh uuid.
+	const captureSessionId = randomUUID();
 	const cfg: ClaudePSpawnConfig = {
 		model: model.id,
 		systemPrompt,
 		prompt: promptSrc,
 		mcpConfig,
-		session: { kind: "fresh", sessionId: randomUUID() },
-		timeoutSeconds: deps.timeoutSeconds,
+		session: { kind: "fresh", sessionId: captureSessionId },
+		debugFile: deps.resolveDebugFile?.(captureSessionId),
 		mcpReadyFile,
 	};
 
@@ -280,6 +283,7 @@ export async function runClaudePCapture(
 		onEvent,
 		logger: log as unknown as SpawnClaudePOptions["logger"],
 		binPath: deps.resolveClaudePBin(),
+		diagnosticsDir: deps.diagnosticsDir,
 	});
 
 	log.debug(

@@ -32,7 +32,6 @@ function baseCfg(overrides = {}) {
 		prompt: { kind: "positional", text: "hello world" },
 		mcpConfig: '{"mcpServers":{}}',
 		session: { kind: "fresh", sessionId: "11111111-1111-1111-1111-111111111111" },
-		timeoutSeconds: 180,
 		...overrides,
 	};
 }
@@ -133,14 +132,21 @@ describe("buildClaudePArgs — required flags", () => {
 		assert.ok(args.includes("--verbose"));
 	});
 
-	it("includes --timeout <seconds> when a cap is set", () => {
-		const args = buildClaudePArgs(baseCfg({ timeoutSeconds: 300 }));
-		assert.equal(valueAfter(args, "--timeout"), "300");
+	// No-liveness-timeouts: the bridge NEVER emits claude-p's wall-clock --timeout.
+	it("never emits --timeout (no-liveness-timeouts principle)", () => {
+		const args = buildClaudePArgs(baseCfg());
+		assert.ok(!args.includes("--timeout"), "no --timeout flag should ever be emitted");
 	});
 
-	it("omits --timeout entirely when timeoutSeconds is undefined (unlimited default)", () => {
-		const args = buildClaudePArgs(baseCfg({ timeoutSeconds: undefined }));
-		assert.ok(!args.includes("--timeout"), "no --timeout flag should be emitted");
+	// driver-diagnostics.claude-debug-logging-is-forwarded-to-a-bridge-owned-file
+	it("emits --debug-file <path> when debugFile is set (claude debug forwarding)", () => {
+		const args = buildClaudePArgs(baseCfg({ debugFile: "/tmp/bridge-dbg/claude-debug-abc.log" }));
+		assert.equal(valueAfter(args, "--debug-file"), "/tmp/bridge-dbg/claude-debug-abc.log");
+	});
+
+	it("omits --debug-file when debugFile is undefined (forwarding disabled)", () => {
+		const args = buildClaudePArgs(baseCfg({ debugFile: undefined }));
+		assert.ok(!args.includes("--debug-file"), "no --debug-file flag should be emitted");
 	});
 });
 

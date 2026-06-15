@@ -33,7 +33,6 @@ function baseCfg(overrides = {}) {
 		prompt: { kind: "positional", text: "hello" },
 		mcpConfig: '{"mcpServers":{}}',
 		session: { kind: "fresh", sessionId: "session-0" },
-		timeoutSeconds: 180,
 		...overrides,
 	};
 }

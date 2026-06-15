@@ -159,7 +159,6 @@ async function runTurn({ systemPromptText, tools, mcpConfig, session, prompt, ro
     prompt: { kind: "positional", text: prompt },
     mcpConfig,
     session,
-    timeoutSeconds: TIMEOUT_SECONDS,
   };
   const args = buildClaudePArgs(cfg);
 

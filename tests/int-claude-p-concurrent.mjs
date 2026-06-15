@@ -128,7 +128,6 @@ async function runIsolatedSpawn({ label, toolName, sentinel, holdMs, attemptTag 
 		prompt: { kind: "positional", text: makePrompt(toolName) },
 		mcpConfig,
 		session: { kind: "fresh", sessionId: randomUUID() },
-		timeoutSeconds: TIMEOUT_SECONDS,
 	};
 	const args = buildClaudePArgs(cfg);
 

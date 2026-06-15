@@ -224,6 +224,14 @@ export interface EndOfStreamArgs {
 	aborted: boolean;
 	/** Exit code / signal where available — included in the error message. */
 	exitInfo?: ExitInfo;
+	/**
+	 * The last N lines of the child's captured stderr (driver-diagnostics).
+	 * WHERE present, appended to the premature-termination error message so an
+	 * upstream cause (PromptNotAccepted / StopTimeout / Anthropic stream error) is
+	 * visible to pi without opening the per-spawn debug file. Ignored on a clean
+	 * `result` or an aborted exit (no error event is emitted there).
+	 */
+	stderrTail?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -353,13 +361,19 @@ export class ClaudePStreamParser {
 
 		this.onEvent({
 			kind: "error",
-			errorMessage: this.prematureMessage(args.exitInfo),
+			errorMessage: this.prematureMessage(args.exitInfo, args.stderrTail),
 		});
+	}
+
+	/** Length (chars) of the unparsed trailing partial line at this moment.
+	 *  Surfaced in the driver's in-flight state dump (driver-diagnostics). */
+	get pendingBufferLength(): number {
+		return this.buffer.length;
 	}
 
 	// ── internals ────────────────────────────────────────────────────────────
 
-	private prematureMessage(exitInfo?: ExitInfo): string {
+	private prematureMessage(exitInfo?: ExitInfo, stderrTail?: string): string {
 		const parts = ["claude-p stdout closed before a terminal `result` line (premature termination)"];
 		if (exitInfo) {
 			if (exitInfo.code !== undefined && exitInfo.code !== null) {
@@ -369,7 +383,9 @@ export class ClaudePStreamParser {
 				parts.push(`signal ${String(exitInfo.signal)}`);
 			}
 		}
-		return parts.join("; ");
+		const base = parts.join("; ");
+		const tail = stderrTail?.trim();
+		return tail ? `${base} — last stderr:\n${tail}` : base;
 	}
 
 	private handleLine(rawLine: string): void {

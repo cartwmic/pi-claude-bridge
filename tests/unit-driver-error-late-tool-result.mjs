@@ -2,8 +2,8 @@
 // Layer 1 — a dead claude-p driver must never hang pi.
 //
 // THE BUG (continuation-note 2026-06-05): when claude-p errors/exits (crash,
-// OOM, or its own --timeout firing) WHILE pi is mid-held-tool-call, pi hangs
-// forever on a spinner. During a held tool call the bridge sets
+// OOM, or any premature non-result exit) WHILE pi is mid-held-tool-call, pi
+// hangs forever on a spinner. During a held tool call the bridge sets
 // currentPiStream = null (pi owns the turn while executing the tool). The
 // error was only surfaced when currentPiStream was non-null, and the
 // tool-result delivery path's anti-hang guard (`willHangIfWired`) only checked

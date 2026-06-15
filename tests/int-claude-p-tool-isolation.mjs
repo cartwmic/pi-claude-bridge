@@ -242,7 +242,6 @@ async function runThroughClaudeP(attempt, pwnFile, logLines) {
 		prompt: { kind: "positional", text: prompt },
 		mcpConfig: buildMcpConfig(router.socketPath),
 		session: { kind: "fresh", sessionId: randomUUID() },
-		timeoutSeconds: TIMEOUT_SECONDS,
 	};
 	const args = buildClaudePArgs(cfg);
 

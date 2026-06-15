@@ -2,6 +2,10 @@
 // Unit tests for the claude-p resilience wrapper (T1.9a / design D33) in
 // src/driver/claudeP.ts: spawnClaudePWithResilience().
 //
+// AC: claude-p-driver.unexpected-driver-exit-surfaces-as-error
+//   (a premature/no-result exit classifies `error` and flows through the retry
+//    gate WITHOUT any bridge-side liveness timer).
+//
 // The wrapper owns the bounded-retry loop, backoff, abort-during-backoff
 // suppression, and fresh-session-id on a cold retry. The side-effect-aware
 // idempotency gate is the CALLER's `policy.shouldRetry()` (index.ts wires it to

@@ -51,6 +51,9 @@ function makeStubBin() {
 	return { bin, dir };
 }
 
+// On a premature exit the driver also emits the in-flight state dump
+// (driver-diagnostics.in-flight-state-dump-on-abnormal-termination) — exercised
+// here via the same premature-exit path (asserted live in tests/int-claude-p-abort).
 describe("spawnClaudeP — child stderr surfaces in the premature error event", () => {
 	it("error event errorMessage includes the last stderr lines", async () => {
 		const { bin, dir } = makeStubBin();

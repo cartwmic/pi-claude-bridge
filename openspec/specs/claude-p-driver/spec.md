@@ -277,5 +277,20 @@ WHEN the driver serves a `--resume` turn, THE driver SHALL emit a result that re
 - **WHEN** a Stop hook signal arrives before the driver has submitted the live prompt (state is not awaiting-stop)
 - **THEN** the driver ignores it (records only the transcript path) and does not treat it as the turn's completion
 
+### Requirement: Fixed claude-p fork pin
+
+The bridge dependency graph SHALL resolve `claude-p` to fork commit `f47f71dfa34593a32cb911f617f9cf8ca1fa0073` or a later approved fork commit that preserves paste-collapse echo confirmation.
+
+#### Scenario: Installed claude-p includes paste-collapse echo confirmation
+- **WHEN** repository dependencies are installed from `package-lock.json`
+- **THEN** the resolved `node_modules/claude-p` package SHALL come from `github.com/cartwmic/claude-p` at commit `f47f71dfa34593a32cb911f617f9cf8ca1fa0073`
+- **AND** the installed package SHALL contain echo-confirmation handling for the normalized Ink paste-collapse marker observed as `Pastedtext#1`
+
+#### Scenario: Dependency pin does not change bridge behavior envelope
+- **WHEN** the fixed claude-p package is installed
+- **THEN** the bridge SHALL continue invoking claude-p as the interactive TUI driver
+- **AND** the bridge SHALL NOT add any new write under `~/.claude/`
+- **AND** the bridge SHALL NOT change the native-tool disallow configuration required by Constitution IV
+
 ---
 

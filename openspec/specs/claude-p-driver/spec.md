@@ -13,7 +13,7 @@ under `~/.claude/` (events arrive on claude-p's stdout; see `transcript-stream`)
 ## Requirements
 ### Requirement: claude-p spawn with model selection
 
-WHEN the bridge starts a fresh turn for a model registered under provider `claude-bridge`, THE driver SHALL spawn the `claude-p` binary as a subprocess whose arguments include the resolved model id via `--model`, the system prompt for this path via `--system-prompt <text>` (or `--input-file <path>` when the assembled prompt is large or multiline; verbatim on the capture path, pi-combined on the main-provider path), `--mcp-config <inline-json-or-path>` pointing at the bridge's stdio MCP shim, `--disallowedTools <native-tool-list>` enforcing constitution principle IV, isolation flags `--strict-mcp-config` and `--setting-sources ""` (forwarded to `claude`), `--permission-mode bypassPermissions`, `--session-id <pre-generated-uuid>` (fresh turns) or `--resume <cached-id>` (warm resume), `--output-format stream-json`, `--verbose`, and a `--timeout` large enough to accommodate the longest expected tool round. THE driver SHALL NOT pass `--settings` (claude-p reserves it) and SHALL NOT pass `-p`/`--print`.
+WHEN the bridge starts a fresh turn for a model registered under provider `claude-bridge`, THE driver SHALL spawn the `claude-p` binary as a subprocess whose arguments include the resolved model id via `--model`, the system prompt for this path via `--system-prompt <text>` (or `--input-file <path>` when the assembled prompt is large or multiline; verbatim on the capture path, pi-combined on the main-provider path), `--mcp-config <inline-json-or-path>` pointing at the bridge's stdio MCP shim, `--disallowedTools <native-tool-list>` enforcing constitution principle IV, isolation flags `--strict-mcp-config` and `--setting-sources ""` (forwarded to `claude`), `--permission-mode bypassPermissions`, `--session-id <pre-generated-uuid>` (fresh turns) or `--resume <cached-id>` (warm resume), `--output-format stream-json`, and `--verbose`. THE driver SHALL NOT pass `--settings` (claude-p reserves it), `-p`/`--print`, or `--timeout`.
 
 #### Scenario: Fresh turn spawns one claude-p subprocess with bridged tool surface
 - **WHEN** `streamSimple` enters a fresh-turn path for model `claude-sonnet-4-6`
@@ -24,7 +24,7 @@ WHEN the bridge starts a fresh turn for a model registered under provider `claud
 - **AND** the arguments include `--permission-mode bypassPermissions`
 - **AND** the arguments include `--system-prompt <text>` (or `--input-file <path>`) with the path-appropriate system prompt content
 - **AND** the arguments include `--output-format stream-json` and `--verbose`
-- **AND** the arguments do NOT include `--settings`, `-p`, or `--print`
+- **AND** the arguments do NOT include `--settings`, `-p`, `--print`, or `--timeout`
 - **AND** the pi user prompt is delivered via claude-p's positional argument or `--input-file` (text content only; image content per the "Image content handling in v1" requirement)
 
 #### Scenario: User-global MCP server isolated from the spawned driver
@@ -76,7 +76,7 @@ THE driver SHALL resolve and run the patched (`claude-p-fork`) binary for every 
 
 WHEN a fresh claude-p subprocess is spawned for a pi user turn, THE driver SHALL deliver the pi user prompt to claude-p via its positional argument, `--input-file`, or stdin (text content). On cold-start (no cached driver session id), the delivered prompt carries the flattened pi history per the bridge's existing `buildColdStartPrompt` conversion contract. On warm-resume (cached driver session id valid), it carries only the new user message. For large or multiline prompts THE driver SHALL use `--input-file <path>` (a temp file under `os.tmpdir()`, cleaned up on subprocess exit) rather than the positional argument, to avoid argv limits and shell-escaping fragility.
 
-WHEN claude-p injects the delivered prompt into the interactive `claude` session, THE driver SHALL confirm the prompt was accepted into the session before the turn advances to awaiting the `Stop` hook (per `claude-p-fork.echo-confirmed-prompt-commit`). IF the prompt cannot be confirmed accepted within the patched binary's bounded retype budget, THEN the driver SHALL surface a prompt-not-accepted error promptly (well before `--timeout`), and that error SHALL be retriable by the resilience layer (design D33) when no `tools/call` has been routed for the turn — i.e. a dropped prompt under concurrent-boot contention SHALL NOT manifest as a silent wedge bounded only by `--timeout`.
+WHEN claude-p injects the delivered prompt into the interactive `claude` session, THE driver SHALL confirm the prompt was accepted into the session before the turn advances to awaiting the `Stop` hook (per `claude-p-fork.echo-confirmed-prompt-commit`). IF the prompt cannot be confirmed accepted within the patched binary's bounded retype budget, THEN the driver SHALL surface a prompt-not-accepted error promptly, and that error SHALL be retriable by the resilience layer (design D33) when no `tools/call` has been routed for the turn — i.e. a dropped prompt under concurrent-boot contention surfaces as a real claude-p exit classified `error`, never as a silent wedge that some bridge timer must guess at.
 
 #### Scenario: Cold-start replay
 - **WHEN** the driver starts a turn with no cached driver session id
@@ -95,10 +95,10 @@ WHEN claude-p injects the delivered prompt into the interactive `claude` session
 - **THEN** the turn advances to await the `Stop` hook
 - **AND** the bridge observes the normal turn lifecycle (stream events, then a terminal `result`)
 
-#### Scenario: Dropped prompt surfaces fast, not as a wedge
+#### Scenario: Dropped prompt surfaces fast as a real exit, not a wedge
 - **IF** the injected prompt is not confirmed accepted within the patched binary's retype budget
-- **THEN** the driver surfaces a prompt-not-accepted error well before `--timeout`
-- **AND** when no `tools/call` has been routed, the resilience layer (D33) retries the spawn rather than the bridge waiting out the full `--timeout`
+- **THEN** the driver surfaces a prompt-not-accepted error when claude-p exits
+- **AND** when no `tools/call` has been routed, the resilience layer (D33) retries the spawn
 
 ### Requirement: Cached driver session is a hint only
 
@@ -152,7 +152,7 @@ THE driver SHALL NOT read or write any path under `~/.claude/` — including `~/
 
 ### Requirement: Unexpected driver exit surfaces as error
 
-IF the claude-p subprocess exits with a non-success code while a turn is in flight and no terminal `result` line has been emitted on its stdout, OR IF claude-p emits an unrecoverable error (including its own `--timeout` expiry exit 124, or `SessionStartTimeout`/`StopTimeout`), THEN the driver SHALL — per the resilience layer (design D33) — bounded-retry by respawning (default ≤2 retries, short backoff, each logged at warn) since nothing was streamed to pi yet; and ONLY after retries are exhausted SHALL it push an `error` event on the active pi stream whose `errorMessage` names the exit cause and emit a structured log entry. THE driver SHALL NOT retry SILENTLY (every retry logs) and SHALL NOT retry once a `tools/call` has been routed to pi for this turn — because a side-effecting tool may have already executed, a respawn+cold-replay would re-run it; a failure after the first routed tool call falls through to the abort/late-tool-result path (D15), not the retry path. (Streaming assistant text alone does not block retry; routing a tool call does.)
+THE driver SHALL classify an unexpected claude-p exit as a retriable error: IF the claude-p subprocess exits with a non-success code while a turn is in flight and no terminal `result` line has been emitted on its stdout, OR IF claude-p emits an unrecoverable error (including `SessionStartTimeout`/`StopTimeout` reported by claude-p itself), THEN the driver SHALL — per the resilience layer (design D33) — bounded-retry by respawning (default ≤2 retries, short backoff, each logged at warn) since nothing was streamed to pi yet; and ONLY after retries are exhausted SHALL it push an `error` event on the active pi stream whose `errorMessage` names the exit cause and emit a structured log entry. THE driver SHALL NOT retry SILENTLY (every retry logs) and SHALL NOT retry once a `tools/call` has been routed to pi for this turn — because a side-effecting tool may have already executed, a respawn+cold-replay would re-run it; a failure after the first routed tool call falls through to the abort/late-tool-result path (D15), not the retry path. (Streaming assistant text alone does not block retry; routing a tool call does.) THE driver SHALL NOT impose any bridge-side liveness timer or wall-clock cap on a spawn: a spawn that produces no output is recovered ONLY by a real subprocess exit (classified `error`) or by a caller-driven abort — never by a watchdog that guesses the spawn is wedged.
 
 #### Scenario: Transient claude-p hook-timeout is retried, not surfaced
 - **WHEN** a claude-p spawn exits with `SessionStartTimeout`/`StopTimeout` (or non-zero without a terminal `result`) before any output reached pi
@@ -166,17 +166,13 @@ IF the claude-p subprocess exits with a non-success code while a turn is in flig
 
 #### Scenario: claude-p exits non-zero mid-turn
 - **IF** the claude-p subprocess exits with a non-success, non-130 code while a turn is in flight and no terminal `result` line has been emitted
-- **THEN** the driver pushes an `error` event whose `errorMessage` includes the exit code (e.g. 2 wrapper failure, 124 timeout)
+- **THEN** the driver pushes an `error` event whose `errorMessage` includes the exit code (e.g. 2 wrapper failure)
 - **AND** any cached driver session id is cleared so the next turn cold-starts
 
-### Requirement: `--timeout` must not trip on a held tool round
-
-THE driver SHALL set claude-p's `--timeout` such that it cannot expire while an MCP tool call is held open awaiting pi's tool execution. Because the inference driver blocks inline on the held MCP response, the wall-time of a long pi tool (S3 ≥45s, S8 120s) counts against claude-p's `--timeout` (exit 124). THE driver SHALL derive `--timeout` to exceed the maximum expected pi-tool latency plus interactive-boot overhead, OR drive abort/cancellation through pi's `AbortSignal` rather than claude-p's wall-timer. Hard gate G7 confirms whether claude-p's `--timeout` counts held-call time.
-
-#### Scenario: Long held tool round does not trip claude-p timeout
-- **WHEN** a turn runs a pi tool that takes ≥45s (S3) while the MCP call is held open
-- **THEN** claude-p does NOT exit 124 (timeout) mid-tool
-- **AND** the turn completes once pi delivers the tool result
+#### Scenario: Silent spawn is not killed by a bridge timer
+- **WHILE** a claude-p spawn has produced no stdout and no tool call has been routed
+- **THEN** the bridge SHALL NOT terminate the spawn on any elapsed-time threshold
+- **AND** the spawn remains recoverable only by a genuine subprocess exit or by pi's `AbortSignal`
 
 ### Requirement: Image content handling in v1
 

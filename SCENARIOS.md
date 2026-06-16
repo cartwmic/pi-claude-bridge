@@ -837,6 +837,37 @@ opus.
 **Disposition:** a swallowed error / hung spinner / phantom success is a Layer-1
 regression → hard fail.
 
+### S31 — Large cold-start prompt accepted end-to-end (Ink paste-collapse regression guard)
+
+**Goal:** prove a fresh `pi --no-session` session can deliver a first user
+prompt well above the proven 801-byte Claude/Ink paste-collapse threshold through
+claude-p and receive a coherent model answer. This is the regression guard for
+`claude-p: PromptNotAccepted` caused by Ink rendering long typed prompts as
+`[Pastedtext#1]` / `paste again to expand` after CSI stripping.
+
+**Setup:** default model pinned to opus for exact sentinel compliance;
+`SCENARIO_MODEL` may override it. The prompt is built at runtime with a unique
+`S31_SENTINEL_*` token and is the first submitted turn after `scn_pi_start`.
+
+**Steps:**
+1. Start Pi fresh with the local bridge (`pi --no-session -ne -e <repo>`).
+2. Submit one large first prompt (>800 bytes, normally ~1500+ bytes) containing
+   the sentinel and instructing an exact sentinel-only reply.
+
+**Pass:**
+- **Mechanical:** bridge log contains zero `PromptNotAccepted` matches.
+- **Mechanical:** bridge log shows a cold `fresh spawn ... resume=no` and at
+  least one `caching session=` line for the completed turn.
+- **Mechanical:** no bridge error path is recorded for the turn.
+- **Coherence:** `scn_assert_response` checks the assistant response after the
+  final prompt marker contains the sentinel and does NOT contain a non-delivery
+  disclaimer such as "did not receive", "cannot see", or "no prompt".
+
+**Disposition:** any failure is a hard regression of the claude-p paste-collapse
+fix or the bridge's dependency pin. Existing scenarios did not catch this class:
+the largest checked prompt before S31 was 236 bytes, far below the 801-byte
+collapse boundary.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per
@@ -864,6 +895,7 @@ turn. Expected shapes — deviations are regressions:
 | S16a /fork | turns before fork: creation→read; first turn after fork: **creation** (expected); subsequent: read |
 | S16b /tree to old branch | turns on original branch: creation→read; first turn after navigate: **creation** (expected); subsequent: read |
 | S17 /compact | turns before compact: creation→read; pi's summarization call: read (uses existing cache); first turn after compact: **creation** (expected); subsequent: read |
+| S31 large cold-start prompt | T1: creation; response must include sentinel; no warm turns |
 
 A scenario's cache profile is recorded in `SCENARIO_RESULTS.md` as part of
 the result entry. Mismatches block the scenario from passing even if

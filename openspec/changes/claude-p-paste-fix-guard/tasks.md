@@ -10,7 +10,7 @@
 
 ## 2. Dependency pin
 
-- [ ] 2.1 Bump claude-p to fixed fork commit and refresh npm lockfile
+- [x] 2.1 Bump claude-p to fixed fork commit and refresh npm lockfile
   - intent: infra
   - files_allowed:
       - package.json
@@ -20,7 +20,7 @@
       - openspec/changes/no-liveness-timeouts-add-visibility/**
   - allow_new_files: false
 
-- [ ] 2.2 Verify installed claude-p resolves to `f47f71dfa34593a32cb911f617f9cf8ca1fa0073` and contains paste-collapse echo handling
+- [x] 2.2 Verify installed claude-p resolves to `f47f71dfa34593a32cb911f617f9cf8ca1fa0073` and contains paste-collapse echo handling
   - intent: infra
   - files_allowed:
       - package.json
@@ -32,7 +32,7 @@
 
 ## 3. Scenario coverage
 
-- [ ] 3.1 Add S31 large cold-start prompt scenario using `scenario-lib.sh`
+- [x] 3.1 Add S31 large cold-start prompt scenario using `scenario-lib.sh`
   - intent: feature
   - files_allowed:
       - scripts/run-scenario-s31-large-cold-start-prompt.sh
@@ -43,7 +43,7 @@
       - openspec/changes/no-liveness-timeouts-add-visibility/**
   - allow_new_files: true
 
-- [ ] 3.2 Document S31 in `SCENARIOS.md` and scenario override metadata
+- [x] 3.2 Document S31 in `SCENARIOS.md` and scenario override metadata
   - intent: feature
   - files_allowed:
       - scripts/scenario-overrides.conf
@@ -55,7 +55,7 @@
 
 ## 4. Validation and completion
 
-- [ ] 4.1 Run unit tests and live S31; retry S31 once only for transient boot/network failure
+- [x] 4.1 Run unit tests and live S31; retry S31 once only for transient boot/network failure
   - intent: infra
   - files_allowed:
       - openspec/changes/claude-p-paste-fix-guard/**
@@ -64,7 +64,7 @@
       - openspec/changes/no-liveness-timeouts-add-visibility/**
   - allow_new_files: true
 
-- [ ] 4.2 Author `verify.md` with the six opsx-superpowers checks and validation evidence
+- [x] 4.2 Author `verify.md` with the six opsx-superpowers checks and validation evidence
   - intent: infra
   - files_allowed:
       - openspec/changes/claude-p-paste-fix-guard/**

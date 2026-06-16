@@ -1,0 +1,20 @@
+{
+  "cell": "E-len200-opus-c1",
+  "idx": 4,
+  "model": "claude-opus-4-8",
+  "promptLength": 200,
+  "concurrency": 1,
+  "exit": 0,
+  "signal": null,
+  "wallMs": 5963,
+  "ok": true,
+  "promptNotAccepted": false,
+  "authQuota": true,
+  "sawUser": true,
+  "sawAssistant": true,
+  "sawResult": true,
+  "firstLineAtMs": 656,
+  "lastTrace": "[claude-p +5927ms] run() returning (total_lines_streamed=5, duration=5927ms)",
+  "pasteMentions": [],
+  "trialDir": "/Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/.spike-notes/claude-p-gate/promptnotaccepted-rootcause-2026-06-16T02-29-11-767Z/E-len200-opus-c1-004"
+}

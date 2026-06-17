@@ -44,7 +44,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "change-case": "^5.4.4",
-    "claude-p": "github:cartwmic/claude-p#f47f71dfa34593a32cb911f617f9cf8ca1fa0073",
+    "claude-p": "github:cartwmic/claude-p#18c6185877d8c420b59616e221e2ebcc05534261",
     "pino": "^10.3.1",
     "rotating-file-stream": "^3.2.9",
     "tsx": "^4.21.0"

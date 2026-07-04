@@ -1,6 +1,6 @@
 ## 1. claude-p fork: write-only PTY output mirror
 
-- [ ] 1.1 Implement `--mirror-file <path>` in the fork at `/Volumes/Workshop/git/claude-p`: flag parsing in `src/args.zig`, `Options` field + reader-loop tee in `src/driver.zig` (append every PTY output byte in arrival order; open lazily; write failures non-fatal, stderr note only), README flag-table row. `zig build -Doptimize=ReleaseSafe` and `zig build test` green. Commit on the fork as `custom: add --mirror-file write-only PTY output mirror (upstream smithersai/claude-p; for pi-claude-bridge claude-peek-overlay)`. Push the fork branch. AC: claude-p-fork.write-only-pty-output-mirror
+- [x] 1.1 Implement `--mirror-file <path>` in the fork at `/Volumes/Workshop/git/claude-p`: flag parsing in `src/args.zig`, `Options` field + reader-loop tee in `src/driver.zig` (append every PTY output byte in arrival order; open lazily; write failures non-fatal, stderr note only), README flag-table row. `zig build -Doptimize=ReleaseSafe` and `zig build test` green. Commit on the fork as `custom: add --mirror-file write-only PTY output mirror (upstream smithersai/claude-p; for pi-claude-bridge claude-peek-overlay)`. Push the fork branch. AC: claude-p-fork.write-only-pty-output-mirror
   - intent: feature
   - files_allowed:
       - openspec/changes/add-claude-peek-overlay/**

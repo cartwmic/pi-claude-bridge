@@ -36,7 +36,7 @@
 
 ## 3. Peek module + overlay
 
-- [ ] 3.1 New `src/peek/` module: mirror-file tailer (poll/fs.watch, replay-from-byte-0 on retarget) feeding an `@xterm/headless` `Terminal({cols:120, rows:40})`; screen-snapshot API returning grid rows via `translateToString(true)`; render coalescing at a bounded rate (≤20/s); explicit states `idle | live | error`; all errors caught, surfaced as state + structured log, never thrown into the stream path. AC: claude-peek-overlay.live-screen-during-main-provider-turn, claude-peek-overlay.explicit-idle-and-error-states, claude-peek-overlay.peek-failures-never-affect-the-inference-turn, claude-peek-overlay.fixed-session-geometry-rendering
+- [x] 3.1 New `src/peek/` module: mirror-file tailer (poll/fs.watch, replay-from-byte-0 on retarget) feeding an `@xterm/headless` `Terminal({cols:120, rows:40})`; screen-snapshot API returning grid rows via `translateToString(true)`; render coalescing at a bounded rate (≤20/s); explicit states `idle | live | error`; all errors caught, surfaced as state + structured log, never thrown into the stream path. AC: claude-peek-overlay.live-screen-during-main-provider-turn, claude-peek-overlay.explicit-idle-and-error-states, claude-peek-overlay.peek-failures-never-affect-the-inference-turn, claude-peek-overlay.fixed-session-geometry-rendering
   - intent: feature
   - files_allowed:
       - src/peek/**

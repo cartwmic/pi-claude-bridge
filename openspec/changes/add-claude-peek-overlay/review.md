@@ -73,4 +73,11 @@ doneness_mode: required
 
 ## Scope Expansions
 
-- (none)
+- 2026-07-04 — hardened two pre-existing load-flaky timing tests
+  (tests/unit-mcp-shim.mjs fixed 400ms window → 15s signal poll;
+  tests/unit-driver-resilience.mjs backoff/4 sleep → spawn-signal poll +
+  immediate abort; assertions unchanged in both) — evidence: the change's
+  required `unit` validation gate (opsx-gates.yaml, mandated by the frozen
+  intent's validation constraint) failed non-deterministically at machine
+  load avg 15-19 (4 concurrent claude-p sessions); code-review r3 finding
+  #13 documents the class. Worktree commit 9546901.

@@ -111,6 +111,17 @@ describe("buildClaudePArgs — required flags", () => {
 		assert.ok(!args.includes("--mcp-ready-file"));
 	});
 
+	// claude-p-fork.write-only-pty-output-mirror (bridge argv side)
+	it("emits --mirror-file when mirrorFile is set", () => {
+		const args = buildClaudePArgs(baseCfg({ mirrorFile: "/tmp/peek/abc.raw" }));
+		assert.equal(valueAfter(args, "--mirror-file"), "/tmp/peek/abc.raw");
+	});
+
+	it("omits --mirror-file when mirrorFile is unset", () => {
+		const args = buildClaudePArgs(baseCfg());
+		assert.ok(!args.includes("--mirror-file"));
+	});
+
 	it("includes --disallowedTools with the full native disallow set", () => {
 		const args = buildClaudePArgs(baseCfg());
 		assert.equal(valueAfter(args, "--disallowedTools"), DISALLOWED_TOOLS_VALUE);

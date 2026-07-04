@@ -193,6 +193,15 @@ export interface ClaudePSpawnConfig {
 	 * → --mcp-ready-file
 	 */
 	mcpReadyFile?: string;
+	/**
+	 * Optional write-only PTY-output mirror path (raw bytes, pure tee inside
+	 * claude-p). Set by the bridge for MAIN-PROVIDER spawns only, to feed the
+	 * read-only peek overlay; capture-path spawns never set it. Strictly
+	 * observational — claude-p consumes the flag (never forwarded to claude)
+	 * and mirror failures are non-fatal inside the driver.
+	 * → --mirror-file
+	 */
+	mirrorFile?: string;
 }
 
 /** Flags this module must NEVER emit (constitution IV + "never nominal claude -p"). */
@@ -224,6 +233,13 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 	// spawns set it. claude-p consumes it (never forwarded to claude).
 	if (cfg.mcpReadyFile) {
 		args.push("--mcp-ready-file", cfg.mcpReadyFile);
+	}
+
+	// --mirror-file <path>: write-only raw PTY output tee for the peek overlay.
+	// Optional; main-provider spawns only. claude-p consumes it (never forwarded
+	// to claude); open/write failures are non-fatal inside claude-p.
+	if (cfg.mirrorFile) {
+		args.push("--mirror-file", cfg.mirrorFile);
 	}
 
 	// --disallowedTools <space-joined native list> (single argv token; see format note)

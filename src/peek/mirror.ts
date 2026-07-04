@@ -14,8 +14,8 @@
 // (spawn proceeds unmirrored) — nothing here may throw into the spawn path.
 
 import { mkdirSync, readdirSync, rmSync, statSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { homedir, tmpdir } from "os";
+import { join, resolve, sep } from "path";
 
 /** Env override for the peek dir (tests / operator). */
 export const PEEK_DIR_ENV = "CLAUDE_BRIDGE_PEEK_DIR";
@@ -28,10 +28,23 @@ export interface PeekLogger {
 	warn(obj: unknown, msg?: string): void;
 }
 
-/** Bridge-owned peek dir: env override, else <tmpdir>/claude-bridge-peek. */
-export function resolvePeekDir(env: NodeJS.ProcessEnv = process.env): string {
+/**
+ * Bridge-owned peek dir: env override, else <tmpdir>/claude-bridge-peek.
+ * Constitution III guard (code-review r1 finding): an override that resolves
+ * under ~/.claude/ is REJECTED (falls back to the default, with a warning) —
+ * the bridge never writes under ~/.claude/ no matter what the env says.
+ */
+export function resolvePeekDir(env: NodeJS.ProcessEnv = process.env, log?: PeekLogger): string {
+	const fallback = join(tmpdir(), "claude-bridge-peek");
 	const override = env[PEEK_DIR_ENV];
-	return override && override.length > 0 ? override : join(tmpdir(), "claude-bridge-peek");
+	if (!override || override.length === 0) return fallback;
+	const claudeRoot = join(homedir(), ".claude");
+	const resolved = resolve(override);
+	if (resolved === claudeRoot || resolved.startsWith(claudeRoot + sep)) {
+		log?.warn({ override }, `peek: ${PEEK_DIR_ENV} resolves under ~/.claude/ — rejected (Constitution III); using default`);
+		return fallback;
+	}
+	return resolved;
 }
 
 /** Per-spawn mirror filename: <sessionId>-<ts>.raw (ts keeps names unique across retries). */
@@ -75,9 +88,13 @@ export function cleanupOldMirrors(peekDir: string, keep: number = KEEP_LAST_N, l
  */
 export function prepareMirrorForSpawn(sessionId: string, log?: PeekLogger, env: NodeJS.ProcessEnv = process.env): string | undefined {
 	try {
-		const dir = resolvePeekDir(env);
+		const dir = resolvePeekDir(env, log);
 		mkdirSync(dir, { recursive: true });
-		cleanupOldMirrors(dir, KEEP_LAST_N, log);
+		// keep-1: the file this spawn is about to lazy-create counts toward the
+		// retained-file limit, so trim to KEEP_LAST_N-1 BEFORE minting — after
+		// the new file appears at most KEEP_LAST_N remain (code-review r1;
+		// claude-peek-overlay.mirror-files-confined-to-bridge-owned-storage).
+		cleanupOldMirrors(dir, KEEP_LAST_N - 1, log);
 		const path = mirrorPathFor(dir, sessionId);
 		setCurrentMirror(path);
 		return path;

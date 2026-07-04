@@ -6,7 +6,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readdirSync, rmSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
 	PEEK_DIR_ENV,
@@ -41,6 +41,15 @@ describe("peek mirror lifecycle", () => {
 		assert.equal(resolvePeekDir({ [PEEK_DIR_ENV]: "/x/peek" }), "/x/peek");
 	});
 
+	// Constitution III guard (code-review r1): override under ~/.claude rejected.
+	it("resolvePeekDir rejects an override under ~/.claude", () => {
+		const warns = [];
+		const log = { warn: (o, m) => warns.push(m) };
+		const d = resolvePeekDir({ [PEEK_DIR_ENV]: join(homedir(), ".claude", "evil") }, log);
+		assert.ok(d.startsWith(tmpdir()), "fell back to the bridge-owned default");
+		assert.equal(warns.length, 1);
+	});
+
 	it("mirrorPathFor mints <sessionId>-<ts>.raw under the peek dir", () => {
 		const p = mirrorPathFor("/x/peek", "abc123", 42);
 		assert.equal(p, join("/x/peek", "abc123-42.raw"));
@@ -61,6 +70,22 @@ describe("peek mirror lifecycle", () => {
 		// newest (highest index) survive
 		for (let i = 3; i < KEEP_LAST_N + 3; i++) assert.ok(raws.includes(`s${i}-${i}.raw`));
 		assert.ok(readdirSync(dir).includes("unrelated.txt"));
+	});
+
+	// code-review r1: after a spawn's (lazily created) file appears, at most
+	// KEEP_LAST_N remain — prepareMirrorForSpawn trims to N-1 beforehand.
+	it("prepareMirrorForSpawn leaves at most KEEP_LAST_N including the new file", () => {
+		const env = { [PEEK_DIR_ENV]: dir };
+		for (let i = 0; i < KEEP_LAST_N; i++) {
+			const p = join(dir, `old${i}-${i}.raw`);
+			writeFileSync(p, "x");
+			const t = new Date(2026, 0, 1 + i);
+			utimesSync(p, t, t);
+		}
+		const minted = prepareMirrorForSpawn("newsess", undefined, env);
+		writeFileSync(minted, "lazy-created"); // simulate claude-p creating it
+		const raws = readdirSync(dir).filter((f) => f.endsWith(".raw"));
+		assert.ok(raws.length <= KEEP_LAST_N, `expected ≤${KEEP_LAST_N}, got ${raws.length}`);
 	});
 
 	it("cleanupOldMirrors on a missing dir is a non-fatal no-op", () => {

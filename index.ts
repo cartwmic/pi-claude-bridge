@@ -57,7 +57,7 @@ import {
 	validateWarmResume,
 	computeSha256Chain,
 } from "./src/resume-store.js";
-import { prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
+import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
@@ -1830,11 +1830,14 @@ async function startFreshQuery(
 		? { kind: "resume" as const, sessionId: cachedSessionId }
 		: { kind: "fresh" as const, sessionId: randomUUID() };
 
-	// Peek mirror: MAIN-PROVIDER spawns only (capture path never sets this).
-	// prepareMirrorForSpawn is failure-isolated: any fs error → undefined and
-	// the spawn proceeds unmirrored (claude-peek-overlay.peek-failures-never-
-	// affect-the-inference-turn).
-	const mirrorFile = prepareMirrorForSpawn(session.sessionId, frame.log);
+	// Peek mirror: MAIN-TURN spawns only. startFreshQuery is the shared spawn
+	// path for main turns AND nested subagent turns — at this point the frame
+	// is not yet pushed, so stack.length === 0 ⇔ this spawn IS the main turn.
+	// Subagent spawns (stack.length > 0) and the capture path are never
+	// mirrored (claude-peek-overlay.peek-follows-latest-main-turn-spawn-only;
+	// code-review r1 P0). prepareMirrorForSpawn is failure-isolated: any fs
+	// error → undefined and the spawn proceeds unmirrored.
+	const mirrorFile = stack.length === 0 ? prepareMirrorForSpawn(session.sessionId, frame.log) : undefined;
 
 	const cfg: ClaudePSpawnConfig = {
 		model: model.id,
@@ -1918,7 +1921,12 @@ async function startFreshQuery(
 		.then((res) => finalizeClaudePFrame(frame, res))
 		// Turn over → no active main-provider spawn: publish null so the overlay
 		// shows its explicit idle state (claude-peek-overlay.explicit-idle-and-error-states).
-		.finally(() => setCurrentMirror(null));
+		// Guarded: only the frame that OWNS the current mirror clears it, so a
+		// nested/aborted sibling can never idle the overlay mid-main-turn
+		// (code-review r1 P0).
+		.finally(() => {
+			if (mirrorFile !== undefined && getCurrentMirror() === mirrorFile) setCurrentMirror(null);
+		});
 }
 
 // ---------------------------------------------------------------------------

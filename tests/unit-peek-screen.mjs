@@ -134,6 +134,24 @@ describe("MirrorFollower states + coalescing", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	it("truncation under a live follow resets and replays (retry re-created the mirror; code-review r1)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "peek-follow-"));
+		const p = join(dir, "m.raw");
+		writeFileSync(p, "attempt-one content padding padding");
+		const f = new MirrorFollower({ pollMs: 10, coalesceMs: 10 });
+		f.retarget(p);
+		await sleep(50);
+		assert.ok(f.rows().join("\n").includes("attempt-one"));
+		writeFileSync(p, "retry-two"); // truncate + rewrite (shorter than prior offset)
+		await sleep(80);
+		const text = f.rows().join("\n");
+		assert.ok(text.includes("retry-two"), "follower replayed the truncated file");
+		assert.ok(!text.includes("attempt-one"), "stale attempt content cleared");
+		assert.equal(f.state, "live");
+		f.dispose();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
 	it("retarget replays the new file from byte 0", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "peek-follow-"));
 		const a = join(dir, "a.raw");

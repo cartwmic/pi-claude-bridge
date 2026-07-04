@@ -102,6 +102,16 @@ export class MirrorFollower {
 		try {
 			const size = this.statSizeWithGrace();
 			if (size === null) return; // lazily-created file not there yet (grace)
+			if (size < this.offset) {
+				// File TRUNCATED under us: a resilience retry re-created the same
+				// mirror path (claude-p opens with truncate). Reset and replay from
+				// byte 0 so the overlay follows the retry attempt instead of
+				// freezing on a stale offset (code-review r1 finding).
+				this.offset = 0;
+				this.screen.reset();
+				this.markDirty();
+				return; // next poll reads from 0
+			}
 			if (size <= this.offset) return;
 			const fd = openSync(this.path, "r");
 			try {

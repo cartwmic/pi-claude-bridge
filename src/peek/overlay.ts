@@ -70,7 +70,7 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 				d(undefined);
 				return;
 			}
-			void ctx.ui.custom<undefined>(
+			const shown = ctx.ui.custom<undefined>(
 				(tui, _theme, _kb, done) => {
 					openDone = done;
 					let state: PeekState = "idle";
@@ -106,6 +106,13 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 					},
 				},
 			);
+			// Overlay creation/lifecycle failures are peek failures: log + reset the
+			// toggle, never an unhandled rejection (claude-peek-overlay.peek-
+			// failures-never-affect-the-inference-turn; code-review r1 finding).
+			shown.catch((err) => {
+				openDone = undefined;
+				log.warn({ err: err instanceof Error ? err.message : String(err) }, "peek: overlay failed (non-fatal)");
+			});
 		},
 	});
 }

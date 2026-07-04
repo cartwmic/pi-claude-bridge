@@ -5,7 +5,7 @@
   - files_allowed:
       - openspec/changes/add-claude-peek-overlay/**
   - allow_new_files: true
-- [ ] 1.2 Bump the `claude-p` pin in bridge `package.json` to the fork commit from 1.1; `npm install`; verify `node_modules/claude-p` carries the flag (`claude-p --help` or strings check).
+- [x] 1.2 Bump the `claude-p` pin in bridge `package.json` to the fork commit from 1.1; `npm install`; verify `node_modules/claude-p` carries the flag (`claude-p --help` or strings check).
   - intent: infra
   - files_allowed:
       - package.json
@@ -27,7 +27,7 @@
       - src/**
       - tests/**
   - allow_new_files: true
-- [ ] 2.3 Add `@xterm/headless` dependency.
+- [x] 2.3 Add `@xterm/headless` dependency.
   - intent: infra
   - files_allowed:
       - package.json

@@ -15,6 +15,8 @@ doneness_mode: required
 # extended 5→6 by the human resume ruling at the 2026-07-04 decision-audit
 # landing (named re-arm); recorded in the code-review.md Round tracker.
 review_max_rounds: 6
+loop_hold: true
+loop_hold_reason: "SECOND decision-audit landing (code-review.md) — extended budget (6) exhausted; round 6: opus pass + doneness satisfied x5, gpt 1 P1 (unit-gate red from pre-existing test-infra load flakes, fixed 5196c49) + 1 P2 (width cap, fixed b49c373); all gates green post-fix; awaiting human ruling: extend to 7 / waive #21-22 / inspect"
 ---
 
 # Review
@@ -58,6 +60,7 @@ review_max_rounds: 6
 
 ## Execution Notes
 
+- 2026-07-04 — round 6 (blind, at 89b8743; gpt re-dispatched once after infra exit-143): opus pass + doneness satisfied (5th) / gpt fail (1 P1 test-infra, 1 P2 width) — fixed 5196c49 + b49c373; all gates green (405/405 ×2, s31 9/9 ×2). Extended budget exhausted, round not quiet → SECOND landing (loop_hold set).
 - 2026-07-04 — human resume ruling at the landing = continue: review_max_rounds extended 5→6; round 6 blind dispatches at current worktree HEAD (da40ef8). Gate validations at re-arm instant were saturation flakes (load avg 31-57, 6 concurrent claude-p incl. the gate's own s31); 405/405 unit + s31 9/9 proven at fcd58b6 when calm.
 - 2026-07-04 — loop_hold cleared by named re-arm (/opsx-loop add-claude-peek-overlay); reason was: decision audit in code-review.md — review_max_rounds hard cap (5) reached with round-5 P1 fixed post-round; all P0/P1 from all rounds fixed and landed; awaiting human ruling: extend rounds / waive re-review of the round-5 fix / inspect
 - 2026-07-04 — review.md authored by the loop (gate: review.md absent).

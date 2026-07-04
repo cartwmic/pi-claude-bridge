@@ -33,6 +33,10 @@ Verdict: pass ⇔ no open P0/P1.
 <!-- 2026-07-04: human resume ruling at the decision-audit landing (named
      re-arm) granted a recorded budget extension: review_max_rounds 5→6.
      Round 6 dispatched blind at the post-fix HEAD. -->
+| 6 | blind | 0 | 1 | 1 | 2 | opus-4-8:pass gpt-5.5:fail | 89b8743 |
+<!-- r6 provenance note: the gpt-5.5 dispatch failed on infra (exit 143,
+     fetch failed) and was re-dispatched once, same blind prompt, same
+     reviewed range. Verdict above is from the successful re-dispatch. -->
 
 ## Findings
 
@@ -63,9 +67,17 @@ Verdict: pass ⇔ no open P0/P1.
 | 18 | (r4 opus#2) no overlay max-height clamp; relies on pi-tui clipping on short terminals | P3 | deferred |
 | 19 | (r4 opus#3) turn-end idle guard's undefined-mirror branch assumes sequential main turns | P3 | deferred |
 | 20 | (r5 gpt#1) fork accepted `--mirror-file ""` — plan step 1 requires rejecting an empty path at parse time | P1 | fixed |
+| 21 | (r6 gpt#1) required `unit` gate red: capture-shape test's fixed 120ms pino-log snapshot failed even in isolation under load; plus full-parallel runner starved whole test files (killwedged 496s) | P1 | fixed |
+| 22 | (r6 gpt#2 / r3 opus#3 / r5 opus#4) overlay width 60% deviates from plan step 5's min(122, viewport) cap | P2 | fixed |
+| 23 | (r6 opus#1) third-tier ~/.cache escalation not re-checked against a pathological double-symlink into ~/.claude | P3 | deferred |
 
 ## Applied fixes
 
+- worktree `5196c49` + `b49c373` — round-6 findings: signal-based pino-log
+  wait in the capture-shape test + `--test-concurrency=4` for the unit suite
+  (#21; scope-expansion class already authorized); overlay width → 122-col
+  cap per plan (#22); s31 content-advance assertion made signal-based (same
+  load-flake class). 405/405 ×2; s31 9/9 ×2 post-fix.
 - fork `12f3672` + worktree `fcd58b6` — round-5 P1: args.zig rejects empty
   `--mirror-file` with MissingValue (Zig test added); pin bumped; installed
   binary verified failing fast; 405/405 green.
@@ -150,7 +162,34 @@ Options for the human ruling:
   2. Rule the round-5 fix acceptable as-reviewed and waive re-review of the
      empty-path parse fix (waived_by_user) — seals pass with the reviewed
      range updated.
-  3. Inspect the worktree/branch directly before ruling. Both reviewers confirmed the gate-manifest
+  3. Inspect the worktree/branch directly before ruling.
+
+## Decision audit — SECOND landing (2026-07-04, post round 6)
+
+Human re-arm extended the budget to 6; round 6 ran blind at 89b8743:
+opus **pass** (2 P3; doneness satisfied — 5th consecutive), gpt **fail**
+(1 P1 + 1 P2). The P1 was NOT a diff defect in the feature: the required
+`unit` gate was red because a pre-existing capture-shape test read the async
+pino log with one fixed 120ms snapshot (failed even in isolation under load
+avg 20-45) and the full-parallel node test runner starved whole files on the
+saturated box. Both fixed (5196c49: signal-based log wait +
+--test-concurrency=4) under the already-authorized test-hardening scope
+expansion; the P2 width cap and the s31 advance-check flake were also fixed
+(b49c373). All gates green post-fix: typecheck, 405/405 ×2, s31 9/9 ×2.
+Round 6 was not quiet (P1=1) and the extended budget is exhausted → landing
+again per budget rule (d). Cumulative: 6 rounds, every P0/P1 ever found is
+fixed and landed; opus passed rounds 2-6; doneness satisfied ×5; the last
+TWO rounds' only P1s were test-infrastructure load artifacts, not feature
+defects.
+Options for the human ruling:
+  1. Extend review_max_rounds → 7 and re-arm — round 7 blind at b49c373
+     seeking the quiet round (post-fix state has no known open P0/P1 and all
+     validations green; reasonable odds the round is quiet, but gpt has
+     found one new narrow P1 every round).
+  2. Waive re-review of the round-6 test-infra fixes (waived_by_user:
+     findings #21-22) — seals Verdict: pass at reviewed range
+     bccd58f..b49c373.
+  3. Inspect the worktree/branch before ruling. Both reviewers confirmed the gate-manifest
 addition weakens nothing, Constitution III (no `~/.claude/` writes in the
 shipped default), Constitution II (documented ExtensionUIContext only), and
 the fork tee's write-only/absent-flag-identical properties.

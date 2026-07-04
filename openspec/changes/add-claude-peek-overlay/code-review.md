@@ -29,6 +29,7 @@ Verdict: pass ⇔ no open P0/P1.
 | 2 | blind | 0 | 2 | 0 | 2 | opus-4-8:pass gpt-5.5:fail | 5b923ba |
 | 3 | blind | 0 | 1 | 2 | 2 | opus-4-8:pass gpt-5.5:fail | 871cf3d |
 | 4 | blind | 0 | 2 | 0 | 3 | opus-4-8:pass gpt-5.5:fail | 5f034d7 |
+| 5 | blind | 0 | 1 | 2 | 3 | opus-4-8:pass gpt-5.5:fail | 13a3e34 |
 
 ## Findings
 
@@ -58,9 +59,13 @@ Verdict: pass ⇔ no open P0/P1.
 | 17 | (r4 gpt#2) resilience retries reused the first attempt's mirror path — per-spawn naming + latest-spawn retarget not honored across retries | P1 | fixed |
 | 18 | (r4 opus#2) no overlay max-height clamp; relies on pi-tui clipping on short terminals | P3 | deferred |
 | 19 | (r4 opus#3) turn-end idle guard's undefined-mirror branch assumes sequential main turns | P3 | deferred |
+| 20 | (r5 gpt#1) fork accepted `--mirror-file ""` — plan step 1 requires rejecting an empty path at parse time | P1 | fixed |
 
 ## Applied fixes
 
+- fork `12f3672` + worktree `fcd58b6` — round-5 P1: args.zig rejects empty
+  `--mirror-file` with MissingValue (Zig test added); pin bumped; installed
+  binary verified failing fast; 405/405 green.
 - `d927826` on `opsx/add-claude-peek-overlay` — round-4 P1s: fallback peek dir
   guarded (TMPDIR under ~/.claude escalates to ~/.cache/claude-bridge-peek);
   per-spawn mirror re-mint across resilience retries via
@@ -119,10 +124,30 @@ so per the quiet-round continuation rule the loop dispatched round 3, which
 found 1 P1 (fixed in `6c12278`), and round 4 at 5f034d7, which found 2 P1s
 (fixed in `d927826`). Open-P0+P1 trajectory: 5 → 2 → 1 → 2-then-fixed; every
 round's findings were landed change-scoped before the next dispatch
-(progress signal present each round). Round 5 is the review_max_rounds hard
-cap: if it is not quiet, the loop lands for disclosure/decision-audit per
-the budget rule. Doneness riders (opus, designated judge) ruled satisfied at
-5b923ba, 871cf3d, and 5f034d7; doneness re-seals at the final HEAD. Both reviewers confirmed the gate-manifest
+(progress signal present each round). Round 5 (the review_max_rounds hard
+cap) found 1 P1 (empty-mirror-path parse gap; fixed in fork 12f3672 +
+worktree fcd58b6) — NOT a quiet round, so per budget rule (d) the loop
+LANDS here for the decision audit. No round 6 is dispatched without a human
+ruling; the verdict is NOT sealed pass (quiet-round automates CONTINUE only,
+never SEAL). Doneness riders (opus, designated judge) ruled satisfied at
+5b923ba, 871cf3d, 5f034d7, and 13a3e34 (four consecutive).
+
+## Decision audit (landing, 2026-07-04)
+
+State at landing: every P0/P1 from all 5 rounds is FIXED and landed
+change-scoped (open-P0+P1 trajectory at round time: 5 → 2 → 1 → 2 → 1; no
+finding ever recurred after its fix landed — each round's failures were NEW,
+progressively narrower edge cases). Validation gates green at fcd58b6:
+typecheck, 405/405 unit, s31 9/9. Opus passed rounds 2-5 and ruled doneness
+satisfied four times; gpt found one new narrow P1 per round.
+Options for the human ruling:
+  1. Extend review_max_rounds (+1 or +2) and re-arm (/opsx-loop
+     add-claude-peek-overlay) — the loop dispatches round 6 blind at fcd58b6
+     seeking the quiet round.
+  2. Rule the round-5 fix acceptable as-reviewed and waive re-review of the
+     empty-path parse fix (waived_by_user) — seals pass with the reviewed
+     range updated.
+  3. Inspect the worktree/branch directly before ruling. Both reviewers confirmed the gate-manifest
 addition weakens nothing, Constitution III (no `~/.claude/` writes in the
 shipped default), Constitution II (documented ExtensionUIContext only), and
 the fork tee's write-only/absent-flag-identical properties.

@@ -12,6 +12,8 @@ loop_max_iterations: 40
 validation_source_mode: required
 spec_level: spec-anchored
 doneness_mode: required
+loop_hold: true
+loop_hold_reason: "decision audit in code-review.md — review_max_rounds hard cap (5) reached with round-5 P1 fixed post-round; all P0/P1 from all rounds fixed and landed; awaiting human ruling: extend rounds / waive re-review of the round-5 fix / inspect"
 ---
 
 # Review
@@ -58,6 +60,7 @@ doneness_mode: required
 - 2026-07-04 — review.md authored by the loop (gate: review.md absent).
 - 2026-07-04 — apply: worktree created (branch opsx/add-claude-peek-overlay); Diff Base = pre-apply main HEAD bccd58f.
 - 2026-07-04 — fork pin bump will move b24e3827 → new fork HEAD, inheriting intermediate fork commits already on origin/main (paste-collapse archive, transcript API-error recovery 18c6185) — all previously validated on the fork's main.
+- 2026-07-04 — code-review round 5 (blind, full diff at 13a3e34, HARD CAP): opus pass (2 P2 + 3 P3; doneness satisfied — 4th consecutive) / gpt fail (1 P1: fork accepted empty --mirror-file; plan step 1 requires rejection) — fixed in fork 12f3672 + pin bump fcd58b6. Budget exhausted → loop LANDED (loop_hold set); decision audit in code-review.md.
 - 2026-07-04 — code-review round 4 (blind, full diff at 5f034d7): opus pass (3 P3; doneness satisfied) / gpt fail (2 P1: unguarded tmpdir fallback under ~/.claude; retry mirror-path reuse) — both fixed on worktree d927826. Round 5 = hard cap; not-quiet ⇒ disclosure/landing.
 - 2026-07-04 — code-review round 3 (blind, full diff at 871cf3d): opus pass (1 P2 + 2 P3; doneness rider satisfied) / gpt fail (1 P1: mirror-prep failure invisible to overlay; 1 P2) — P1 fixed on worktree 6c12278. Trajectory 5→2→1 P0+P1. Round 4 due (converging; budget 3/5 used).
 - 2026-07-04 — note: two dispatch results were lost to needs-attention turn interrupts before landing; round 3 re-dispatched with durable /tmp output files + control disabled. unit-mcp-shim flake under 4-concurrent-claude-p machine load recorded (finding #13, untouched file).

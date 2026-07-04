@@ -12,8 +12,9 @@ loop_max_iterations: 40
 validation_source_mode: required
 spec_level: spec-anchored
 doneness_mode: required
-loop_hold: true
-loop_hold_reason: "decision audit in code-review.md — review_max_rounds hard cap (5) reached with round-5 P1 fixed post-round; all P0/P1 from all rounds fixed and landed; awaiting human ruling: extend rounds / waive re-review of the round-5 fix / inspect"
+# extended 5→6 by the human resume ruling at the 2026-07-04 decision-audit
+# landing (named re-arm); recorded in the code-review.md Round tracker.
+review_max_rounds: 6
 ---
 
 # Review
@@ -57,6 +58,8 @@ loop_hold_reason: "decision audit in code-review.md — review_max_rounds hard c
 
 ## Execution Notes
 
+- 2026-07-04 — human resume ruling at the landing = continue: review_max_rounds extended 5→6; round 6 blind dispatches at current worktree HEAD (da40ef8). Gate validations at re-arm instant were saturation flakes (load avg 31-57, 6 concurrent claude-p incl. the gate's own s31); 405/405 unit + s31 9/9 proven at fcd58b6 when calm.
+- 2026-07-04 — loop_hold cleared by named re-arm (/opsx-loop add-claude-peek-overlay); reason was: decision audit in code-review.md — review_max_rounds hard cap (5) reached with round-5 P1 fixed post-round; all P0/P1 from all rounds fixed and landed; awaiting human ruling: extend rounds / waive re-review of the round-5 fix / inspect
 - 2026-07-04 — review.md authored by the loop (gate: review.md absent).
 - 2026-07-04 — apply: worktree created (branch opsx/add-claude-peek-overlay); Diff Base = pre-apply main HEAD bccd58f.
 - 2026-07-04 — fork pin bump will move b24e3827 → new fork HEAD, inheriting intermediate fork commits already on origin/main (paste-collapse archive, transcript API-error recovery 18c6185) — all previously validated on the fork's main.

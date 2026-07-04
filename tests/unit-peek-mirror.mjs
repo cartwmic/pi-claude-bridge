@@ -5,7 +5,7 @@
 //   claude-peek-overlay.peek-failures-never-affect-the-inference-turn
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readdirSync, rmSync, utimesSync, mkdirSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
@@ -48,6 +48,26 @@ describe("peek mirror lifecycle", () => {
 		const d = resolvePeekDir({ [PEEK_DIR_ENV]: join(homedir(), ".claude", "evil") }, log);
 		assert.ok(d.startsWith(tmpdir()), "fell back to the bridge-owned default");
 		assert.equal(warns.length, 1);
+	});
+
+	// Constitution III guard (code-review r2): SYMLINKED override into ~/.claude rejected.
+	it("resolvePeekDir rejects a symlink override whose target is under ~/.claude", () => {
+		const fakeHome = mkdtempSync(join(tmpdir(), "peek-home-"));
+		const claudeTarget = join(fakeHome, ".claude", "sneaky");
+		mkdirSync(claudeTarget, { recursive: true });
+		const link = join(dir, "innocent-link");
+		symlinkSync(claudeTarget, link);
+		const warns = [];
+		const log = { warn: (o, m) => warns.push(m) };
+		const d = resolvePeekDir({ [PEEK_DIR_ENV]: link }, log, fakeHome);
+		assert.ok(d.startsWith(tmpdir()) && !d.includes("sneaky"), "fell back to default, not the symlink target");
+		assert.equal(warns.length, 1);
+		// non-existing tail through the symlink is also caught (physicalPath walk)
+		const warns2 = [];
+		const d2 = resolvePeekDir({ [PEEK_DIR_ENV]: join(link, "deeper", "still") }, { warn: (o, m) => warns2.push(m) }, fakeHome);
+		assert.ok(!d2.includes("sneaky"));
+		assert.equal(warns2.length, 1);
+		rmSync(fakeHome, { recursive: true, force: true });
 	});
 
 	it("mirrorPathFor mints <sessionId>-<ts>.raw under the peek dir", () => {

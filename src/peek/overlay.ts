@@ -70,7 +70,8 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 				d(undefined);
 				return;
 			}
-			const shown = ctx.ui.custom<undefined>(
+			try {
+				const shown = ctx.ui.custom<undefined>(
 				(tui, _theme, _kb, done) => {
 					openDone = done;
 					let state: PeekState = "idle";
@@ -106,13 +107,20 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 					},
 				},
 			);
-			// Overlay creation/lifecycle failures are peek failures: log + reset the
-			// toggle, never an unhandled rejection (claude-peek-overlay.peek-
-			// failures-never-affect-the-inference-turn; code-review r1 finding).
-			shown.catch((err) => {
+				// Overlay lifecycle failures are peek failures: log + reset the
+				// toggle, never an unhandled rejection (claude-peek-overlay.peek-
+				// failures-never-affect-the-inference-turn; code-review r1 finding).
+				shown.catch((err) => {
+					openDone = undefined;
+					log.warn({ err: err instanceof Error ? err.message : String(err) }, "peek: overlay failed (non-fatal)");
+				});
+			} catch (err) {
+				// Synchronous ctx.ui.custom() throw (disposed/incompatible UI context)
+				// is equally a peek failure — contain it here so the command handler
+				// never rejects (code-review r2 finding).
 				openDone = undefined;
-				log.warn({ err: err instanceof Error ? err.message : String(err) }, "peek: overlay failed (non-fatal)");
-			});
+				log.warn({ err: err instanceof Error ? err.message : String(err) }, "peek: overlay creation threw (non-fatal)");
+			}
 		},
 	});
 }

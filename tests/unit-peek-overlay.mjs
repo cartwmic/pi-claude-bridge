@@ -47,6 +47,30 @@ describe("registerClaudePeekCommand (claude-peek-overlay.overlay-toggle-command)
 		assert.equal(cmds["claude-peek"].handler.length, 2, "handler takes (args, ctx) — spike gotcha");
 	});
 
+	it("synchronous ctx.ui.custom() throw is contained (code-review r2; claude-peek-overlay.peek-failures-never-affect-the-inference-turn)", async () => {
+		const cmds = {};
+		const fakePi = { registerCommand: (name, opts) => (cmds[name] = opts) };
+		const warns = [];
+		registerClaudePeekCommand(fakePi, { warn: (o, m) => warns.push(m) });
+		const ctx = {
+			ui: {
+				custom: () => {
+					throw new Error("disposed UI context");
+				},
+			},
+		};
+		await assert.doesNotReject(cmds["claude-peek"].handler("", ctx));
+		assert.equal(warns.length, 1);
+		// toggle state was reset: a subsequent invoke attempts to OPEN again (calls custom)
+		let calls = 0;
+		ctx.ui.custom = () => {
+			calls++;
+			throw new Error("still broken");
+		};
+		await assert.doesNotReject(cmds["claude-peek"].handler("", ctx));
+		assert.equal(calls, 1, "handler tried to open again (openDone was reset)");
+	});
+
 	it("headless ctx (no ui) is a safe no-op", async () => {
 		const cmds = {};
 		const fakePi = { registerCommand: (name, opts) => (cmds[name] = opts) };

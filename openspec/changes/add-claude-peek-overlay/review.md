@@ -54,6 +54,7 @@ doneness_mode: required
 - 2026-07-04 — review.md authored by the loop (gate: review.md absent).
 - 2026-07-04 — apply: worktree created (branch opsx/add-claude-peek-overlay); Diff Base = pre-apply main HEAD bccd58f.
 - 2026-07-04 — fork pin bump will move b24e3827 → new fork HEAD, inheriting intermediate fork commits already on origin/main (paste-collapse archive, transcript API-error recovery 18c6185) — all previously validated on the fork's main.
+- 2026-07-04 — T1.2+T2.3 done on worktree (8bb754d): pin → 27376d0, @xterm/headless ^5.5.0 added; installed claude-p --help lists --mirror-file; 367/367 unit tests + typecheck green. T2.3 batched with T1.2 (same package.json/lock contract).
 - 2026-07-04 — T1.1 done: fork commit 27376d0 (`custom: add --mirror-file write-only PTY output mirror`) pushed to cartwmic/claude-p main. zig build test green; live smoke stdout byte-identical with/without flag (41*17=697 both), mirror file captured session.
 
 ## Scope Expansions

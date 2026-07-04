@@ -73,7 +73,7 @@ if [[ -n "$mid_a" && "$mid_a" != "$mid_b" ]]; then
 else
 	# Fast models may finish before the second capture; degrade to a warn-level
 	# pass only if the turn already completed (answer visible).
-	if scn_capture | grep -q "20087"; then
+	if scn_capture | grep -qE "20,?087"; then
 		scn_pass "turn finished before second mid-turn capture (content check moot)"
 	else
 		scn_fail "overlay content did not advance during the turn"
@@ -81,9 +81,9 @@ else
 fi
 
 # ── Completion + coherence (typed while overlay open → focus never stolen) ──
-scn_wait_for "20087" 120 || true
+scn_wait_for "20,?087" 120 || true
 pane="$(scn_capture)"
-if echo "$pane" | grep -q "20087"; then
+if echo "$pane" | grep -qE "20,?087"; then
 	scn_pass "coherence: correct answer (prompt submitted while overlay open)"
 else
 	scn_fail "coherence: answer 20087 not found"

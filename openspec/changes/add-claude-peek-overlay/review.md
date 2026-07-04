@@ -58,6 +58,7 @@ doneness_mode: required
 - 2026-07-04 — review.md authored by the loop (gate: review.md absent).
 - 2026-07-04 — apply: worktree created (branch opsx/add-claude-peek-overlay); Diff Base = pre-apply main HEAD bccd58f.
 - 2026-07-04 — fork pin bump will move b24e3827 → new fork HEAD, inheriting intermediate fork commits already on origin/main (paste-collapse archive, transcript API-error recovery 18c6185) — all previously validated on the fork's main.
+- 2026-07-04 — code-review round 4 (blind, full diff at 5f034d7): opus pass (3 P3; doneness satisfied) / gpt fail (2 P1: unguarded tmpdir fallback under ~/.claude; retry mirror-path reuse) — both fixed on worktree d927826. Round 5 = hard cap; not-quiet ⇒ disclosure/landing.
 - 2026-07-04 — code-review round 3 (blind, full diff at 871cf3d): opus pass (1 P2 + 2 P3; doneness rider satisfied) / gpt fail (1 P1: mirror-prep failure invisible to overlay; 1 P2) — P1 fixed on worktree 6c12278. Trajectory 5→2→1 P0+P1. Round 4 due (converging; budget 3/5 used).
 - 2026-07-04 — note: two dispatch results were lost to needs-attention turn interrupts before landing; round 3 re-dispatched with durable /tmp output files + control disabled. unit-mcp-shim flake under 4-concurrent-claude-p machine load recorded (finding #13, untouched file).
 - 2026-07-04 — code-review round 2 (blind, full diff at 5b923ba): opus pass (2 P3) / gpt fail (2 P1: symlink peek-dir bypass, sync custom() throw) — both P1s fixed on worktree 619350e; doneness rider judged satisfied but will re-seal at final HEAD. Round 3 due (converging).

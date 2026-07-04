@@ -14,7 +14,7 @@
 
 ## 2. Bridge spawn plumbing
 
-- [ ] 2.1 Add optional `mirrorFile` to the claude-p spawn config in `src/driver/claudeP.ts`: argv assembly emits `--mirror-file <path>` when set (pure `buildClaudePArgs` change + config type). Unit-test argv assembly both ways.
+- [x] 2.1 Add optional `mirrorFile` to the claude-p spawn config in `src/driver/claudeP.ts`: argv assembly emits `--mirror-file <path>` when set (pure `buildClaudePArgs` change + config type). Unit-test argv assembly both ways.
   - intent: feature
   - files_allowed:
       - src/driver/claudeP.ts

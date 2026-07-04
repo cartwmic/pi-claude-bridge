@@ -28,6 +28,7 @@ Verdict: pass ⇔ no open P0/P1.
 | 1 | blind | 1 | 4 | 2 | 1 | opus-4-8:fail gpt-5.5:fail | 9ad45eb |
 | 2 | blind | 0 | 2 | 0 | 2 | opus-4-8:pass gpt-5.5:fail | 5b923ba |
 | 3 | blind | 0 | 1 | 2 | 2 | opus-4-8:pass gpt-5.5:fail | 871cf3d |
+| 4 | blind | 0 | 2 | 0 | 3 | opus-4-8:pass gpt-5.5:fail | 5f034d7 |
 
 ## Findings
 
@@ -53,9 +54,18 @@ Verdict: pass ⇔ no open P0/P1.
 | 13 | (r3 opus#1) pre-existing load-sensitive flake in untouched tests (unit-driver-resilience timing; unit-mcp-shim under concurrent claude-p load) now gates via required `unit` | P2 | deferred |
 | 14 | (r3 gpt#2) s31 asserts clean completion via bridge log but not byte-level NDJSON with/without-mirror comparison | P2 | deferred |
 | 15 | (r3 opus#3) overlay width 60% exceeds the 122-col cap guidance on very wide terminals — blank-pads, never resizes session | P3 | deferred |
+| 16 | (r4 gpt#1) tmpdir() FALLBACK unguarded — TMPDIR under ~/.claude made even the default peek dir violate Constitution III | P1 | fixed |
+| 17 | (r4 gpt#2) resilience retries reused the first attempt's mirror path — per-spawn naming + latest-spawn retarget not honored across retries | P1 | fixed |
+| 18 | (r4 opus#2) no overlay max-height clamp; relies on pi-tui clipping on short terminals | P3 | deferred |
+| 19 | (r4 opus#3) turn-end idle guard's undefined-mirror branch assumes sequential main turns | P3 | deferred |
 
 ## Applied fixes
 
+- `d927826` on `opsx/add-claude-peek-overlay` — round-4 P1s: fallback peek dir
+  guarded (TMPDIR under ~/.claude escalates to ~/.cache/claude-bridge-peek);
+  per-spawn mirror re-mint across resilience retries via
+  ResiliencePolicy.remintMirrorFile + latest-path-aware turn-end owner check.
+  3 new unit tests; 405/405 green; s31 9/9 PASS post-fix.
 - `6c12278` on `opsx/add-claude-peek-overlay` — round-3 P1: mirror-preparation
   failure now publishes an explicit mirror-error (publishMirrorError /
   hasCurrentMirrorError) routed to the overlay's forceError() state;
@@ -105,10 +115,14 @@ fail. All five were fixed in `b9b80f0`. Round 2 (blind, same models, full
 diff at 5b923ba) found two new P1s (symlink bypass of the peek-dir guard;
 sync `ctx.ui.custom()` throw) — fixed in `619350e`. Verdict remains **fail**
 pending a quiet round; fixes landed since round 2 (progress signal present),
-so per the quiet-round continuation rule the loop dispatches round 3 blind
-re-review autonomously. Round-2 doneness rider (opus, designated judge)
-judged the intent satisfied at 5b923ba, but the reviewed range moved with
-the fixes — doneness will be re-sealed at the final HEAD. Both reviewers confirmed the gate-manifest
+so per the quiet-round continuation rule the loop dispatched round 3, which
+found 1 P1 (fixed in `6c12278`), and round 4 at 5f034d7, which found 2 P1s
+(fixed in `d927826`). Open-P0+P1 trajectory: 5 → 2 → 1 → 2-then-fixed; every
+round's findings were landed change-scoped before the next dispatch
+(progress signal present each round). Round 5 is the review_max_rounds hard
+cap: if it is not quiet, the loop lands for disclosure/decision-audit per
+the budget rule. Doneness riders (opus, designated judge) ruled satisfied at
+5b923ba, 871cf3d, and 5f034d7; doneness re-seals at the final HEAD. Both reviewers confirmed the gate-manifest
 addition weakens nothing, Constitution III (no `~/.claude/` writes in the
 shipped default), Constitution II (documented ExtensionUIContext only), and
 the fork tee's write-only/absent-flag-identical properties.

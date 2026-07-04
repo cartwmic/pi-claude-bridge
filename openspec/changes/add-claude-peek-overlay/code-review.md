@@ -27,6 +27,7 @@ Verdict: pass ⇔ no open P0/P1.
 |---|---|---|---|---|---|---|---|
 | 1 | blind | 1 | 4 | 2 | 1 | opus-4-8:fail gpt-5.5:fail | 9ad45eb |
 | 2 | blind | 0 | 2 | 0 | 2 | opus-4-8:pass gpt-5.5:fail | 5b923ba |
+| 3 | blind | 0 | 1 | 2 | 2 | opus-4-8:pass gpt-5.5:fail | 871cf3d |
 
 ## Findings
 
@@ -48,9 +49,18 @@ Verdict: pass ⇔ no open P0/P1.
 | 9 | (r2 gpt#1 / opus r2#1) peek-dir guard was lexical-only — symlinked `CLAUDE_BRIDGE_PEEK_DIR` could land writes under `~/.claude/` (Constitution III) | P1 | fixed |
 | 10 | (r2 gpt#2) synchronous `ctx.ui.custom()` throw escaped the command handler (failure-isolation AC as applied to overlay creation) | P1 | fixed |
 | 11 | (r2 opus#2) post-dispose `markDirty` re-entry schedules a self-clearing no-op timer — keeps loop warm ≤ coalesceMs | P3 | deferred |
+| 12 | (r3 gpt#1) mirror-PREPARATION failure never reached the overlay error state — overlay stayed idle/stale during a live turn (explicit-idle-and-error-states AC) | P1 | fixed |
+| 13 | (r3 opus#1) pre-existing load-sensitive flake in untouched tests (unit-driver-resilience timing; unit-mcp-shim under concurrent claude-p load) now gates via required `unit` | P2 | deferred |
+| 14 | (r3 gpt#2) s31 asserts clean completion via bridge log but not byte-level NDJSON with/without-mirror comparison | P2 | deferred |
+| 15 | (r3 opus#3) overlay width 60% exceeds the 122-col cap guidance on very wide terminals — blank-pads, never resizes session | P3 | deferred |
 
 ## Applied fixes
 
+- `6c12278` on `opsx/add-claude-peek-overlay` — round-3 P1: mirror-preparation
+  failure now publishes an explicit mirror-error (publishMirrorError /
+  hasCurrentMirrorError) routed to the overlay's forceError() state;
+  main-turn-guarded turn-end clear returns the overlay to idle. 3 new unit
+  tests; peek suites green; s31 9/9 PASS post-fix.
 - `619350e` on `opsx/add-claude-peek-overlay` — round-2 P1s: symlink-resolving
   peek-dir guard (`physicalPath` realpaths the deepest existing ancestor;
   lexical + physical containment check, injectable home for tests) and
@@ -78,6 +88,14 @@ Verdict: pass ⇔ no open P0/P1.
   previously validated there (see review.md Execution Notes at pin time).
 - #8 (P3): code-unit padding accepted; attribute/wide-glyph fidelity is an
   explicit intent non-goal.
+- #13 (P2): load-sensitive flakes live in files untouched by this diff
+  (pre-base); tracked as follow-up hardening of test timeouts, not a defect
+  of this change.
+- #14 (P2): byte-level NDJSON comparison is already covered at the unit tier
+  by the fork's Zig tee tests + the argv both-ways tests; s31 asserts the
+  end-to-end completion signal. Accepted.
+- #15 (P3): blank-padding on >200-col terminals accepted; session never
+  resized (the AC's binding requirement).
 
 ## Verdict rationale
 

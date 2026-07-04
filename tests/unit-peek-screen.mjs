@@ -108,14 +108,30 @@ describe("MirrorFollower states + coalescing", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("missing mirror file → explicit error state, no throw (claude-peek-overlay.peek-failures-never-affect-the-inference-turn)", async () => {
+	it("missing mirror file → explicit error state after the lazy-creation grace, no throw (claude-peek-overlay.peek-failures-never-affect-the-inference-turn)", async () => {
 		const warns = [];
-		const f = new MirrorFollower({ pollMs: 10, log: { warn: (o, m) => warns.push(m) } });
+		const f = new MirrorFollower({ pollMs: 10, graceMs: 30, log: { warn: (o, m) => warns.push(m) } });
 		assert.doesNotThrow(() => f.retarget("/nonexistent-peek-dir/m.raw"));
-		await sleep(40);
+		await sleep(15);
+		assert.equal(f.state, "live", "ENOENT tolerated during the grace window (claude-p creates the file lazily)");
+		await sleep(60);
 		assert.equal(f.state, "error");
 		assert.equal(warns.length, 1);
 		f.dispose();
+	});
+
+	it("mirror file appearing AFTER retarget goes live (claude-p lazy creation race)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "peek-follow-"));
+		const p = join(dir, "late.raw");
+		const f = new MirrorFollower({ pollMs: 10, coalesceMs: 10, graceMs: 5000 });
+		f.retarget(p); // file does not exist yet
+		await sleep(40);
+		assert.equal(f.state, "live", "still live while waiting for lazy creation");
+		writeFileSync(p, "late-content");
+		await sleep(60);
+		assert.ok(f.rows().join("\n").includes("late-content"), "content picked up after late creation");
+		f.dispose();
+		rmSync(dir, { recursive: true, force: true });
 	});
 
 	it("retarget replays the new file from byte 0", async () => {

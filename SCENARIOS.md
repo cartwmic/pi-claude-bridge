@@ -837,6 +837,36 @@ opus.
 **Disposition:** a swallowed error / hung spinner / phantom success is a Layer-1
 regression → hard fail.
 
+### S31 — /claude-peek live overlay (claude-peek-overlay capability)
+
+**Goal:** prove the read-only PiP peek works end-to-end: overlay toggles,
+shows an explicit idle state, goes live and advances while a turn streams,
+never steals editor focus (a prompt typed+submitted with the overlay open
+reaches the model), and mirroring never pollutes the turn's NDJSON stream.
+
+**Setup:** `CLAUDE_BRIDGE_PEEK_DIR` pointed at a scenario-private dir (also
+proves the env override), haiku, default timeouts.
+
+**Steps:**
+1. `/claude-peek` → assert overlay marker + explicit idle header.
+2. Submit arithmetic prompt (`--no-wait`); poll pane for the `live` header;
+   take two mid-turn captures and assert overlay content advanced.
+3. Wait for the answer; assert coherence positive (correct product) +
+   negative (no refusal).
+4. Assert a non-trivial `*.raw` mirror file exists under the peek dir.
+5. Wait on the bridge LOG for `caching session=` (turn completed + cached —
+   finalize lands after the pane answer; instant grep is a false-negative).
+6. `/claude-peek` again → assert overlay removed.
+
+**Pass:** all mechanical assertions + the coherence pair. ACs:
+`claude-peek-overlay.overlay-toggle-command`,
+`claude-peek-overlay.live-screen-during-main-provider-turn`,
+`claude-peek-overlay.explicit-idle-and-error-states`,
+`claude-p-fork.write-only-pty-output-mirror`.
+
+**Disposition:** overlay stealing focus, a garbled/stale grid presented as
+live, or any NDJSON pollution from mirroring → hard fail.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per

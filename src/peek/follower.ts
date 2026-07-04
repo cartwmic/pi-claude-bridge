@@ -28,6 +28,14 @@ export interface MirrorFollowerOptions {
 	pollMs?: number;
 	/** Minimum interval between frame notifications (ms) — ≤20/s default. */
 	coalesceMs?: number;
+	/**
+	 * ENOENT tolerance after retarget (ms). claude-p creates the mirror file
+	 * LAZILY on the first PTY output chunk, so the path is published before
+	 * the file exists — a missing file is EXPECTED for the first moments of a
+	 * turn. Within the grace window (and before any bytes were read) ENOENT
+	 * keeps polling; after it, ENOENT is a real failure → error state.
+	 */
+	graceMs?: number;
 	log?: FollowerLogger;
 	/** Called (coalesced) when the screen changed. */
 	onFrame?: (rows: string[]) => void;
@@ -47,6 +55,8 @@ export class MirrorFollower {
 	private feeding = false;
 	private readonly pollMs: number;
 	private readonly coalesceMs: number;
+	private readonly graceMs: number;
+	private targetSince = 0;
 	private readonly opts: MirrorFollowerOptions;
 	private disposed = false;
 
@@ -54,6 +64,7 @@ export class MirrorFollower {
 		this.opts = opts;
 		this.pollMs = opts.pollMs ?? 100;
 		this.coalesceMs = opts.coalesceMs ?? 50;
+		this.graceMs = opts.graceMs ?? 10_000;
 	}
 
 	get state(): PeekState {
@@ -74,6 +85,7 @@ export class MirrorFollower {
 		this.stopPolling();
 		this.path = path;
 		this.offset = 0;
+		this.targetSince = Date.now();
 		this.screen.reset();
 		if (path === null) {
 			this.setState("idle");
@@ -88,7 +100,8 @@ export class MirrorFollower {
 		if (this.disposed || this.feeding || this.path === null) return;
 		let chunk: Buffer | null = null;
 		try {
-			const size = statSync(this.path).size;
+			const size = this.statSizeWithGrace();
+			if (size === null) return; // lazily-created file not there yet (grace)
 			if (size <= this.offset) return;
 			const fd = openSync(this.path, "r");
 			try {
@@ -135,6 +148,23 @@ export class MirrorFollower {
 				/* overlay errors never propagate */
 			}
 		}, wait);
+	}
+
+	/**
+	 * Size of the target file, or null when ENOENT is still tolerable (lazy
+	 * creation grace: no bytes read yet AND within graceMs of retarget).
+	 * Throws for real failures (including post-grace ENOENT).
+	 */
+	private statSizeWithGrace(): number | null {
+		try {
+			return statSync(this.path!).size;
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException)?.code;
+			if (code === "ENOENT" && this.offset === 0 && Date.now() - this.targetSince < this.graceMs) {
+				return null;
+			}
+			throw err;
+		}
 	}
 
 	private fail(err: unknown): void {

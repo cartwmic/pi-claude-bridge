@@ -388,7 +388,14 @@ describe("shim — subprocess: malformed JSON-RPC + stdin-close lifecycle", () =
 			}) + "\n",
 		);
 
-		await new Promise((r) => setTimeout(r, 400));
+		// SIGNAL-based wait (not a fixed sleep): under machine load the tsx-booted
+		// shim can take well over the old 600+400ms budget to boot and answer,
+		// which made this test flake in full-suite runs (code-review r3 #13).
+		// Same assertions, generous deadline.
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline && !(/-32700/.test(out) && /"id":1/.test(out))) {
+			await new Promise((r) => setTimeout(r, 50));
+		}
 
 		// Parse error must have been emitted on stdout.
 		assert.match(out, /-32700/, "parse error code on stdout");
@@ -399,7 +406,7 @@ describe("shim — subprocess: malformed JSON-RPC + stdin-close lifecycle", () =
 		child.stdin.end();
 		const code = await Promise.race([
 			exitP,
-			new Promise((r) => setTimeout(() => r("timeout"), 2000)),
+			new Promise((r) => setTimeout(() => r("timeout"), 10_000)),
 		]);
 		assert.notEqual(code, "timeout", "shim exited on stdin close");
 

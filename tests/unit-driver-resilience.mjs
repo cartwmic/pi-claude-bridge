@@ -179,9 +179,16 @@ describe("spawnClaudePWithResilience — abort during backoff", () => {
 			{ binPath: bin, onEvent: () => {}, logger: QUIET },
 			{ maxRetries: 2, shouldRetry: () => true, freshSessionId: () => "f" },
 		);
-		// Wait for attempt 1 to fail and the backoff timer to be scheduled, then
-		// abort within the backoff window (backoff is RESILIENCE_BACKOFF_MS*1).
-		await new Promise((res) => setTimeout(res, Math.max(40, RESILIENCE_BACKOFF_MS / 4)));
+		// SIGNAL-based: poll until attempt 1 has spawned (sessions file appears),
+		// then abort IMMEDIATELY — the old fixed sleep (backoff/4) could overshoot
+		// the entire backoff window under machine load, letting the retry fire
+		// legitimately and flaking the test (code-review r3 #13). Aborting right
+		// after spawn-detect keeps the abort inside attempt 1 or its backoff
+		// window with only a ~5ms race surface.
+		const spawnDeadline = Date.now() + 10_000;
+		while (Date.now() < spawnDeadline && readSessions(dir).length < 1) {
+			await new Promise((res) => setTimeout(res, 5));
+		}
 		h.abort();
 		const r = await h.done;
 		assert.equal(r.stopReason, "aborted", "abort during backoff → aborted");

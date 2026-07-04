@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Add: `/claude-peek` live overlay** — toggle a live, read-only
+  picture-in-picture view of the underlying Claude Code TUI inside the pi
+  terminal (nonCapturing top-right overlay; explicit idle/error states;
+  ≤20 updates/s). Backed by a new write-only `--mirror-file` tee in the
+  claude-p fork (pin bumped to 27376d0) and a headless 120×40 terminal
+  emulator (`@xterm/headless`, new dependency). Mirror files live under
+  `<tmpdir>/claude-bridge-peek/` (override `CLAUDE_BRIDGE_PEEK_DIR`, keep
+  last 5); main-provider spawns only. Peek failures can never affect the
+  inference turn. New e2e scenario S31.
+
 - **Add: claude-opus-4-8 model** — Added `claude-opus-4-8` as a selectable model. The `opus` shortcut now resolves to 4.8 by default; 4.7 and 4.6 remain available for explicit pinning. Requires a runtime `@mariozechner/pi-ai` that exposes the `claude-opus-4-8` model definition (silently dropped from the picker otherwise).
 
 ## 0.5.0 — 2026-06-02

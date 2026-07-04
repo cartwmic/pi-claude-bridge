@@ -119,6 +119,25 @@ deprecation error when the extension loads.
 
 Debug logging is controlled by environment variables — see **Debugging** below.
 
+## Peek: `/claude-peek`
+
+`/claude-peek` toggles a live, **read-only** picture-in-picture view of the
+underlying Claude Code TUI inside the pi terminal (top-right overlay). It
+never captures keyboard focus — keep typing and submitting in pi while it's
+open — and it can never affect the turn: the peek path is a pure observer
+(any peek failure shows an explicit ERROR header in the overlay and is logged;
+the inference turn proceeds untouched).
+
+How it works: main-provider spawns pass `--mirror-file` to the patched
+`claude-p`, which tees raw PTY output bytes (write-only) to a per-spawn file
+under `<tmpdir>/claude-bridge-peek/` (override with `CLAUDE_BRIDGE_PEEK_DIR`;
+the newest 5 files are kept). The extension tails the current file into a
+headless 120×40 terminal emulator and renders the grid in the overlay,
+coalesced to ≤20 updates/s. Between turns the overlay shows an explicit idle
+state. Capture-path and subagent spawns are not mirrored. Rows are cropped
+when the overlay is narrower than the 120-column session (the session itself
+is never resized).
+
 ## Tests
 
 `npm run test:unit` for offline tests (`tests/unit-*.mjs`). These mock the

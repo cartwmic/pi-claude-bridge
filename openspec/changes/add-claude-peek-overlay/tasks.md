@@ -52,12 +52,12 @@
 
 ## 4. Tests + validation sources
 
-- [ ] 4.1 Unit tests (cite AC IDs literally): emulator screen model replays the spike capture (`.spike-notes/claude-peek/capture/raw-pty-full-turn.bin`) to a faithful final grid; coalescing bounds re-render rate; retarget resets the emulator; keep-last-N cleanup; crop behavior; error-state transitions on unreadable mirror file.
+- [x] 4.1 Unit tests (cite AC IDs literally): emulator screen model replays the spike capture (`.spike-notes/claude-peek/capture/raw-pty-full-turn.bin`) to a faithful final grid; coalescing bounds re-render rate; retarget resets the emulator; keep-last-N cleanup; crop behavior; error-state transitions on unreadable mirror file.
   - intent: feature
   - files_allowed:
       - tests/**
   - allow_new_files: true
-- [ ] 4.2 E2E tmux scenario `scripts/run-scenario-s31-claude-peek.sh` (scenario-lib harness, private server): overlay visible after `/claude-peek`; overlay content advances during a streaming turn; prompt typed+submitted while overlay open reaches the model (coherence probe with positive + negative regex); toggle-off removes overlay; NDJSON/stream output of the turn unaffected by mirroring (no PTY-pollution regression). Add scenario block to `SCENARIOS.md`. AC: claude-peek-overlay.overlay-toggle-command, claude-peek-overlay.live-screen-during-main-provider-turn, claude-p-fork.write-only-pty-output-mirror
+- [x] 4.2 E2E tmux scenario `scripts/run-scenario-s31-claude-peek.sh` (scenario-lib harness, private server): overlay visible after `/claude-peek`; overlay content advances during a streaming turn; prompt typed+submitted while overlay open reaches the model (coherence probe with positive + negative regex); toggle-off removes overlay; NDJSON/stream output of the turn unaffected by mirroring (no PTY-pollution regression). Add scenario block to `SCENARIOS.md`. AC: claude-peek-overlay.overlay-toggle-command, claude-peek-overlay.live-screen-during-main-provider-turn, claude-p-fork.write-only-pty-output-mirror
   - intent: feature
   - files_allowed:
       - scripts/**

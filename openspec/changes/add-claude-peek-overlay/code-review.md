@@ -30,6 +30,9 @@ Verdict: pass ⇔ no open P0/P1.
 | 3 | blind | 0 | 1 | 2 | 2 | opus-4-8:pass gpt-5.5:fail | 871cf3d |
 | 4 | blind | 0 | 2 | 0 | 3 | opus-4-8:pass gpt-5.5:fail | 5f034d7 |
 | 5 | blind | 0 | 1 | 2 | 3 | opus-4-8:pass gpt-5.5:fail | 13a3e34 |
+<!-- 2026-07-04: human resume ruling at the decision-audit landing (named
+     re-arm) granted a recorded budget extension: review_max_rounds 5→6.
+     Round 6 dispatched blind at the post-fix HEAD. -->
 
 ## Findings
 

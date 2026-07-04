@@ -314,6 +314,20 @@ describe("streamClaudeAgentSdk — capture-shape gate (claude-p)", () => {
 		const events = await driveRejection([objectTool("capA"), objectTool("capB")]);
 		await flushMs();
 
+		// SIGNAL-based log wait: pino's file transport flushes asynchronously and
+		// a single fixed 120ms snapshot goes empty under machine load (observed
+		// deterministic-looking failures at load avg 20-45). Poll for the
+		// expected line with a generous deadline; assertions below unchanged.
+		const logDeadline = Date.now() + 10_000;
+		while (
+			Date.now() < logDeadline &&
+			!readLogObjects()
+				.slice(preLogCount)
+				.some((l) => typeof l.msg === "string" && l.msg.includes("streamSimple: rejected capture-shape"))
+		) {
+			await new Promise((r) => setTimeout(r, 50));
+		}
+
 		// Stream must emit start then error
 		assert.equal(events.length, 2, `Expected 2 events but got: ${JSON.stringify(events.map((e) => e.type))}`);
 		assert.equal(events[0].type, "start");

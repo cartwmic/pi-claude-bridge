@@ -48,12 +48,17 @@ doneness_mode: required
   cross-repo but single-capability, no full_rigor traits.
 - Delegation Mode subagent-eligible (template default single-agent): the
   openspec-loop drive requires blind subagent dispatch for gating reviews.
+- review_models unresolved at dispatch time (`opsx models get review` → unset):
+  loop selected claude-bridge/claude-opus-4-8 + openai-codex/gpt-5.5 (two
+  distinct strong models across providers, both verified in `pi
+  --list-models`) for the adversarial-multimodel rounds.
 
 ## Execution Notes
 
 - 2026-07-04 — review.md authored by the loop (gate: review.md absent).
 - 2026-07-04 — apply: worktree created (branch opsx/add-claude-peek-overlay); Diff Base = pre-apply main HEAD bccd58f.
 - 2026-07-04 — fork pin bump will move b24e3827 → new fork HEAD, inheriting intermediate fork commits already on origin/main (paste-collapse archive, transcript API-error recovery 18c6185) — all previously validated on the fork's main.
+- 2026-07-04 — code-review round 1 (blind, opus-4-8 + gpt-5.5) verdict fail: 1 P0 + 4 P1 — all fixed on worktree b9b80f0 (main-turn guard, ~/.claude env rejection, keep-N pre-mint trim, truncation replay, custom() rejection handling); 3 advisory deferred. Round 2 due.
 - 2026-07-04 — T4.3+T5.1 done on worktree (6cb7acb): openspec/opsx-gates.yaml (typecheck/unit/s31, all required) + README /claude-peek section + CHANGELOG. All 11 tasks complete.
 - 2026-07-04 — T4.1+T4.2 done on worktree (1a09565): scenario s31 9/9 PASS ×2; T4.1 audit — all listed unit tests landed with T2.2/T3.1/T3.2 (26 peek tests citing ACs). Scenario caught a real defect: claude-p lazy mirror creation vs retarget-at-spawn ENOENT error-latch; fixed with a pre-first-byte grace window (10s default) in MirrorFollower; 395/395 green.
 - 2026-07-04 — T3.2 done on worktree (bf6ac4b): /claude-peek command + overlay (nonCapturing, top-right, 60%, requestRender on frames/states, retarget subscription, dispose cleanup); buildOverlayLines pure + tested; handler signature (args, ctx) asserted by test. 394/394 green.

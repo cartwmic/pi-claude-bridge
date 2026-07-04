@@ -1839,6 +1839,9 @@ async function startFreshQuery(
 	// error → undefined and the spawn proceeds unmirrored.
 	const isMainTurnSpawn = stack.length === 0;
 	const mirrorFile = isMainTurnSpawn ? prepareMirrorForSpawn(session.sessionId, frame.log) : undefined;
+	// Retries re-mint a fresh mirror path (per-spawn naming); track the LATEST
+	// minted path so the turn-end owner check clears the right one.
+	let turnMirrorFile = mirrorFile;
 
 	const cfg: ClaudePSpawnConfig = {
 		model: model.id,
@@ -1913,6 +1916,17 @@ async function startFreshQuery(
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,
 			freshSessionId: () => randomUUID(),
+			// Per-spawn mirror naming across retries: each retry attempt gets its
+			// own mirror file, published as current so an open overlay retargets
+			// (claude-peek-overlay.peek-follows-latest-main-turn-spawn-only;
+			// code-review r4). Main-turn spawns only — subagent spawns never
+			// mirrored, so their retries stay unmirrored too.
+			remintMirrorFile: isMainTurnSpawn
+				? (sid) => {
+						turnMirrorFile = prepareMirrorForSpawn(sid, frame.log);
+						return turnMirrorFile;
+					}
+				: undefined,
 			onRetry: (attempt) => frame.log.warn({ attempt }, `startFreshQueryClaudeP: retrying claude-p spawn (attempt ${attempt})`),
 		},
 	);
@@ -1926,10 +1940,11 @@ async function startFreshQuery(
 		// nested/aborted sibling can never idle the overlay mid-main-turn
 		// (code-review r1 P0).
 		.finally(() => {
-			// Owner-guarded; ALSO clears a published mirror-preparation error once
-			// the failed-mirror main turn ends, so the overlay returns to idle
-			// (code-review r3).
-			if (isMainTurnSpawn && (mirrorFile === undefined || getCurrentMirror() === mirrorFile)) setCurrentMirror(null);
+			// Owner-guarded against the LATEST minted path for this turn (retries
+			// re-mint); ALSO clears a published mirror-preparation error once the
+			// failed-mirror main turn ends, so the overlay returns to idle
+			// (code-review r3/r4).
+			if (isMainTurnSpawn && (turnMirrorFile === undefined || getCurrentMirror() === turnMirrorFile)) setCurrentMirror(null);
 		});
 }
 

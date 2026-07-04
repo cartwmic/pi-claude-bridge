@@ -68,7 +68,14 @@ function isUnderClaudeRoot(p: string, home: string): boolean {
  * writes under ~/.claude/ no matter what the env says.
  */
 export function resolvePeekDir(env: NodeJS.ProcessEnv = process.env, log?: PeekLogger, home: string = homedir()): string {
-	const fallback = join(tmpdir(), "claude-bridge-peek");
+	// The tmpdir() default itself can land under ~/.claude when TMPDIR points
+	// there — guard the FALLBACK too, escalating to ~/.cache (code-review r4;
+	// Constitution III is unconditional).
+	let fallback = join(tmpdir(), "claude-bridge-peek");
+	if (isUnderClaudeRoot(fallback, home)) {
+		log?.warn({ fallback }, "peek: os.tmpdir() resolves under ~/.claude/ — using ~/.cache/claude-bridge-peek instead (Constitution III)");
+		fallback = join(home, ".cache", "claude-bridge-peek");
+	}
 	const override = env[PEEK_DIR_ENV];
 	if (!override || override.length === 0) return fallback;
 	if (isUnderClaudeRoot(override, home)) {

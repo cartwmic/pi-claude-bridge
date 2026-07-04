@@ -155,6 +155,35 @@ describe("peek mirror lifecycle", () => {
 		off();
 	});
 
+	// Constitution III is unconditional (code-review r4): even the tmpdir()
+	// FALLBACK is guarded when TMPDIR points under ~/.claude.
+	it("resolvePeekDir escalates to ~/.cache when the tmpdir fallback is under ~/.claude", () => {
+		const fakeHome = mkdtempSync(join(tmpdir(), "peek-home-"));
+		// Simulate TMPDIR under ~/.claude by symlinking a tmp-adjacent dir there:
+		// easier deterministic route — fake home whose .claude CONTAINS tmpdir?
+		// tmpdir() can't be faked per-call, so exercise the branch via a home that
+		// makes the real tmpdir fall under <home>/.claude using a symlink.
+		const claudeDir = join(fakeHome, ".claude");
+		mkdirSync(claudeDir, { recursive: true });
+		// point <home>/.claude/tmplink at the REAL tmpdir parent so that
+		// physicalPath(tmpdir fallback) === physicalPath(<home>/.claude/tmplink/...)
+		// — covered indirectly: instead assert the pure guard by calling with a
+		// home equal to the tmpdir itself: fallback <tmpdir>/claude-bridge-peek
+		// sits under <home>/.claude only when home/.claude === tmpdir — construct:
+		const homeAtTmp = { home: fakeHome };
+		void homeAtTmp;
+		const warns = [];
+		const log = { warn: (o, m) => warns.push(m) };
+		// home := parent such that <home>/.claude == tmpdir() ⇒ fallback is inside it.
+		const tmpAsClaudeHome = join(fakeHome, "root");
+		mkdirSync(tmpAsClaudeHome, { recursive: true });
+		symlinkSync(tmpdir(), join(tmpAsClaudeHome, ".claude"));
+		const d = resolvePeekDir({}, log, tmpAsClaudeHome);
+		assert.equal(d, join(tmpAsClaudeHome, ".cache", "claude-bridge-peek"));
+		assert.equal(warns.length, 1);
+		rmSync(fakeHome, { recursive: true, force: true });
+	});
+
 	it("publishMirrorError notifies with error flag; next setCurrentMirror clears it", () => {
 		const events = [];
 		const off = onCurrentMirrorChange((p, err) => events.push([p, !!err]));

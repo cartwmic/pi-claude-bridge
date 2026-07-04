@@ -903,6 +903,14 @@ export interface ResiliencePolicy {
 	 * STABLE across retries (the warm transcript is the recovery anchor).
 	 */
 	freshSessionId?: () => string;
+	/**
+	 * Re-mint the peek mirror path for a retry spawn (per-spawn file naming —
+	 * claude-peek-overlay.peek-follows-latest-main-turn-spawn-only). Called with
+	 * the retry attempt's session id; returns the new mirror path (published as
+	 * current by the minting side) or undefined to run the retry unmirrored.
+	 * Absent → the retry keeps the previous config's mirrorFile untouched.
+	 */
+	remintMirrorFile?: (sessionId: string) => string | undefined;
 }
 
 /** Backoff between retries: 250ms × attempt. Exported so tests can reason about timing. */
@@ -1034,13 +1042,18 @@ export function spawnClaudePWithResilience(
 	};
 }
 
-/** Build the next attempt's config: fresh id on cold, stable id on warm. */
-function buildRetryConfig(cfg: ClaudePSpawnConfig, policy: ResiliencePolicy): ClaudePSpawnConfig {
+/** Build the next attempt's config: fresh id on cold, stable id on warm. Exported for tests. */
+export function buildRetryConfig(cfg: ClaudePSpawnConfig, policy: ResiliencePolicy): ClaudePSpawnConfig {
 	if (cfg.session.kind === "fresh") {
 		const sessionId = policy.freshSessionId ? policy.freshSessionId() : cfg.session.sessionId;
-		return { ...cfg, session: { kind: "fresh", sessionId } };
+		const mirrorFile = policy.remintMirrorFile ? policy.remintMirrorFile(sessionId) : cfg.mirrorFile;
+		return { ...cfg, session: { kind: "fresh", sessionId }, mirrorFile };
 	}
-	// Warm resume: keep the same --resume id across retries.
+	// Warm resume: keep the same --resume id across retries; re-mint the mirror
+	// per attempt all the same (each spawn is a new PTY session on disk).
+	if (policy.remintMirrorFile) {
+		return { ...cfg, mirrorFile: policy.remintMirrorFile(cfg.session.sessionId) };
+	}
 	return cfg;
 }
 

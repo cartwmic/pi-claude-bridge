@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 
 import {
 	buildClaudePArgs,
+	buildRetryConfig,
 	spawnClaudeP,
 	CLAUDE_P_DISALLOWED_TOOLS,
 	DISALLOWED_TOOLS_VALUE,
@@ -109,6 +110,29 @@ describe("buildClaudePArgs — required flags", () => {
 	it("omits --mcp-ready-file when mcpReadyFile is unset", () => {
 		const args = buildClaudePArgs(baseCfg());
 		assert.ok(!args.includes("--mcp-ready-file"));
+	});
+
+	// claude-peek-overlay.peek-follows-latest-main-turn-spawn-only: retries
+	// re-mint a per-spawn mirror path (code-review r4).
+	it("buildRetryConfig re-mints the mirror path via policy.remintMirrorFile", () => {
+		const minted = [];
+		const cfg = baseCfg({ mirrorFile: "/peek/first.raw" });
+		const next = buildRetryConfig(cfg, {
+			shouldRetry: () => true,
+			freshSessionId: () => "retry-sess",
+			remintMirrorFile: (sid) => {
+				minted.push(sid);
+				return `/peek/${sid}.raw`;
+			},
+		});
+		assert.equal(next.mirrorFile, "/peek/retry-sess.raw");
+		assert.deepEqual(minted, ["retry-sess"]);
+	});
+
+	it("buildRetryConfig keeps the prior mirrorFile absent a remint hook", () => {
+		const cfg = baseCfg({ mirrorFile: "/peek/first.raw" });
+		const next = buildRetryConfig(cfg, { shouldRetry: () => true, freshSessionId: () => "s2" });
+		assert.equal(next.mirrorFile, "/peek/first.raw");
 	});
 
 	// claude-p-fork.write-only-pty-output-mirror (bridge argv side)

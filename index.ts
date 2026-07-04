@@ -58,6 +58,7 @@ import {
 	computeSha256Chain,
 } from "./src/resume-store.js";
 import { prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
+import { registerClaudePeekCommand } from "./src/peek/overlay.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
 import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
@@ -1929,6 +1930,10 @@ export default function (pi: ExtensionAPI) {
 
 	// Disable non-essential CC traffic.
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+
+	// /claude-peek: live read-only PiP of the underlying claude TUI
+	// (claude-peek-overlay.overlay-toggle-command).
+	registerClaudePeekCommand(pi, log);
 
 	// Reset session cache on pi lifecycle events that diverge history.
 	const clearSession = (event: string) => {

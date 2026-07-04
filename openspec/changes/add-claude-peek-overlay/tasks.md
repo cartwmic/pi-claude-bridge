@@ -20,7 +20,7 @@
       - src/driver/claudeP.ts
       - tests/**
   - allow_new_files: true
-- [ ] 2.2 In `index.ts`, resolve a per-spawn mirror path for MAIN-PROVIDER spawns only (never capture path), under the bridge diagnostics dir (same root as existing per-spawn debug files; never `~/.claude/`); track the current main-turn mirror path for the peek module; keep-last-N cleanup (default N=5) of older mirror files. AC: claude-peek-overlay.mirror-files-confined-to-bridge-owned-storage, claude-peek-overlay.peek-follows-latest-main-turn-spawn-only
+- [x] 2.2 In `index.ts`, resolve a per-spawn mirror path for MAIN-PROVIDER spawns only (never capture path), under the bridge diagnostics dir (same root as existing per-spawn debug files; never `~/.claude/`); track the current main-turn mirror path for the peek module; keep-last-N cleanup (default N=5) of older mirror files. AC: claude-peek-overlay.mirror-files-confined-to-bridge-owned-storage, claude-peek-overlay.peek-follows-latest-main-turn-spawn-only
   - intent: feature
   - files_allowed:
       - index.ts

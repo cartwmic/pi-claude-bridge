@@ -64,20 +64,25 @@ else
 	scn_fail "overlay never showed live state during the turn"
 fi
 
-# Two mid-turn captures: overlay region content should advance (live updates).
+# Mid-turn content advance: SIGNAL-based — poll up to 30s for the overlay
+# region to change from its first live capture (a fixed 2s pair flaked when
+# the model paused thinking under machine load), or for the turn to finish
+# (advance check moot).
 mid_a="$(scn_capture | grep -A 3 "claude-peek — live" || true)"
-sleep 2
-mid_b="$(scn_capture | grep -A 3 "claude-peek — live" || true)"
-if [[ -n "$mid_a" && "$mid_a" != "$mid_b" ]]; then
+advanced=0
+adv_deadline=$((SECONDS + 30))
+while (( SECONDS < adv_deadline )); do
+	mid_b="$(scn_capture | grep -A 3 "claude-peek — live" || true)"
+	if [[ -n "$mid_a" && -n "$mid_b" && "$mid_a" != "$mid_b" ]]; then advanced=1; break; fi
+	if scn_capture | grep -qE "20,?087"; then break; fi
+	sleep 1
+done
+if (( advanced )); then
 	scn_pass "overlay content advanced between mid-turn captures"
+elif scn_capture | grep -qE "20,?087"; then
+	scn_pass "turn finished before overlay content changed (advance check moot)"
 else
-	# Fast models may finish before the second capture; degrade to a warn-level
-	# pass only if the turn already completed (answer visible).
-	if scn_capture | grep -qE "20,?087"; then
-		scn_pass "turn finished before second mid-turn capture (content check moot)"
-	else
-		scn_fail "overlay content did not advance during the turn"
-	fi
+	scn_fail "overlay content did not advance during the turn"
 fi
 
 # ── Completion + coherence (typed while overlay open → focus never stolen) ──

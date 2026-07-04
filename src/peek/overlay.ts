@@ -22,8 +22,12 @@ import { cropRow } from "./screen.js";
 /** Marker rendered in the overlay header (also asserted by scenario s31). */
 export const OVERLAY_MARKER = "claude-peek";
 
-/** Overlay width: full session width + borders when it fits, else 60% of terminal. */
-export const OVERLAY_WIDTH_PCT = "60%" as const;
+/**
+ * Overlay width: the 120-col session + 2 border cols, capped by pi-tui to the
+ * terminal width (component render(width) receives the ACTUAL width and crops
+ * rows to it). Matches plan step 5's `min(122, viewport)` — code-review r6.
+ */
+export const OVERLAY_WIDTH = 122;
 
 /**
  * PURE overlay-lines builder (unit-testable without a TUI): border + state
@@ -107,7 +111,7 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 					overlayOptions: {
 						anchor: "top-right",
 						margin: { top: 1, right: 1 },
-						width: OVERLAY_WIDTH_PCT,
+						width: OVERLAY_WIDTH,
 						nonCapturing: true,
 					},
 				},

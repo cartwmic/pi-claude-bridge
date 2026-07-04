@@ -64,7 +64,7 @@
       - SCENARIOS.md
       - tests/**
   - allow_new_files: true
-- [ ] 4.3 Author `openspec/opsx-gates.yaml` (agent-independent validation source, required at M): `npm run typecheck` (required), `npm run test:unit` (required), scenario s31 (required). Verify `opsx gate` picks it up.
+- [x] 4.3 Author `openspec/opsx-gates.yaml` (agent-independent validation source, required at M): `npm run typecheck` (required), `npm run test:unit` (required), scenario s31 (required). Verify `opsx gate` picks it up.
   - intent: infra
   - files_allowed:
       - openspec/opsx-gates.yaml
@@ -72,7 +72,7 @@
 
 ## 5. Docs
 
-- [ ] 5.1 README: document `/claude-peek`, the mirror-file diagnostics location/cleanup, and the read-only guarantee; CHANGELOG entry.
+- [x] 5.1 README: document `/claude-peek`, the mirror-file diagnostics location/cleanup, and the read-only guarantee; CHANGELOG entry.
   - intent: feature
   - files_allowed:
       - README.md

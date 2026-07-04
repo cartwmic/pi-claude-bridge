@@ -1,0 +1,19 @@
+# opsx-gates.yaml — project validation manifest (agent-independent validation
+# source, required at Scale ≥ M; see opsx-superpowers schema).
+#
+# opsx gate runs each command BY EXIT CODE with cwd = the located
+# implementation worktree.
+gates:
+  - id: typecheck
+    run: npm run typecheck
+    required: true
+  - id: unit
+    run: npm run test:unit
+    required: true
+  # E2E tmux scenario for the claude-peek overlay (real pi + real model turn;
+  # ~2-4 min). Required per tasks.md T4.3 — this is the agent-independent
+  # proof that the overlay works end-to-end and mirroring never pollutes the
+  # turn's NDJSON stream.
+  - id: scenario-s31-claude-peek
+    run: ./scripts/run-scenario-s31-claude-peek.sh
+    required: true

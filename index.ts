@@ -57,6 +57,7 @@ import {
 	validateWarmResume,
 	computeSha256Chain,
 } from "./src/resume-store.js";
+import { prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
 import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
@@ -1828,6 +1829,12 @@ async function startFreshQuery(
 		? { kind: "resume" as const, sessionId: cachedSessionId }
 		: { kind: "fresh" as const, sessionId: randomUUID() };
 
+	// Peek mirror: MAIN-PROVIDER spawns only (capture path never sets this).
+	// prepareMirrorForSpawn is failure-isolated: any fs error → undefined and
+	// the spawn proceeds unmirrored (claude-peek-overlay.peek-failures-never-
+	// affect-the-inference-turn).
+	const mirrorFile = prepareMirrorForSpawn(session.sessionId, frame.log);
+
 	const cfg: ClaudePSpawnConfig = {
 		model: model.id,
 		systemPrompt,
@@ -1836,6 +1843,7 @@ async function startFreshQuery(
 		session,
 		timeoutSeconds: CLAUDE_P_TIMEOUT_SECONDS,
 		mcpReadyFile,
+		mirrorFile,
 	};
 
 	frame.log.debug(
@@ -1905,7 +1913,11 @@ async function startFreshQuery(
 	);
 	frame.claudeHandle = handle;
 	frame.watchdog.poke(); // arm the boot-wedge window
-	frame.donePromise = handle.done.then((res) => finalizeClaudePFrame(frame, res));
+	frame.donePromise = handle.done
+		.then((res) => finalizeClaudePFrame(frame, res))
+		// Turn over → no active main-provider spawn: publish null so the overlay
+		// shows its explicit idle state (claude-peek-overlay.explicit-idle-and-error-states).
+		.finally(() => setCurrentMirror(null));
 }
 
 // ---------------------------------------------------------------------------

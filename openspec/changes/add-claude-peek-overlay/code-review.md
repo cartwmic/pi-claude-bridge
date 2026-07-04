@@ -26,6 +26,7 @@ Verdict: pass ⇔ no open P0/P1.
 | Round | Mode | P0 | P1 | P2 | P3 | Reviewer verdicts | Reviewed HEAD |
 |---|---|---|---|---|---|---|---|
 | 1 | blind | 1 | 4 | 2 | 1 | opus-4-8:fail gpt-5.5:fail | 9ad45eb |
+| 2 | blind | 0 | 2 | 0 | 2 | opus-4-8:pass gpt-5.5:fail | 5b923ba |
 
 ## Findings
 
@@ -44,9 +45,17 @@ Verdict: pass ⇔ no open P0/P1.
 | 6 | (opus#2) Synchronous fs I/O (mkdir/readdir/stat/rm) on the spawn hot path — cannot throw, but blocking; same class as existing per-spawn debug I/O | P2 | deferred |
 | 7 | (opus#3) Pin bump inherits 5 intermediate fork commits beyond the reviewed mirror commit (noted in review.md at pin time) | P2 | deferred |
 | 8 | (opus#4) `buildOverlayLines` pads by UTF-16 code units — wide/combining glyphs mis-align the box border (cosmetic; fidelity is an explicit non-goal) | P3 | deferred |
+| 9 | (r2 gpt#1 / opus r2#1) peek-dir guard was lexical-only — symlinked `CLAUDE_BRIDGE_PEEK_DIR` could land writes under `~/.claude/` (Constitution III) | P1 | fixed |
+| 10 | (r2 gpt#2) synchronous `ctx.ui.custom()` throw escaped the command handler (failure-isolation AC as applied to overlay creation) | P1 | fixed |
+| 11 | (r2 opus#2) post-dispose `markDirty` re-entry schedules a self-clearing no-op timer — keeps loop warm ≤ coalesceMs | P3 | deferred |
 
 ## Applied fixes
 
+- `619350e` on `opsx/add-claude-peek-overlay` — round-2 P1s: symlink-resolving
+  peek-dir guard (`physicalPath` realpaths the deepest existing ancestor;
+  lexical + physical containment check, injectable home for tests) and
+  containment of synchronous `ctx.ui.custom()` throws (log + toggle reset).
+  2 new unit tests; 400/400 green; s31 9/9 PASS post-fix.
 - `b9b80f0` on `opsx/add-claude-peek-overlay` — all P0/P1 findings:
   main-turn guard (`stack.length === 0` at the pre-push spawn site) +
   owner-guarded clear of the current mirror (#1); `resolvePeekDir` rejects
@@ -74,10 +83,14 @@ Verdict: pass ⇔ no open P0/P1.
 
 Round 1 (blind, adversarial-multimodel: claude-opus-4-8 + gpt-5.5) found one
 P0 and four P1 baseline violations; both reviewers independently verdicted
-fail, so the round seals **fail**. All five P0/P1 findings were fixed in
-change-scoped commit `b9b80f0` (progress signal present); per the
-quiet-round continuation rule the loop dispatches round 2 blind re-review of
-the full diff autonomously. Both reviewers confirmed the gate-manifest
+fail. All five were fixed in `b9b80f0`. Round 2 (blind, same models, full
+diff at 5b923ba) found two new P1s (symlink bypass of the peek-dir guard;
+sync `ctx.ui.custom()` throw) — fixed in `619350e`. Verdict remains **fail**
+pending a quiet round; fixes landed since round 2 (progress signal present),
+so per the quiet-round continuation rule the loop dispatches round 3 blind
+re-review autonomously. Round-2 doneness rider (opus, designated judge)
+judged the intent satisfied at 5b923ba, but the reviewed range moved with
+the fixes — doneness will be re-sealed at the final HEAD. Both reviewers confirmed the gate-manifest
 addition weakens nothing, Constitution III (no `~/.claude/` writes in the
 shipped default), Constitution II (documented ExtensionUIContext only), and
 the fork tee's write-only/absent-flag-identical properties.

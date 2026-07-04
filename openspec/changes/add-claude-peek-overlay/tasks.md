@@ -42,7 +42,7 @@
       - src/peek/**
       - tests/**
   - allow_new_files: true
-- [ ] 3.2 Register `/claude-peek` command in `index.ts` (handler signature `(args, ctx)`): toggles `ctx.ui.custom()` overlay (`overlay: true`, `nonCapturing: true`, anchor top-right, width ≤ session width + border); retain `done` for toggle-off; dispose timers/tailers in `dispose()`; crop/h-scroll rows when overlay viewport < 120 cols; retarget to newest main-turn spawn automatically. AC: claude-peek-overlay.overlay-toggle-command, claude-peek-overlay.peek-follows-latest-main-turn-spawn-only
+- [x] 3.2 Register `/claude-peek` command in `index.ts` (handler signature `(args, ctx)`): toggles `ctx.ui.custom()` overlay (`overlay: true`, `nonCapturing: true`, anchor top-right, width ≤ session width + border); retain `done` for toggle-off; dispose timers/tailers in `dispose()`; crop/h-scroll rows when overlay viewport < 120 cols; retarget to newest main-turn spawn automatically. AC: claude-peek-overlay.overlay-toggle-command, claude-peek-overlay.peek-follows-latest-main-turn-spawn-only
   - intent: feature
   - files_allowed:
       - index.ts

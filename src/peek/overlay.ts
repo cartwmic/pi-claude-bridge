@@ -16,7 +16,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { basename } from "path";
 import { MirrorFollower, type PeekState } from "./follower.js";
 import type { FollowerLogger } from "./follower.js";
-import { getCurrentMirror, onCurrentMirrorChange } from "./mirror.js";
+import { getCurrentMirror, hasCurrentMirrorError, onCurrentMirrorChange } from "./mirror.js";
 import { cropRow } from "./screen.js";
 
 /** Marker rendered in the overlay header (also asserted by scenario s31). */
@@ -83,8 +83,13 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 							tui.requestRender();
 						},
 					});
-					const unsubscribe = onCurrentMirrorChange((p) => follower.retarget(p));
-					follower.retarget(getCurrentMirror()); // attach to an in-flight turn immediately
+					const unsubscribe = onCurrentMirrorChange((p, error) => {
+						if (error) follower.forceError("mirror preparation failed");
+						else follower.retarget(p);
+					});
+					// Attach to an in-flight turn (or an already-failed mirror) immediately.
+					if (hasCurrentMirrorError()) follower.forceError("mirror preparation failed");
+					else follower.retarget(getCurrentMirror());
 					return {
 						render(width: number): string[] {
 							return buildOverlayLines(follower.rows(), state, getCurrentMirror(), width);

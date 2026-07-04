@@ -152,6 +152,20 @@ describe("MirrorFollower states + coalescing", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	it("forceError surfaces an external peek failure as the explicit error state (code-review r3)", () => {
+		const warns = [];
+		const states = [];
+		const f = new MirrorFollower({ pollMs: 10, log: { warn: (o, m) => warns.push(m) }, onState: (s) => states.push(s) });
+		f.forceError("mirror preparation failed");
+		assert.equal(f.state, "error");
+		assert.deepEqual(states, ["error"]);
+		assert.equal(warns.length, 1);
+		// recoverable: a later retarget goes live again
+		f.retarget(null);
+		assert.equal(f.state, "idle");
+		f.dispose();
+	});
+
 	it("retarget replays the new file from byte 0", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "peek-follow-"));
 		const a = join(dir, "a.raw");

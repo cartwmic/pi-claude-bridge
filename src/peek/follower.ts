@@ -177,6 +177,19 @@ export class MirrorFollower {
 		}
 	}
 
+	/**
+	 * Externally-reported peek failure (e.g. mirror preparation failed before
+	 * any file existed): show the explicit error state without a file to
+	 * follow (claude-peek-overlay.explicit-idle-and-error-states).
+	 */
+	forceError(reason: string): void {
+		if (this.disposed) return;
+		this.stopPolling();
+		this.path = null;
+		this.setState("error");
+		this.opts.log?.warn({ reason }, "peek: external peek failure surfaced to overlay (non-fatal)");
+	}
+
 	private fail(err: unknown): void {
 		this.stopPolling();
 		this.setState("error");

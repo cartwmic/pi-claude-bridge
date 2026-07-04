@@ -1837,7 +1837,8 @@ async function startFreshQuery(
 	// mirrored (claude-peek-overlay.peek-follows-latest-main-turn-spawn-only;
 	// code-review r1 P0). prepareMirrorForSpawn is failure-isolated: any fs
 	// error → undefined and the spawn proceeds unmirrored.
-	const mirrorFile = stack.length === 0 ? prepareMirrorForSpawn(session.sessionId, frame.log) : undefined;
+	const isMainTurnSpawn = stack.length === 0;
+	const mirrorFile = isMainTurnSpawn ? prepareMirrorForSpawn(session.sessionId, frame.log) : undefined;
 
 	const cfg: ClaudePSpawnConfig = {
 		model: model.id,
@@ -1925,7 +1926,10 @@ async function startFreshQuery(
 		// nested/aborted sibling can never idle the overlay mid-main-turn
 		// (code-review r1 P0).
 		.finally(() => {
-			if (mirrorFile !== undefined && getCurrentMirror() === mirrorFile) setCurrentMirror(null);
+			// Owner-guarded; ALSO clears a published mirror-preparation error once
+			// the failed-mirror main turn ends, so the overlay returns to idle
+			// (code-review r3).
+			if (isMainTurnSpawn && (mirrorFile === undefined || getCurrentMirror() === mirrorFile)) setCurrentMirror(null);
 		});
 }
 

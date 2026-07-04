@@ -136,27 +136,53 @@ export function prepareMirrorForSpawn(
 		return path;
 	} catch (err) {
 		log?.warn({ err: err instanceof Error ? err.message : String(err) }, "peek: mirror preparation failed; spawn proceeds unmirrored (non-fatal)");
+		// The turn is LIVE but unpeekable — surface an explicit error to any open
+		// overlay instead of leaving it idle/stale (code-review r3;
+		// claude-peek-overlay.explicit-idle-and-error-states).
+		publishMirrorError();
 		return undefined;
 	}
 }
 
 // ── Current-mirror tracking (retarget hook for the overlay) ────────────────
 
-type MirrorListener = (path: string | null) => void;
+type MirrorListener = (path: string | null, error?: boolean) => void;
 
 let currentMirror: string | null = null;
+let currentMirrorError = false;
 const listeners = new Set<MirrorListener>();
 
-/** Publish the current main-turn mirror path (null = no active mirror). */
-export function setCurrentMirror(path: string | null): void {
-	currentMirror = path;
+function notify(path: string | null, error: boolean): void {
 	for (const fn of listeners) {
 		try {
-			fn(path);
+			fn(path, error);
 		} catch {
 			/* listener errors never propagate into the spawn path */
 		}
 	}
+}
+
+/** Publish the current main-turn mirror path (null = no active mirror). */
+export function setCurrentMirror(path: string | null): void {
+	currentMirror = path;
+	currentMirrorError = false;
+	notify(path, false);
+}
+
+/**
+ * Publish "main turn live but mirror unavailable": overlays show their
+ * explicit error state (claude-peek-overlay.explicit-idle-and-error-states).
+ * Cleared by the next setCurrentMirror (new spawn or turn-end null).
+ */
+export function publishMirrorError(): void {
+	currentMirror = null;
+	currentMirrorError = true;
+	notify(null, true);
+}
+
+/** True while the last publication was a mirror-preparation error. */
+export function hasCurrentMirrorError(): boolean {
+	return currentMirrorError;
 }
 
 export function getCurrentMirror(): string | null {

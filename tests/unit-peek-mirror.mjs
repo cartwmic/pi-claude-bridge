@@ -18,6 +18,8 @@ import {
 	setCurrentMirror,
 	getCurrentMirror,
 	onCurrentMirrorChange,
+	publishMirrorError,
+	hasCurrentMirrorError,
 } from "../src/peek/mirror.js";
 
 describe("peek mirror lifecycle", () => {
@@ -133,14 +135,34 @@ describe("peek mirror lifecycle", () => {
 	});
 
 	// claude-peek-overlay.peek-failures-never-affect-the-inference-turn
-	it("prepareMirrorForSpawn returns undefined (never throws) on unusable dir", () => {
+	// + claude-peek-overlay.explicit-idle-and-error-states (code-review r3):
+	// preparation failure publishes an explicit mirror-error to the overlay.
+	it("prepareMirrorForSpawn returns undefined (never throws) on unusable dir and publishes error", () => {
 		const file = join(dir, "not-a-dir");
 		writeFileSync(file, "x"); // mkdir over a file → EEXIST/ENOTDIR
 		const warns = [];
+		const events = [];
+		const off = onCurrentMirrorChange((p, err) => events.push([p, !!err]));
 		const log = { warn: (o, m) => warns.push(m ?? String(o)) };
 		const p = prepareMirrorForSpawn("sess", log, { [PEEK_DIR_ENV]: join(file, "child") });
 		assert.equal(p, undefined);
 		assert.equal(warns.length, 1);
+		assert.deepEqual(events, [[null, true]], "mirror-error published to overlay listeners");
+		assert.ok(hasCurrentMirrorError());
+		// turn-end publish clears the error back to idle
+		setCurrentMirror(null);
+		assert.ok(!hasCurrentMirrorError());
+		off();
+	});
+
+	it("publishMirrorError notifies with error flag; next setCurrentMirror clears it", () => {
+		const events = [];
+		const off = onCurrentMirrorChange((p, err) => events.push([p, !!err]));
+		publishMirrorError();
+		setCurrentMirror("/a.raw");
+		assert.deepEqual(events, [[null, true], ["/a.raw", false]]);
+		assert.ok(!hasCurrentMirrorError());
+		off();
 	});
 
 	it("listener exceptions never propagate to the publisher (spawn path safety)", () => {

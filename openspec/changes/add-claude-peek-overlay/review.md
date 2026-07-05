@@ -58,6 +58,7 @@ review_max_rounds: 6
 
 ## Execution Notes
 
+- 2026-07-05 — post-re-arm gate run flagged validation-unit red once; direct re-run 405/405 and immediate gate re-run GATE-PASS — transient machine-load spike (5 concurrent claude-p sessions, load avg ~20) during the host's gate invocation, same environmental class as the round-6 findings (#21/#13). No code change; gate green at sealed range bccd58f..9173ee8.
 - 2026-07-05 — loop_hold cleared by named re-arm (/opsx-loop add-claude-peek-overlay); reason was: SECOND decision-audit landing (code-review.md) — extended budget (6) exhausted; round 6: opus pass + doneness satisfied x5, gpt 1 P1 (unit-gate red from pre-existing test-infra load flakes, fixed 5196c49) + 1 P2 (width cap, fixed b49c373); all gates green post-fix; awaiting human ruling: extend to 7 / waive #21-22 / inspect
 - 2026-07-04 — USER RULING at second landing: waived re-review of findings #21-22 and approved continue ("im waiving the RE review and approving your continue"). Verdict re-sealed pass (waived_by_user in code-review.md header); doneness.md sealed satisfied from the round-6 designated-judge rider; reviewed range bccd58f..6a44b53. loop_hold left set — cleared only by the named re-arm (user: "standby for rearm").
 - 2026-07-04 — round 6 (blind, at 89b8743; gpt re-dispatched once after infra exit-143): opus pass + doneness satisfied (5th) / gpt fail (1 P1 test-infra, 1 P2 width) — fixed 5196c49 + b49c373; all gates green (405/405 ×2, s31 9/9 ×2). Extended budget exhausted, round not quiet → SECOND landing (loop_hold set).

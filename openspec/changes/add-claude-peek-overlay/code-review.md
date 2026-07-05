@@ -5,7 +5,7 @@
 **review_mode:** adversarial-multimodel
 **reviewer-provenance:** subagent(reviewer)@claude-bridge/claude-opus-4-8; subagent(reviewer)@openai-codex/gpt-5.5 (pi-subagents dispatch, blind, fresh context; 6 rounds)
 **Diff Base SHA:** bccd58ff83cb6578654ef17817ad52901f7b430d
-**Reviewed Range:** bccd58ff83cb6578654ef17817ad52901f7b430d..6a44b53baca8c19c4b374ac1f55434491ec136b7
+**Reviewed Range:** bccd58ff83cb6578654ef17817ad52901f7b430d..9173ee8f67cea1e9f230073d5131f40cd40965c3
 **Baseline:** intent.md + proposal + specs + design/plan + tasks status (+ fork commits 27376d0, 12f3672 in cartwmic/claude-p)
 **Generated:** 2026-07-04
 **waived_by_user:** findings #21-22 (round-6 P1 test-infra load-flake fixes 5196c49 + P2 width-cap fix b49c373) — user ruling at the second decision-audit landing, 2026-07-04: "im waiving the RE review and approving your continue." The waived delta (89b8743..6a44b53) contains only the test-infra hardening, the width-cap fix, the s31 assertion hardening, and bookkeeping merges; the feature diff proper was blind-reviewed across 6 rounds with opus passing rounds 2-6.

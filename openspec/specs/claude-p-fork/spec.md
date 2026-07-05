@@ -9,9 +9,7 @@ delivering a prompt into the interactive `claude` session, independent of how th
 binary is built or consumed (that is `claude-p-binary-provisioning`). The patch
 is the proven root-cause fix for the StopTimeout "hang"
 (`.spike-notes/claude-p-gate/stoptimeout-rootcause-PROVEN.md`).
-
 ## Requirements
-
 ### Requirement: Echo-confirmed prompt commit
 
 WHEN the patched `claude-p` driver has typed the pi prompt into the interactive `claude` PTY, THE driver SHALL confirm the typed prompt was accepted by observing its echo in the captured PTY output before it presses Enter to submit the turn. The confirmation SHALL read the existing rolling PTY-output buffer
@@ -91,3 +89,34 @@ upstream revisions with minimal conflict surface.
 - **WHEN** the fork's history is inspected
 - **THEN** the patch commit is prefixed `custom:` and names the upstream repo and the reason
 - **AND** an `upstream` remote points at `smithersai/claude-p`
+
+### Requirement: Write-Only PTY Output Mirror
+
+WHERE the `--mirror-file <path>` flag is supplied, THE patched `claude-p` driver SHALL append every byte read from the `claude` PTY output to the given file, in arrival order, as a pure tee. Mirroring SHALL be strictly write-only
+with respect to the session: THE driver SHALL NOT send any keystroke, answer,
+or byte to the PTY input on behalf of the mirror, and the prompt-delivery
+behavior (echo-confirm gate, bounded retype, trust-dialog handling, Ink
+readiness waits) SHALL be identical whether the flag is present or absent.
+WHEN the flag is absent, THE driver's behavior SHALL be byte-for-byte
+unchanged from the pre-patch binary.
+
+#### Scenario: Mirror captures the session
+- **WHEN** a turn runs with `--mirror-file` set
+- **THEN** the file contains the raw PTY output bytes of the session in arrival order
+- **AND** the turn's stdout output (text/json/stream-json) is unchanged from a run without the flag
+
+#### Scenario: Absent flag, unchanged behavior
+- **WHEN** a turn runs without `--mirror-file`
+- **THEN** no mirror file is created and no mirror-related code path affects the turn
+
+#### Scenario: Mirror write failure is non-fatal
+- **IF** the mirror file cannot be opened or a mirror write fails mid-turn
+- **THEN** the driver SHALL continue the turn unaffected, at most noting the failure on stderr
+- **AND** the turn's exit code and stdout output are unchanged by the mirror failure
+
+#### Scenario: Fork patch conventions preserved
+- **WHEN** the fork's history is inspected after the change
+- **THEN** the mirror patch is a clearly-marked `custom:` commit per the fork-maintenance requirement
+
+---
+

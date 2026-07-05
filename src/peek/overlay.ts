@@ -29,13 +29,28 @@ export const OVERLAY_MARKER = "claude-peek";
  */
 export const OVERLAY_WIDTH = 122;
 
+/** Fallback height budget when the terminal height is not yet known (half of the 40-row session + chrome). */
+export const DEFAULT_MAX_LINES = 23;
+
 /**
  * PURE overlay-lines builder (unit-testable without a TUI): border + state
  * header + cropped grid rows. `width` is the overlay's rendered width; rows
  * are cropped to the inner width (claude-peek-overlay.fixed-session-geometry-
  * rendering — the session itself is never resized).
+ *
+ * `maxLines` bounds the TOTAL rendered lines (borders + header + content).
+ * When the live grid exceeds the content budget the view shows the TAIL of
+ * the session (its bottom rows carry the spinner/input/latest output) with a
+ * one-line elision indicator. The caller passes half the terminal height so
+ * the popup never takes more than half the vertical space.
  */
-export function buildOverlayLines(rows: string[], state: PeekState, target: string | null, width: number): string[] {
+export function buildOverlayLines(
+	rows: string[],
+	state: PeekState,
+	target: string | null,
+	width: number,
+	maxLines: number = DEFAULT_MAX_LINES,
+): string[] {
 	const inner = Math.max(10, width - 2);
 	const title =
 		state === "live"
@@ -53,7 +68,16 @@ export function buildOverlayLines(rows: string[], state: PeekState, target: stri
 		// Trim trailing blank rows so the overlay hugs the content.
 		let last = rows.length - 1;
 		while (last >= 0 && rows[last].trim() === "") last--;
-		for (let y = 0; y <= last; y++) lines.push(pad(rows[y]));
+		const content = rows.slice(0, last + 1);
+		// Chrome: 2 borders + 1 header (+1 elision line when truncating).
+		const budget = Math.max(3, maxLines - 3);
+		if (content.length > budget) {
+			const shown = content.slice(content.length - (budget - 1));
+			lines.push(pad(`⋯ ${content.length - shown.length} rows above ⋯`));
+			for (const row of shown) lines.push(pad(row));
+		} else {
+			for (const row of content) lines.push(pad(row));
+		}
 	}
 	lines.push(`└${bar}┘`);
 	return lines;
@@ -75,7 +99,12 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 				return;
 			}
 			try {
-				const shown = ctx.ui.custom<undefined>(
+				// Terminal height, captured via the overlayOptions `visible` callback
+			// (invoked each render cycle with current dimensions) so the popup is
+			// clamped to HALF the vertical space. Handler-scoped: shared between
+			// the component factory (render) and the overlayOptions function.
+			let termRows = 0;
+			const shown = ctx.ui.custom<undefined>(
 				(tui, _theme, _kb, done) => {
 					openDone = done;
 					let state: PeekState = "idle";
@@ -96,7 +125,8 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 					else follower.retarget(getCurrentMirror());
 					return {
 						render(width: number): string[] {
-							return buildOverlayLines(follower.rows(), state, getCurrentMirror(), width);
+							const maxLines = termRows > 0 ? Math.max(6, Math.floor(termRows / 2)) : DEFAULT_MAX_LINES;
+							return buildOverlayLines(follower.rows(), state, getCurrentMirror(), width, maxLines);
 						},
 						invalidate() {},
 						dispose() {
@@ -108,12 +138,21 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 				},
 				{
 					overlay: true,
-					overlayOptions: {
+					// Function form: re-evaluated dynamically; `visible` receives the
+					// live terminal dimensions each render cycle — we capture the
+					// height for the half-screen clamp and always stay visible.
+					// maxHeight 50% is belt-and-braces at the pi-tui layer.
+					overlayOptions: () => ({
 						anchor: "top-right",
 						margin: { top: 1, right: 1 },
 						width: OVERLAY_WIDTH,
+						maxHeight: "50%",
 						nonCapturing: true,
-					},
+						visible: (_w: number, h: number) => {
+							termRows = h;
+							return true;
+						},
+					}),
 				},
 			);
 				// Overlay lifecycle failures are peek failures: log + reset the

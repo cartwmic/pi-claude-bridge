@@ -5,7 +5,7 @@
 //   claude-peek-overlay.fixed-session-geometry-rendering
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildOverlayLines, registerClaudePeekCommand, OVERLAY_MARKER } from "../src/peek/overlay.js";
+import { buildOverlayLines, registerClaudePeekCommand, OVERLAY_MARKER, DEFAULT_MAX_LINES } from "../src/peek/overlay.js";
 
 const rows40 = (fill) => Array.from({ length: 40 }, (_, i) => (i < 3 ? `${fill}${i} ` + "x".repeat(200) : ""));
 
@@ -34,6 +34,31 @@ describe("buildOverlayLines", () => {
 	it("crops 120-col rows to narrow widths (claude-peek-overlay.fixed-session-geometry-rendering)", () => {
 		const lines = buildOverlayLines(["A".repeat(120)], "live", "/p/x.raw", 30);
 		for (const l of lines) assert.ok([...l].length <= 30);
+	});
+
+	it("clamps total height to maxLines with a tail view + elision indicator (half-screen popup)", () => {
+		const rows = Array.from({ length: 40 }, (_, i) => `row-${i}`);
+		const maxLines = 12; // e.g. floor(24-row terminal / 2)
+		const lines = buildOverlayLines(rows, "live", "/p/x.raw", 50, maxLines);
+		assert.ok(lines.length <= maxLines, `rendered ${lines.length} > maxLines ${maxLines}`);
+		const text = lines.join("\n");
+		assert.ok(text.includes("rows above"), "elision indicator present");
+		assert.ok(text.includes("row-39"), "TAIL kept: last session row visible (spinner/input live at the bottom)");
+		assert.ok(!text.includes("row-0"), "head rows elided");
+	});
+
+	it("no clamp artifacts when content fits the budget", () => {
+		const rows = ["only-row", ...Array.from({ length: 39 }, () => "")];
+		const lines = buildOverlayLines(rows, "live", "/p/x.raw", 50, 12);
+		assert.ok(!lines.join("\n").includes("rows above"));
+		assert.equal(lines.length, 4); // border + header + 1 row + border
+	});
+
+	it("default budget is half the 40-row session + chrome", () => {
+		const rows = Array.from({ length: 40 }, (_, i) => `r${i}`);
+		const lines = buildOverlayLines(rows, "live", "/p/x.raw", 50);
+		assert.ok(lines.length <= DEFAULT_MAX_LINES);
+		assert.ok(lines.join("\n").includes("r39"));
 	});
 });
 

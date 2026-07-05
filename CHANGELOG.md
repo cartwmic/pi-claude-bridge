@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: `/claude-peek` overlay clamped to half the terminal height** — the
+  popup previously rendered up to the full 40-row session grid, consuming the
+  whole vertical space on short terminals. It now caps total height at 50% of
+  the terminal (live via the overlay `visible` dimension callback +
+  `maxHeight: "50%"`), showing the TAIL of the session (spinner/input/latest
+  output) with a `⋯ N rows above ⋯` elision indicator.
 - **Add: `/claude-peek` live overlay** — toggle a live, read-only
   picture-in-picture view of the underlying Claude Code TUI inside the pi
   terminal (nonCapturing top-right overlay; explicit idle/error states;

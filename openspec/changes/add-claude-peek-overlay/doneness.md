@@ -6,7 +6,7 @@
 **review_mode:** blind-single-judge
 **Frozen-Intent SHA:** ca0256fd2d2af6e45f920bef26c286f3b557a20f95234637b932008b84958ac2
 **Diff Base SHA:** bccd58ff83cb6578654ef17817ad52901f7b430d
-**Reviewed Range:** bccd58ff83cb6578654ef17817ad52901f7b430d..9173ee8f67cea1e9f230073d5131f40cd40965c3
+**Reviewed Range:** bccd58ff83cb6578654ef17817ad52901f7b430d..0a97046e84b67b001e7011663c12cb1855fbab75
 
 ## Verdict rationale
 

@@ -157,9 +157,25 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 - **Bridge log** at `~/.pi/agent/claude-bridge.log` — every provider call,
   session resume/divergence decision, tool-call park + result delivery, usage,
-  and claude-p stderr. JSON-per-line; size-rotated (10 MB × 2 backups). Override
-  location with `CLAUDE_BRIDGE_DEBUG_PATH` and size with
-  `CLAUDE_BRIDGE_DEBUG_MAX_BYTES`. Disable entirely with `CLAUDE_BRIDGE_DEBUG=0`.
+  and an in-flight state dump (`claudeP.lifecycle.stateDump`) on any abnormal
+  termination (abort or premature exit). JSON-per-line; size-rotated
+  (10 MB × 2 backups). Override location with `CLAUDE_BRIDGE_DEBUG_PATH` and size
+  with `CLAUDE_BRIDGE_DEBUG_MAX_BYTES`. Disable entirely with `CLAUDE_BRIDGE_DEBUG=0`.
+- **Per-spawn diagnostics** in the bridge log's directory: each `claude-p` spawn
+  tees its child **stderr** to `claude-p-stderr-<sid>-<pid>-<ts>.log`, and the
+  child `claude`'s own debug log is captured via `--debug-file` to
+  `claude-debug-<sid>-<ts>.log` (always on; disable with
+  `CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE=0`). On a premature exit the last stderr lines
+  are also folded into the surfaced error message. Neither file is ever written
+  under `~/.claude/`.
+
+**No liveness/wedge timeouts.** The bridge runs `claude-p` with **no**
+`--timeout` and has **no** idle watchdog: a silent spawn is recovered only by a
+real subprocess exit (classified `error` → bounded retry) or a caller-driven
+abort (pi's `AbortSignal` → SIGINT → grace → SIGKILL of the process group).
+The removed knobs `CLAUDE_BRIDGE_WATCHDOG_IDLE_MS` and
+`CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS` no longer exist; an unattended-batch
+ceiling belongs to the supervisor, which aborts the turn.
 
 When filing a bug about a session-resume failure, the most useful attachment is
 the bridge log spanning the failing turn (the divergence / caching log lines plus
@@ -196,8 +212,9 @@ Validated: the load that wedged stock 2/60 → patched **0/60**
   pinned `#<sha>`. The patch is confined to the prompt-commit step to keep the merge
   surface small.
 - **Follow-ups** (not yet done): a multi-platform CI/release pipeline for the fork
-  binary (so consumers without Zig can install a prebuilt), and bridge-side
-  defense-in-depth (same-provider concurrency cap + idle-watchdog).
+  binary (so consumers without Zig can install a prebuilt).
+  (Bridge-side liveness timers — the former idle-watchdog and `--timeout` — were
+  intentionally **removed**; recovery is caller-driven abort plus visibility.)
 
 ### Tested version range
 

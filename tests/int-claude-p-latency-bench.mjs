@@ -75,7 +75,6 @@ function runTurn(bin, session, prompt, suppressResumeReplay) {
 				prompt: { kind: "positional", text: prompt },
 				mcpConfig: JSON.stringify({ mcpServers: {} }),
 				session,
-				timeoutSeconds: 120,
 			},
 			{
 				binPath: bin,

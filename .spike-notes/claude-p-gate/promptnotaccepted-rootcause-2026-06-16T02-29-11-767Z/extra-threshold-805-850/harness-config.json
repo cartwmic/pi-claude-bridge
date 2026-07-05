@@ -1,0 +1,24 @@
+{
+  "createdAt": "2026-06-16T02:32:32.916Z",
+  "cwd": "/Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge",
+  "claudePBin": "/Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/node_modules/.bin/claude-p",
+  "timeoutSeconds": 45,
+  "trials": 5,
+  "cBatches": 5,
+  "includeThreshold": false,
+  "onlyThreshold": true,
+  "thresholdLengths": [
+    805,
+    810,
+    815,
+    820,
+    825,
+    830,
+    840,
+    850
+  ],
+  "prompts": {
+    "shortLength": 13,
+    "longLength": 850
+  }
+}

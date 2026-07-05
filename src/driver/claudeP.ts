@@ -30,7 +30,7 @@
 // SIGKILL after grace, orphan reap), D33 (resilience layer — seam only here).
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
@@ -176,14 +176,13 @@ export interface ClaudePSpawnConfig {
 	/** Session identity (fresh XOR resume). → --session-id | --resume */
 	session: SessionMode;
 	/**
-	 * Per-spawn wall-clock timeout in SECONDS, or `undefined`/omitted for NO cap
-	 * (the default). claude-p treats an absent `--timeout` as unlimited, deferring
-	 * liveness to the bridge's held-round-aware watchdog and pi's per-tool timeout
-	 * + AbortSignal. Only set when the operator opts into a wall-time ceiling via
-	 * CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS; it must then exceed the longest held
-	 * tool round or it will kill a healthy in-progress tool. → --timeout
+	 * Optional path for the child `claude`'s own debug log. When set, the driver
+	 * forwards `--debug-file <path>` through claude-p's verbatim unknown-flag
+	 * passthrough so the child `claude` writes its debug log to this bridge-owned
+	 * path (NEVER under `~/.claude/`; constitution III). Omitted → no flag. This is
+	 * the no-liveness-timeouts visibility surface (driver-diagnostics). → --debug-file
 	 */
-	timeoutSeconds?: number;
+	debugFile?: string;
 	/**
 	 * Optional MCP-readiness sentinel path. The shim creates it once it has served
 	 * `tools/list`; claude-p holds the submit Enter until it exists, so the turn
@@ -263,11 +262,13 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 	args.push("--output-format", "stream-json");
 	args.push("--verbose");
 
-	// --timeout <seconds>: ONLY when the operator opted into a cap. Absent →
-	// claude-p runs unlimited (no wall-time ceiling); the bridge watchdog + pi's
-	// per-tool timeout/AbortSignal are the liveness authority.
-	if (cfg.timeoutSeconds !== undefined) {
-		args.push("--timeout", String(cfg.timeoutSeconds));
+	// --debug-file <path>: forward the child `claude`'s own debug log to a
+	// bridge-owned path (claude-p passes unrecognized flags verbatim to claude).
+	// No `--timeout` is ever emitted: claude-p runs unlimited (no wall-time
+	// ceiling) per the no-liveness-timeouts principle; recovery is caller-driven
+	// abort, and a premature exit classifies `error` for the D33 retry gate.
+	if (cfg.debugFile) {
+		args.push("--debug-file", cfg.debugFile);
 	}
 
 	// User prompt: positional arg XOR --input-file <path>. Positional goes LAST so
@@ -551,6 +552,21 @@ export interface SpawnClaudePOptions {
 	 * actually appear in the resumed stream?). Never affects delivery. See ResumeDiag.
 	 */
 	livePromptText?: string;
+	/**
+	 * Diagnostics directory (driver-diagnostics). WHERE set, the driver writes the
+	 * child's stderr to a per-spawn file `claude-p-stderr-<sid8>-<pid>-<ts>.log`
+	 * under this dir (bridge-owned; NEVER under `~/.claude/`). Unset → stderr is
+	 * kept only in a bounded in-memory tail (used for the premature error message),
+	 * no file is written. Best-effort: a write failure never crashes the turn.
+	 */
+	diagnosticsDir?: string;
+	/**
+	 * Held-round predicate for the in-flight state dump (driver-diagnostics). The
+	 * bridge wires this to `frame.pendingResolvers.size > 0`; the capture path
+	 * leaves it unset (never held). Consulted once at terminal settle on an
+	 * abnormal exit. Detection-only; never affects control flow.
+	 */
+	isHeldRound?: () => boolean;
 }
 
 export interface ClaudePLogger extends StreamLogger {
@@ -571,17 +587,6 @@ export interface ClaudePHandle {
 	 * for a terminal `result`, and any late stdout is ignored.
 	 */
 	abort(): void;
-	/**
-	 * Kill a WEDGED spawn: SIGKILL the process group but — unlike abort() — do
-	 * NOT mark it aborted, so exit classification is "error", not "aborted". The
-	 * bridge's held-round-aware idle watchdog calls this when claude-p has gone
-	 * silent while NOT waiting on a held tool (a boot-wedge / StopTimeout race, or
-	 * a post-tool hang). Classifying as "error" routes it through the resilience
-	 * wrapper's retry gate exactly as claude-p's own --timeout firing would: a
-	 * boot-wedge (no tools/call routed) retries; a post-tool wedge surfaces the
-	 * error to pi. Idempotent; a no-op once settled or if abort() already ran.
-	 */
-	killWedged(): void;
 	/** Resolves once when the turn terminates (clean / aborted / error). Never rejects. */
 	readonly done: Promise<ClaudePDoneResult>;
 }
@@ -683,8 +688,20 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	// exact stream can be dumped for RCA. Capped; never parsed from here.
 	let rawBuf = "";
 	const RAW_CAP = 2_000_000;
+
+	// ── Visibility: in-flight state + child stderr capture (driver-diagnostics) ──
+	// `lastDeltaAt` = epoch ms of the last forwarded stream event (sign of life),
+	// for the abnormal-termination state dump. Bounded stderr ring feeds the
+	// premature error message; the full stderr is teed to a per-spawn file.
+	let lastDeltaAt = Date.now();
+	const STDERR_TAIL_LINES = 20;
+	const stderrTail: string[] = [];
+	let stderrFile: string | undefined;
+	let stderrFileFailed = false;
+
 	const parser = new ClaudePStreamParser({
 		onEvent: (event: DriverStreamEvent) => {
+			lastDeltaAt = Date.now();
 			if (event.kind === "done" && event.reason === "result") sawResult = true;
 			opts.onEvent(event);
 		},
@@ -739,15 +756,46 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 		});
 	}
 
-	// stderr is captured at debug-ish (info) granularity only; claude-p's real
-	// events come on stdout. We do NOT parse stderr.
+	// stderr is captured for VISIBILITY (driver-diagnostics), NOT parsed: claude-p's
+	// real events come on stdout (NDJSON). We (a) append every chunk to a per-spawn
+	// debug file under the bridge diagnostics dir (best-effort; a write failure logs
+	// once and never crashes the turn), and (b) keep a bounded tail of the last
+	// STDERR_TAIL_LINES lines for the premature-exit error message. We never write
+	// stderr onto the child's stdout.
 	if (child.stderr) {
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk: string) => {
-			logger.info?.(
-				{ event: "claudeP.lifecycle.stderr", text: chunk.slice(0, 500) },
-				"claude-p stderr",
-			);
+			// (b) bounded tail ring.
+			const lines = chunk.split("\n");
+			for (const line of lines) {
+				if (line.length === 0) continue;
+				stderrTail.push(line);
+			}
+			while (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift();
+
+			// (a) per-spawn debug file (lazy-open under diagnosticsDir).
+			if (opts.diagnosticsDir && !stderrFileFailed) {
+				try {
+					if (!stderrFile) {
+						mkdirSync(opts.diagnosticsDir, { recursive: true });
+						stderrFile = joinPath(
+							opts.diagnosticsDir,
+							`claude-p-stderr-${sessionId.slice(0, 8)}-${child.pid ?? "x"}-${Date.now()}.log`,
+						);
+						logger.info?.(
+							{ event: "claudeP.lifecycle.stderrFile", file: stderrFile },
+							`claude-p stderr captured to ${stderrFile}`,
+						);
+					}
+					appendFileSync(stderrFile, chunk);
+				} catch (err) {
+					stderrFileFailed = true;
+					logger.warn?.(
+						{ event: "claudeP.lifecycle.stderrFileFailed", err: errMessage(err) },
+						"claude-p stderr file write failed (ignored; turn continues)",
+					);
+				}
+			}
 		});
 	}
 
@@ -760,12 +808,40 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			killTimer = undefined;
 		}
 
+		// VISIBILITY (driver-diagnostics): on abnormal termination (abort or a
+		// premature exit with no terminal `result`), emit a single structured
+		// in-flight state dump so a future hang is self-diagnosing. A clean `result`
+		// exit does not dump. Emitted before endOfStream so the partial buffer length
+		// reflects what was still unparsed at termination.
+		if (aborted || !sawResult) {
+			const now = Date.now();
+			logger.warn?.(
+				{
+					event: "claudeP.lifecycle.stateDump",
+					sessionId: sessionId.slice(0, 8),
+					pid: child.pid,
+					aborted,
+					sawResult,
+					lastDeltaEpochMs: lastDeltaAt,
+					lastDeltaAgeMs: now - lastDeltaAt,
+					heldRound: opts.isHeldRound?.() ?? false,
+					partialBufferLen: parser.pendingBufferLength,
+					stderrTailLines: stderrTail.length,
+				},
+				`claude-p in-flight state dump (${aborted ? "abort" : "premature exit"}): ` +
+					`lastDeltaAge=${now - lastDeltaAt}ms heldRound=${opts.isHeldRound?.() ?? false} ` +
+					`partialBuffer=${parser.pendingBufferLength}B`,
+			);
+		}
+
 		// Feed the parser the exit context exactly once. When aborted, this
 		// suppresses the parser's premature-`error` emission. When NOT aborted and
 		// no terminal `result` was seen, the parser emits the `error` event itself.
+		// The captured stderr tail is threaded into the premature error message.
 		parser.endOfStream({
 			aborted,
 			exitInfo: { code: exitCode ?? null, signal },
+			stderrTail: stderrTail.length > 0 ? stderrTail.join("\n") : undefined,
 		});
 
 		// Best-effort orphan reap (D31 / S8): even though we signalled the GROUP,
@@ -842,20 +918,6 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 		killTimer.unref?.();
 	};
 
-	// ── kill-wedged ─────────────────────────────────────────────────────────────
-	const killWedged = () => {
-		if (settled || aborted) return;
-		logger.info?.(
-			{ event: "claudeP.lifecycle.wedgeKill", pid: child.pid },
-			"killing wedged claude-p (SIGKILL to group) — classifies as error → retry-eligible",
-		);
-		// Deliberately do NOT set `aborted`: we want settle() to classify this exit
-		// as "error" (no result seen), so the resilience wrapper's retry gate fires.
-		// SIGKILL the group directly (it's wedged — no point being gentle); the
-		// child `close` handler then drives settle().
-		signalGroup(pgid, "SIGKILL", logger);
-	};
-
 	if (opts.signal) {
 		if (opts.signal.aborted) {
 			// Already aborted before spawn fully wired — abort on next tick so the
@@ -871,7 +933,6 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			return child.pid;
 		},
 		abort,
-		killWedged,
 		done,
 	};
 }
@@ -976,15 +1037,6 @@ export function spawnClaudePWithResilience(
 		current?.abort();
 	};
 
-	// Forward a wedge-kill to the live inner spawn WITHOUT setting the wrapper's
-	// `aborted`. The inner spawn settles "error", so this wrapper's done-handler
-	// runs the retry gate (policy.shouldRetry) — boot-wedge retries, post-tool
-	// wedge surfaces — exactly as a real claude-p --timeout firing would.
-	const killWedged = () => {
-		if (aborted || outerSettled) return;
-		current?.killWedged();
-	};
-
 	if (externalSignal) {
 		if (externalSignal.aborted) queueMicrotask(abort);
 		else externalSignal.addEventListener("abort", abort, { once: true });
@@ -1037,7 +1089,6 @@ export function spawnClaudePWithResilience(
 			return current?.pid;
 		},
 		abort,
-		killWedged,
 		done,
 	};
 }
@@ -1116,7 +1167,6 @@ function makeFailedHandle(
 	return {
 		pid: undefined,
 		abort() {},
-		killWedged() {},
 		done: Promise.resolve({ stopReason: "error", sessionId, exitCode: null, signal: null }),
 	};
 }

@@ -130,7 +130,6 @@ async function runOnceWithRawCapture(attempt, callLogLines) {
 		prompt: { kind: "positional", text: PROMPT },
 		mcpConfig,
 		session: { kind: "fresh", sessionId: randomUUID() },
-		timeoutSeconds: TIMEOUT_SECONDS,
 	};
 	const args = buildClaudePArgs(cfg);
 

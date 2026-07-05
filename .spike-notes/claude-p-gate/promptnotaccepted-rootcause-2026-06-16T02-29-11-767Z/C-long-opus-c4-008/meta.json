@@ -1,0 +1,20 @@
+{
+  "cell": "C-long-opus-c4",
+  "idx": 8,
+  "model": "claude-opus-4-8",
+  "promptLength": 850,
+  "concurrency": 4,
+  "exit": 2,
+  "signal": null,
+  "wallMs": 3471,
+  "ok": false,
+  "promptNotAccepted": true,
+  "authQuota": false,
+  "sawUser": false,
+  "sawAssistant": false,
+  "sawResult": false,
+  "firstLineAtMs": null,
+  "lastTrace": "[claude-p +3010ms] prompt echo never confirmed after 3 attempt(s) — failing fast (PromptNotAccepted)",
+  "pasteMentions": [],
+  "trialDir": "/Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/.spike-notes/claude-p-gate/promptnotaccepted-rootcause-2026-06-16T02-29-11-767Z/C-long-opus-c4-008"
+}

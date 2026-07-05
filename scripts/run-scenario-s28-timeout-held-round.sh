@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# Scenario S28 — a held tool round LONGER than the idle watchdog window must
-# SURVIVE (Layer 2 of the hung-turn fix; the user's actual bug).
+# Scenario S28 — a long-running HELD tool round must SURVIVE with NO liveness
+# timeout machinery present (post `no-liveness-timeouts-add-visibility`).
 #
-# THE BUG: a long-running tool/subagent (a HELD round — claude-p is alive but
-# idle, blocked on the MCP round-trip while pi runs the tool) was killed when a
-# fixed timeout fired during that idle wait. The fix: the bridge's idle watchdog
-# is HELD-ROUND-AWARE — while a tool is parked (pendingResolvers > 0) it NEVER
-# fires; it defers entirely to the tool's own (pi-enforced) timeout.
-#
-# This scenario sets a deliberately SHORT watchdog window (8s) and runs a real
-# bash tool that sleeps LONGER than that (20s). If the watchdog were not
-# held-round-aware it would kill the turn mid-tool. It must instead:
-#   - tick during the held round and DEFER (positive log signal),
-#   - never declare a wedge / never kill claude-p,
-#   - let the tool round complete and the result reach the model.
+# DESIGN (current): the bridge has NO idle/wedge watchdog and NO claude-p
+# --timeout. A held round (claude-p alive but idle, blocked on the MCP
+# round-trip while pi runs the tool) is NEVER killed by any timer — there is no
+# timer. Liveness is entirely caller-driven (pi's own per-tool timeout / abort).
+# So a tool round of ANY duration must complete and its result must reach the
+# model. This scenario proves the long held round survives AND that none of the
+# removed timeout/wedge machinery is present in the log.
 #
 # Tier: submit + coherence probe (the tool result must reach the model).
 
@@ -24,9 +19,8 @@ set -euo pipefail
 # external override.
 export SCENARIO_MODEL="${SCENARIO_MODEL:-claude-bridge/claude-opus-4-7}"
 
-# Layer 2 knob: a SHORT watchdog window so the 20s held round clearly outlasts
-# it (must exceed boot+first-output, which on opus is a few seconds → 8s margin).
-export SCN_PI_ENV="CLAUDE_BRIDGE_WATCHDOG_IDLE_MS=8000"
+# No watchdog/timeout knobs: those env vars were removed with the watchdog and
+# claude-p --timeout. A long held round survives because nothing can time it out.
 
 source "$(dirname "$0")/scenario-lib.sh"
 
@@ -37,10 +31,7 @@ scn_setup "s28-timeout-held-round"
 trap 'scn_pi_stop' EXIT
 scn_pi_start
 
-# ---- Phase 1: run a real bash tool that outlasts the watchdog window ---------
-# Be explicit so the model actually INVOKES bash (not narrate it). The sleep
-# (20s) is > the 8s watchdog window, so a non-held-round-aware watchdog would
-# fire mid-tool.
+# ---- Phase 1: run a real bash tool that holds the round open for ~20s --------
 scn_send "Use the bash tool right now to run exactly: sleep 20 && echo $SENTINEL — actually invoke the tool, do not just describe it. After it returns, tell me what it printed."
 
 echo "==== S28 results ===="
@@ -53,21 +44,13 @@ else
 	scn_fail "no bash tool round routed — held round never opened (test setup failure)"
 fi
 
-# Mechanical (POSITIVE): the watchdog ticked DURING the held round and deferred.
-# This is the load-bearing signal: it proves the watchdog was active, its window
-# elapsed while the tool was parked, and it chose NOT to kill.
-deferrals=$(scn_grep_count "watchdog: tick during held round" "$BRIDGE_LOG")
-if (( deferrals >= 1 )); then
-	scn_pass "watchdog ticked during the held round and DEFERRED ($deferrals time(s))"
+# Mechanical (NEGATIVE): NO liveness-timeout / wedge machinery may appear. These
+# strings belonged to the removed watchdog + killWedged path. Their ABSENCE
+# during a long held round is the load-bearing signal of the new design.
+if grep -qE "watchdog|declaring wedge|killing wedged claude-p|wedgeKill|deferring" "$BRIDGE_LOG"; then
+	scn_fail "removed timeout/wedge machinery still active in the log (watchdog not fully removed?)"
 else
-	scn_fail "watchdog never logged a held-round deferral — it may not have ticked (window too long?) or not be wired"
-fi
-
-# Mechanical (NEGATIVE): the watchdog must NOT have declared a wedge / killed.
-if grep -qE "declaring wedge|killing wedged claude-p|wedgeKill" "$BRIDGE_LOG"; then
-	scn_fail "watchdog WRONGLY declared a wedge / killed claude-p during a healthy held round"
-else
-	scn_pass "no wedge declared, no kill — healthy held round left alone"
+	scn_pass "no watchdog / wedge / timeout machinery in the log — held round left alone by design"
 fi
 
 # Mechanical: the held tool round completed (the result was delivered back).
@@ -78,8 +61,8 @@ else
 fi
 
 # COHERENCE: the tool's output must have reached the model end-to-end. If the
-# watchdog had killed the held round, the bash result would never have reached
-# the model and it could not echo the sentinel.
+# held round had been killed, the bash result would never have reached the model
+# and it could not echo the sentinel.
 scn_send "What exact text did that bash command print? Reply with only that text."
 scn_assert_response \
 	"What exact text did that bash command print" \

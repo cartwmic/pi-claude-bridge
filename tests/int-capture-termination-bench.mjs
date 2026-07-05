@@ -122,7 +122,6 @@ async function runCaptureTurn(bin, shimPath) {
 		prompt: { kind: "positional", text: "What is two plus two? Record the answer." },
 		mcpConfig,
 		session: { kind: "fresh", sessionId: randomUUID() },
-		timeoutSeconds: 120,
 	};
 
 	const t0 = Date.now();

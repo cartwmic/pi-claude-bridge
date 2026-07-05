@@ -157,7 +157,6 @@ function teeRun({ tools, prompt, deliverFor, attempt, logLines, holdFor }) {
 			prompt: { kind: "positional", text: prompt },
 			mcpConfig,
 			session: { kind: "fresh", sessionId: randomUUID() },
-			timeoutSeconds: TIMEOUT_SECONDS,
 		};
 		const args = buildClaudePArgs(cfg);
 

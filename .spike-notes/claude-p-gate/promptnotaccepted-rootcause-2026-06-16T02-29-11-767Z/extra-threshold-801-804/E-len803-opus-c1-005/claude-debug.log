@@ -1,0 +1,127 @@
+2026-06-16T02:35:37.973Z [DEBUG] MDM settings load completed in 1ms
+2026-06-16T02:35:38.031Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
+2026-06-16T02:35:38.031Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-06-16T02:35:38.032Z [DEBUG] [init] configureGlobalMTLS starting
+2026-06-16T02:35:38.032Z [DEBUG] [init] configureGlobalMTLS complete
+2026-06-16T02:35:38.032Z [DEBUG] [init] configureGlobalAgents starting
+2026-06-16T02:35:38.032Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-06-16T02:35:38.032Z [DEBUG] CA certs: Loaded 145 bundled root certificates
+2026-06-16T02:35:38.042Z [DEBUG] CA certs: system store returned empty
+2026-06-16T02:35:38.042Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-06-16T02:35:38.042Z [DEBUG] [init] configureGlobalAgents complete
+2026-06-16T02:35:38.043Z [DEBUG] Error log sink initialized
+2026-06-16T02:35:38.047Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-06-16T02:35:38.047Z [DEBUG] [STARTUP] Running setup()...
+2026-06-16T02:35:38.049Z [DEBUG] Loading skills from: managed=/Library/Application Support/ClaudeCode/.claude/skills, user=/Users/cartwmic/.claude/skills, project=[]
+2026-06-16T02:35:38.050Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
+2026-06-16T02:35:38.050Z [DEBUG] Error log sink initialized
+2026-06-16T02:35:38.050Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/.claude/settings.json
+2026-06-16T02:35:38.065Z [DEBUG] [Claude in Chrome] Found chrome profiles: Profile 1, Default, Profile 2
+2026-06-16T02:35:38.065Z [DEBUG] Failed to stat directory /Library/Application Support/ClaudeCode/.claude/commands: ENOENT: no such file or directory, stat '/Library/Application Support/ClaudeCode/.claude/commands'
+2026-06-16T02:35:38.065Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-06-16T02:35:38.066Z [DEBUG] Loaded 2 installed plugins from /Users/cartwmic/.claude/plugins/installed_plugins.json
+2026-06-16T02:35:38.066Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-06-16T02:35:38.066Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-06-16T02:35:38.066Z [DEBUG] Total plugin workflows loaded: 0
+2026-06-16T02:35:38.067Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-06-16T02:35:38.067Z [DEBUG] Total plugin skills loaded: 0
+2026-06-16T02:35:38.067Z [DEBUG] Total plugin commands loaded: 0
+2026-06-16T02:35:38.067Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 15 bundled skills, 0 builtin plugin skills
+2026-06-16T02:35:38.068Z [DEBUG] Failed to stat directory /Library/Application Support/ClaudeCode/.claude/agents: ENOENT: no such file or directory, stat '/Library/Application Support/ClaudeCode/.claude/agents'
+2026-06-16T02:35:38.068Z [DEBUG] Total plugin agents loaded: 0
+2026-06-16T02:35:38.068Z [DEBUG] Acquired PID lock for 2.1.159 (PID 716)
+2026-06-16T02:35:38.068Z [DEBUG] Acquired PID lock on running version: /Users/cartwmic/.local/share/claude/versions/2.1.159
+2026-06-16T02:35:38.070Z [DEBUG] [STARTUP] setup() completed in 23ms
+2026-06-16T02:35:38.070Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-06-16T02:35:38.071Z [DEBUG] [ToolSearch:optimistic] mode=tst, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-06-16T02:35:38.072Z [DEBUG] [STARTUP] Commands and agents loaded in 2ms
+2026-06-16T02:35:38.074Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-06-16T02:35:38.078Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge/.claude/settings.local.json
+2026-06-16T02:35:38.078Z [DEBUG] Cleared CA certificates cache
+2026-06-16T02:35:38.078Z [DEBUG] Cleared mTLS configuration cache
+2026-06-16T02:35:38.078Z [DEBUG] Cleared proxy agent cache
+2026-06-16T02:35:38.078Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-06-16T02:35:38.078Z [DEBUG] CA certs: Loaded 145 bundled root certificates
+2026-06-16T02:35:38.078Z [DEBUG] CA certs: system store returned empty
+2026-06-16T02:35:38.078Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-06-16T02:35:38.078Z [DEBUG] Grove: Cache stale, returning cached data and refreshing in background
+2026-06-16T02:35:38.079Z [DEBUG] Failed to fetch Grove notice config: Error: Failed to fetch Grove notice config: essential-traffic-only
+2026-06-16T02:35:38.080Z [DEBUG] [keybindings] KeybindingSetup initialized with 173 bindings, 0 warnings
+2026-06-16T02:35:38.083Z [DEBUG] [STARTUP] showSetupScreens() completed in 9ms
+2026-06-16T02:35:38.083Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-06-16T02:35:38.083Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-06-16T02:35:38.083Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-06-16T02:35:38.083Z [DEBUG] Starting background startup prefetches
+2026-06-16T02:35:38.083Z [DEBUG] [Bootstrap] Skipped: Nonessential traffic disabled
+2026-06-16T02:35:38.083Z [DEBUG] [STARTUP] MCP configs resolved in 0ms (awaited at +36ms)
+2026-06-16T02:35:38.084Z [DEBUG] All plugins already exist, skipping migration
+2026-06-16T02:35:38.084Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:38.084Z [DEBUG] [Reconnection] computeInitialTeamContext: No teammate context set (not a teammate)
+2026-06-16T02:35:38.089Z [DEBUG] Preserving file permissions: 100600
+2026-06-16T02:35:38.089Z [DEBUG] Writing to temp file: /Users/cartwmic/.claude.json.tmp.716.4022f8ba1e0f
+2026-06-16T02:35:38.089Z [DEBUG] Applied original permissions to temp file
+2026-06-16T02:35:38.089Z [DEBUG] Temp file written successfully, size: 347983 bytes
+2026-06-16T02:35:38.089Z [DEBUG] Renaming /Users/cartwmic/.claude.json.tmp.716.4022f8ba1e0f to /Users/cartwmic/.claude.json
+2026-06-16T02:35:38.090Z [DEBUG] File /Users/cartwmic/.claude.json written atomically
+2026-06-16T02:35:38.090Z [DEBUG] Total LSP servers loaded: 0
+2026-06-16T02:35:38.090Z [DEBUG] Initialized versioned plugins system with 2 plugins
+2026-06-16T02:35:38.090Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-06-16T02:35:38.090Z [DEBUG] LSP manager initialized with 0 servers
+2026-06-16T02:35:38.091Z [DEBUG] LSP server manager initialized successfully
+2026-06-16T02:35:38.091Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-06-16T02:35:38.091Z [WARN] [3P telemetry] Event dropped (no event logger initialized): hook_execution_start
+2026-06-16T02:35:38.102Z [DEBUG] [keybindings] KeybindingSetup initialized with 173 bindings, 0 warnings
+2026-06-16T02:35:38.110Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:38.118Z [DEBUG] [FileIndex] getProjectFiles called, respectGitignore=true
+2026-06-16T02:35:38.118Z [DEBUG] [FileIndex] getFilesUsingGit called
+2026-06-16T02:35:38.120Z [DEBUG] [REPL:mount] REPL mounted, disabled=false
+2026-06-16T02:35:38.120Z [DEBUG] Official marketplace auto-install skipped: already_installed
+2026-06-16T02:35:38.121Z [DEBUG] performStartupChecks called
+2026-06-16T02:35:38.121Z [DEBUG] Starting background plugin installations
+2026-06-16T02:35:38.121Z [DEBUG] [jobStateNameSync] watch skipped: Error: ENOENT: no such file or directory, watch '/Users/cartwmic/.claude/jobs/0c5f1b8b'
+2026-06-16T02:35:38.122Z [DEBUG] [ScheduledTasks] scheduler start() — enabled=false, hasTasks=false
+2026-06-16T02:35:38.126Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:38.133Z [DEBUG] High write ratio: blit=0, write=1123 (100.0% writes), screen=17x120
+2026-06-16T02:35:38.136Z [DEBUG] performBackgroundPluginInstallations called
+2026-06-16T02:35:38.138Z [DEBUG] [auto-mode] verifyAutoModeGateAccess: enabledState=opt-in disabledBySettings=false model=claude-opus-4-8 modelSupported=true disableFastModeBreakerFires=false carouselAvailable=true canEnterAuto=true
+2026-06-16T02:35:38.138Z [DEBUG] AutoUpdaterWrapper: Installation type: native
+2026-06-16T02:35:38.140Z [DEBUG] Git remote URL: https://github.com/cartwmic/pi-claude-bridge
+2026-06-16T02:35:38.140Z [DEBUG] Parsed repository: github.com/cartwmic/pi-claude-bridge from URL: https://github.com/cartwmic/pi-claude-bridge
+2026-06-16T02:35:38.145Z [DEBUG] [keybindings] Watching for changes to /Users/cartwmic/.claude/keybindings.json
+2026-06-16T02:35:38.146Z [DEBUG] Failed to stat directory /Library/Application Support/ClaudeCode/.claude/output-styles: ENOENT: no such file or directory, stat '/Library/Application Support/ClaudeCode/.claude/output-styles'
+2026-06-16T02:35:38.146Z [DEBUG] Failed to stat directory /Library/Application Support/ClaudeCode/.claude/skills: ENOENT: no such file or directory, stat '/Library/Application Support/ClaudeCode/.claude/skills'
+2026-06-16T02:35:38.146Z [DEBUG] Failed to stat directory /Library/Application Support/ClaudeCode/.claude/workflows: ENOENT: no such file or directory, stat '/Library/Application Support/ClaudeCode/.claude/workflows'
+2026-06-16T02:35:38.146Z [DEBUG] Failed to stat directory /Library/Application Support/ClaudeCode/.claude/routines: ENOENT: no such file or directory, stat '/Library/Application Support/ClaudeCode/.claude/routines'
+2026-06-16T02:35:38.146Z [DEBUG] [keybindings] Watching for changes to /Users/cartwmic/.claude/keybindings.json
+2026-06-16T02:35:38.146Z [DEBUG] Git remote URL: https://github.com/cartwmic/pi-claude-bridge
+2026-06-16T02:35:38.146Z [DEBUG] Parsed repository: github.com/cartwmic/pi-claude-bridge from URL: https://github.com/cartwmic/pi-claude-bridge
+2026-06-16T02:35:38.149Z [DEBUG] Path /Users/cartwmic/.pi/agent/git/github.com/cartwmic/pi-claude-bridge already tracked for repo cartwmic/pi-claude-bridge
+2026-06-16T02:35:38.149Z [DEBUG] No CLAUDE.md/rules files found
+2026-06-16T02:35:38.163Z [DEBUG] Loaded plugins - Enabled: 0, Disabled: 0, Commands: 0, Agents: 0, Errors: 0
+2026-06-16T02:35:38.164Z [DEBUG] [Claude in Chrome] Extension not found in any browser
+2026-06-16T02:35:38.165Z [DEBUG] Watching for changes in skill/command directories: /Users/cartwmic/.claude/skills...
+2026-06-16T02:35:38.165Z [DEBUG] Prior session exited uncleanly: e2021f7a-5625-4ea9-ac04-dcb897013c8e (v2.1.159)
+2026-06-16T02:35:38.168Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-06-16T02:35:38.169Z [DEBUG] [3P telemetry] isTelemetryEnabled=true (CLAUDE_CODE_ENABLE_TELEMETRY=1)
+2026-06-16T02:35:38.169Z [DEBUG] [3P telemetry] getOtlpReaders: types=["otlp"], interval=60000, protocol=http/protobuf, endpoint=http://otel-collector.internal.cartwmic.com:80
+2026-06-16T02:35:38.172Z [DEBUG] [3P telemetry] getOtlpLogExporters: types=[], protocol=http/protobuf, endpoint=http://otel-collector.internal.cartwmic.com:80
+2026-06-16T02:35:38.172Z [DEBUG] [3P telemetry] Created 0 log exporter(s)
+2026-06-16T02:35:38.176Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:38.180Z [DEBUG] [FileIndex] git ls-files (tracked) took 62ms
+2026-06-16T02:35:38.181Z [DEBUG] Hook output does not start with {, treating as plain text
+2026-06-16T02:35:38.183Z [DEBUG] Ripgrep first use test: PASSED (mode=embedded, path=/Users/cartwmic/.local/share/claude/versions/2.1.159)
+2026-06-16T02:35:38.184Z [DEBUG] [FileIndex] git ls-files: 427 tracked files in 66ms
+2026-06-16T02:35:38.185Z [DEBUG] [FileIndex] using git ls-files result (427 files)
+2026-06-16T02:35:38.194Z [DEBUG] [FileIndex] cache refresh completed in 76ms
+2026-06-16T02:35:38.197Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:38.198Z [DEBUG] Watching for changes in setting files /Users/cartwmic/.claude/settings.json...
+2026-06-16T02:35:38.213Z [DEBUG] [FileIndex] background untracked fetch: 779 files
+2026-06-16T02:35:38.215Z [DEBUG] [FileIndex] rebuilt index with 427 tracked + 779 untracked files
+2026-06-16T02:35:38.266Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:39.030Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:39.033Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:39.082Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:39.845Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:39.850Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:39.893Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-06-16T02:35:40.667Z [DEBUG] Released PID lock for 2.1.159

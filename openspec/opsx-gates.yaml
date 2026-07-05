@@ -11,9 +11,9 @@ gates:
     run: npm run test:unit
     required: true
   # E2E tmux scenario for the claude-peek overlay (real pi + real model turn;
-  # ~2-4 min). Required per tasks.md T4.3 — this is the agent-independent
+  # ~2-4 min). Required per tasks.md T4.3 (renumbered s31->s32 post-merge: number taken by the paste-collapse guard) — this is the agent-independent
   # proof that the overlay works end-to-end and mirroring never pollutes the
   # turn's NDJSON stream.
-  - id: scenario-s31-claude-peek
-    run: ./scripts/run-scenario-s31-claude-peek.sh
+  - id: scenario-s32-claude-peek
+    run: ./scripts/run-scenario-s32-claude-peek.sh
     required: true

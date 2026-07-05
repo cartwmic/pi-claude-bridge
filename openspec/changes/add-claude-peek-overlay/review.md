@@ -60,6 +60,7 @@ loop_hold_reason: "SECOND decision-audit landing (code-review.md) — extended b
 
 ## Execution Notes
 
+- 2026-07-04 — USER RULING at second landing: waived re-review of findings #21-22 and approved continue ("im waiving the RE review and approving your continue"). Verdict re-sealed pass (waived_by_user in code-review.md header); doneness.md sealed satisfied from the round-6 designated-judge rider; reviewed range bccd58f..6a44b53. loop_hold left set — cleared only by the named re-arm (user: "standby for rearm").
 - 2026-07-04 — round 6 (blind, at 89b8743; gpt re-dispatched once after infra exit-143): opus pass + doneness satisfied (5th) / gpt fail (1 P1 test-infra, 1 P2 width) — fixed 5196c49 + b49c373; all gates green (405/405 ×2, s31 9/9 ×2). Extended budget exhausted, round not quiet → SECOND landing (loop_hold set).
 - 2026-07-04 — human resume ruling at the landing = continue: review_max_rounds extended 5→6; round 6 blind dispatches at current worktree HEAD (da40ef8). Gate validations at re-arm instant were saturation flakes (load avg 31-57, 6 concurrent claude-p incl. the gate's own s31); 405/405 unit + s31 9/9 proven at fcd58b6 when calm.
 - 2026-07-04 — loop_hold cleared by named re-arm (/opsx-loop add-claude-peek-overlay); reason was: decision audit in code-review.md — review_max_rounds hard cap (5) reached with round-5 P1 fixed post-round; all P0/P1 from all rounds fixed and landed; awaiting human ruling: extend rounds / waive re-review of the round-5 fix / inspect

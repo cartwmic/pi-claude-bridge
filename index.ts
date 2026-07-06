@@ -1419,6 +1419,10 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			return;
 		}
 		case "tool-use": {
+			// A tool-use boundary semantically ends the current inline assistant segment.
+			// In live routed calls onRouterPark may already have closed it; in replay /
+			// warm-resume flush paths no router park fires, so close here too. Idempotent.
+			closeOpenInlineBlocks(frame);
 			// DISPLAY ONLY (D32). Best-effort: label an already-parked toolCall
 			// block whose name+args match. Do NOT push a new block; do NOT route.
 			const parked = frame.router?.listParkedCalls() ?? [];

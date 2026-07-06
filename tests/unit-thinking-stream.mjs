@@ -51,6 +51,21 @@ function makeThinkingSpawn(thinking, textChunks) {
 	};
 }
 
+function makeToolBoundarySpawn() {
+	return function fakeSpawn(cfg, opts /*, policy */) {
+		let resolveDone;
+		const done = new Promise((res) => { resolveDone = res; });
+		queueMicrotask(() => {
+			opts.onEvent({ kind: "text-delta", text: "I will check the tool." });
+			opts.onEvent({ kind: "tool-use", toolUseId: "toolu_1", name: "mcp__custom-tools__pi_ping", arguments: {} });
+			opts.onEvent({ kind: "text-delta", text: "The tool returned PONG." });
+			opts.onEvent({ kind: "done", reason: "result" });
+			resolveDone({ stopReason: "stop", sessionId: cfg.session.sessionId, exitCode: 0, signal: null });
+		});
+		return { pid: 4243, abort() { resolveDone({ stopReason: "aborted", sessionId: cfg.session.sessionId, exitCode: null, signal: null }); }, done };
+	};
+}
+
 describe("thinking/text presentation through the pi event stream", () => {
 	let restore = [];
 	afterEach(() => { restore.forEach((r) => r()); restore = []; __resetCachedSessionForTests(); });
@@ -87,5 +102,26 @@ describe("thinking/text presentation through the pi event stream", () => {
 		assert.deepEqual(types, ["thinking", "text"], `expected [thinking, text]; got ${JSON.stringify(types)}`);
 		assert.equal(content[0].thinking, "let me reason carefully");
 		assert.equal(content[1].text, "The answer is 391.");
+	});
+
+	it("keeps assistant text before and after tool-use as distinct blocks", async () => {
+		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] }));
+		restore.push(__setSpawnClaudePForTests(makeToolBoundarySpawn()));
+
+		const stream = streamClaudeAgentSdk(MOCK_MODEL, userCtx("check tool boundary"), {});
+		const events = [];
+		for await (const e of stream) events.push(e);
+
+		const firstTextEndIdx = events.findIndex((e) => e.type === "text_end" && e.content === "I will check the tool.");
+		const secondTextStartIdx = events.findIndex((e, i) => i > firstTextEndIdx && e.type === "text_start");
+		assert.ok(firstTextEndIdx >= 0, "tool-use boundary must close the first text block");
+		assert.ok(secondTextStartIdx > firstTextEndIdx, "text after tool-use must start a new text block");
+
+		const terminal = events[events.length - 1];
+		assert.equal(terminal.type, "done");
+		assert.deepEqual(terminal.message.content, [
+			{ type: "text", text: "I will check the tool." },
+			{ type: "text", text: "The tool returned PONG." },
+		]);
 	});
 });

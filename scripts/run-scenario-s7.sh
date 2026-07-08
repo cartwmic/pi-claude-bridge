@@ -94,18 +94,21 @@ else
 	scn_pass "no UUID rotation / no JSONL surgery"
 fi
 
-# COHERENCE: model must report a specific number AND must NOT claim it wasn't interrupted.
+# COHERENCE: model must report where the interrupted generation got to AND must
+# NOT claim it wasn't interrupted. On the claude-p buffered driver, Escape can
+# land before any streamed text is visible to the model transcript; `0` / "didn't
+# start" is therefore a coherent preserved-session answer, not amnesia.
 #
 # NEG was previously over-broad: `i finished` matched "I finished number 1 completely"
 # (the model accurately reporting *which* number it completed before interruption).
 # Tightened so NEG only fires on whole-task completion claims or explicit interruption denials.
-# POS expanded to robustly catch "I reached number 2" / "got to 2" / standalone "2" /
-# "stopped at number 2" phrasings.
+# POS catches "I reached number 2" / "got to 2" / standalone "2" / "stopped at
+# number 2" / buffered-driver "0. Didn't start" phrasings.
 scn_assert_response \
 	"What number did you reach before I interrupted you" \
-	"(reached|got to|stopped at).*[0-9]+|number[[:space:]]+(was|[0-9])|^[[:space:]]*[0-9]+[.,!]?[[:space:]]*\$|i (reached|stopped at|got to)[[:space:]]+(number[[:space:]]+)?[0-9]+" \
+	"(reached|got to|stopped at).*[0-9]+|number[[:space:]]+(was|[0-9])|^[[:space:]]*[0-9]+[.,!]?[[:space:]]*\$|i (reached|stopped at|got to)[[:space:]]+(number[[:space:]]+)?[0-9]+|^[[:space:]]*0[.,!]?[[:space:]]*(didn'?t|did not)?[[:space:]]*(start|begin)?|didn'?t start|did not start" \
 	"(wasn't|was not) interrupted|didn't interrupt|never interrupted|no interruption|completed (the (entire|full|whole)|all 100|all the numbers|the count)|reached (100|all 100)|finished (the (count|task|whole|entire))|finished all (100|the numbers)|got to 100|i finished everything" \
-	"coherence: model reports a specific reached number, not 'wasn't interrupted'"
+	"coherence: model reports a reached number or no-start abort, not 'wasn't interrupted'"
 
 echo "Cache profile:"
 scn_cache_profile

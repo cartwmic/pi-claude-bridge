@@ -249,10 +249,15 @@ describe("capture success (claude-p)", () => {
 		assert.equal(kinds.filter((k) => k === "done").length, 1, "exactly one done");
 		assert.equal(kinds.filter((k) => k === "error").length, 0, "no error event");
 
-		// cfg sanity: capture-mode shim pointed at submit_digest.
+		// cfg sanity: capture-mode shim pointed at submit_digest and system prompt
+		// forces the single capture tool so real small-model runs do not end in prose.
 		assert.ok(seenCfg, "spawn received a cfg");
 		assertCaptureMcpConfig(seenCfg, "submit_digest");
 		assert.equal(seenCfg.session.kind, "fresh", "capture session is always fresh (never resumed)");
+		assert.equal(seenCfg.systemPrompt.kind, "text");
+		assert.match(seenCfg.systemPrompt.text, /structured capture mode/);
+		assert.match(seenCfg.systemPrompt.text, /mcp__custom-tools__submit_digest/);
+		assert.match(seenCfg.systemPrompt.text, /Do not answer in prose/);
 	});
 });
 

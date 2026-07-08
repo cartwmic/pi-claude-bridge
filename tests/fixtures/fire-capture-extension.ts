@@ -32,7 +32,8 @@ export default function (pi: ExtensionAPI) {
 			}
 			try {
 				const result = await complete(model, {
-					systemPrompt: "Produce a short digest of the provided text.",
+					systemPrompt:
+						"Produce a short digest of the provided text. Use submit_digest exactly once; do not answer in prose.",
 					messages: [
 						{
 							role: "user",
@@ -42,6 +43,13 @@ export default function (pi: ExtensionAPI) {
 					],
 					tools: [submitDigestTool],
 				});
+				if (result.stopReason !== "toolUse") {
+					ctx.ui.notify(
+						`[Capture error] stopReason=${result.stopReason}${result.errorMessage ? ` ${result.errorMessage}` : ""}`,
+						"error",
+					);
+					return;
+				}
 				ctx.ui.notify(`[Capture done] stopReason=${result.stopReason}`);
 			} catch (err: unknown) {
 				const msg =

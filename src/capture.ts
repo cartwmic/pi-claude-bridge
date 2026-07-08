@@ -239,12 +239,18 @@ export async function runClaudePCapture(
 		},
 	});
 
-	// System prompt: the pi systemPrompt is forwarded verbatim (constitution V; NO
-	// semantic / capture-only addendum), but we PREPEND the MCP-startup-race guard
-	// so the model deterministically waits for the (async-connecting) capture shim
-	// before declaring the capture tool unavailable. The preamble is operational,
-	// not pi-UI material — see CaptureDeps.mcpWaitPreamble.
-	const systemPromptWithGuard = deps.mcpWaitPreamble(systemPromptText);
+	// System prompt: keep the caller's prompt intact, but prepend two operational
+	// guards owned by the bridge: (1) MCP readiness, (2) capture-mode forcing.
+	// Capture calls are structured-output requests; prose completion with no stash
+	// is an implementation failure, not a useful answer. Make the sole capture tool
+	// mandatory so small models (notably haiku) do not answer in text and end the
+	// turn without an IPC stash.
+	const systemPromptWithGuard = buildCaptureSystemPrompt(
+		deps.mcpWaitPreamble(systemPromptText),
+		deps.mcpServerName,
+		captureTool,
+		cleanedSchema,
+	);
 	const systemPrompt: SystemPromptSource = systemPromptWithGuard.length > deps.promptFileThresholdBytes
 		? { kind: "file", path: deps.writeOverflowTmp("pcb-cap-sysprompt", systemPromptWithGuard) }
 		: { kind: "text", text: systemPromptWithGuard };
@@ -400,6 +406,24 @@ function applyUsage(out: AssistantMessage, usage: DriverStreamUsage, model: Mode
 	out.usage.cacheWrite = usage.cacheWrite;
 	out.usage.totalTokens = usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 	deps.calculateCost(model, out.usage);
+}
+
+function buildCaptureSystemPrompt(
+	baseSystemPrompt: string,
+	mcpServerName: string,
+	captureTool: Tool,
+	cleanedSchema: Record<string, unknown>,
+): string {
+	const qualifiedName = `mcp__${mcpServerName}__${captureTool.name}`;
+	const schemaJson = JSON.stringify(cleanedSchema);
+	const captureGuard = [
+		"You are in structured capture mode.",
+		`You MUST call exactly one tool: \`${qualifiedName}\` (bare MCP tool name \`${captureTool.name}\`).`,
+		"Do not answer in prose. Do not summarize in plain text. Do not end the turn until the capture tool has been called successfully.",
+		"If the tool is not visible yet, first call `WaitForMcpServers`, then call the required capture tool.",
+		`The tool arguments MUST satisfy this JSON schema: ${schemaJson}`,
+	].join("\n");
+	return baseSystemPrompt ? `${captureGuard}\n\n${baseSystemPrompt}` : captureGuard;
 }
 
 function safePush(stream: AssistantMessageEventStream, ev: Parameters<AssistantMessageEventStream["push"]>[0]): void {

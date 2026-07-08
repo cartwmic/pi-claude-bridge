@@ -81,25 +81,22 @@ sleep 4
 echo "[$(ts_rel)] T1 pane snapshot after send:"
 "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -30 | tail -15
 
-# Wait specifically for an "awaiting pi" subagent handler — meaning the
-# subagent dispatch is REALLY in flight (pi has not delivered the result
-# yet). "early result, returning" means the subagent finished before the
-# handler ran (pi already had it buffered) — that's a fast metadata
-# query, not what we want. Poll continuously and only break on an
-# awaiting-pi line that's NOT been followed by any returning line for
-# at least 5 seconds.
+# Wait specifically for a SUBAGENT tool route. The old probe also matched any
+# generic `onRouterPark: routed tools/call` (for example `bash`), then a
+# subagent-specific grep pipeline failed under `set -euo pipefail` and exited the
+# scenario before the target condition was reached.
+subagent_route_re='("name":"(mcp__custom-tools__)?subagent".*(router: parked tools/call|onRouterPark: routed tools/call))|((router: parked tools/call|onRouterPark: routed tools/call).*"name":"(mcp__custom-tools__)?subagent")|mcp handler: subagent .* awaiting pi'
 deadline=$((SECONDS + 180))
 saw_awaiting=0
+awaiting_id=""
 while (( SECONDS < deadline )); do
-	if grep -qE "mcp handler: subagent .* awaiting pi|onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null; then
+	subagent_line=$(grep -E "$subagent_route_re" "$BRIDGE_LOG" 2>/dev/null | tail -1 || true)
+	if [[ -n "$subagent_line" ]]; then
 		saw_awaiting=1
-		# Confirm it's still pending (no matching "returning" line yet).
-		awaiting_id=$(grep -oE "mcp handler: subagent \[toolu_[A-Za-z0-9]+\] — awaiting pi" "$BRIDGE_LOG" | tail -1 | grep -oE "toolu_[A-Za-z0-9]+")
-		if [[ -n "$awaiting_id" ]] && ! grep -q "subagent \[$awaiting_id\] — early result, returning" "$BRIDGE_LOG" 2>/dev/null; then
-			# Still pending — break.
-			echo "[$(ts_rel)] subagent [$awaiting_id] is genuinely pending (awaiting pi, not yet returned)"
-			break
-		fi
+		awaiting_id=$(printf '%s\n' "$subagent_line" | grep -oE "(toolu|pi)-[A-Za-z0-9_-]+" | tail -1 || true)
+		[[ -n "$awaiting_id" ]] || awaiting_id="subagent-route"
+		echo "[$(ts_rel)] subagent [$awaiting_id] is pending/routed"
+		break
 	fi
 	# Periodic pane snapshot for live visibility.
 	if (( SECONDS % 15 == 0 )); then
@@ -109,7 +106,7 @@ while (( SECONDS < deadline )); do
 	sleep 2
 done
 echo "[$(ts_rel)] tool handler events so far:"
-grep -E "mcp handler:" "$BRIDGE_LOG" 2>/dev/null | tail -10 || echo "  (no handlers)"
+grep -E "mcp handler:|router: parked tools/call|onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null | tail -10 || echo "  (no handlers)"
 if (( saw_awaiting == 0 )); then
 	echo "[$(ts_rel)] WARN: parent never dispatched a long-running subagent tool. Pane:"
 	scn_capture | tail -30

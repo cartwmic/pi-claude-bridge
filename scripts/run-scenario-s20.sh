@@ -129,14 +129,17 @@ else
 	scn_fail "FM3: neither synthetic drain nor real-result-to-aborted-frame fired"
 fi
 
-# No fabricated tool output — sentinel must NOT appear in the bridge log.
-# (The bash command was aborted before completion, so the echo never ran;
-# if the sentinel appears, either the abort failed or the SDK fabricated
-# tool output post-abort.)
-if grep -q "$S20_SENTINEL" "$BRIDGE_LOG" 2>/dev/null; then
-	scn_fail "tool sentinel leaked into bridge log (tool actually completed)"
+# No fabricated tool output — sentinel must NOT appear as tool/model output.
+# Bridge diagnostics may legitimately echo the original user prompt during
+# warm-resume (`claudeP.resume.diag.lastReplayedPrompt`); that is not evidence
+# that `sleep 60 && echo ...` completed. Filter prompt/diagnostic echoes and
+# fail only on non-diagnostic sentinel leaks.
+sentinel_leaks=$(grep "$S20_SENTINEL" "$BRIDGE_LOG" 2>/dev/null | grep -vE "claudeP\.resume\.diag|lastReplayedPrompt" || true)
+if [[ -n "$sentinel_leaks" ]]; then
+	scn_fail "tool sentinel leaked into non-diagnostic bridge log output (tool may have completed)"
+	printf '%s\n' "$sentinel_leaks" >&2
 else
-	scn_pass "no fabricated tool output (sentinel absent)"
+	scn_pass "no fabricated tool output (sentinel absent outside resume diagnostics)"
 fi
 
 # COHERENCE: model must affirm the abort, not claim a tool failure or success.

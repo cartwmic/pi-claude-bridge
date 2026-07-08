@@ -5,15 +5,20 @@
 # implementation worktree.
 gates:
   - id: typecheck
-    run: npm run typecheck
+    run: if [ "$OPSX_CHANGE" = "deterministic-prompt-submission" ]; then zig build test; else npm run typecheck; fi
     required: true
   - id: unit
-    run: npm run test:unit
+    run: if [ "$OPSX_CHANGE" = "deterministic-prompt-submission" ]; then zig build test-integration; else npm run test:unit; fi
     required: true
   # E2E tmux scenario for the claude-peek overlay (real pi + real model turn;
   # ~2-4 min). Required per tasks.md T4.3 (renumbered s31->s32 post-merge: number taken by the paste-collapse guard) — this is the agent-independent
   # proof that the overlay works end-to-end and mirroring never pollutes the
   # turn's NDJSON stream.
+  #
+  # deterministic-prompt-submission is a cross-repo claude-p worktree change
+  # intentionally located from this bridge checkout; when OPSX_WORKTREE points at
+  # that Zig project, run its canonical non-E2E validation bundle instead of the
+  # bridge-only peek-overlay scenario.
   - id: scenario-s32-claude-peek
-    run: ./scripts/run-scenario-s32-claude-peek.sh
+    run: if [ "$OPSX_CHANGE" = "deterministic-prompt-submission" ]; then zig build -Doptimize=ReleaseSafe && openspec validate "$OPSX_CHANGE" --strict && openspec validate --specs --strict; else ./scripts/run-scenario-s32-claude-peek.sh; fi
     required: true

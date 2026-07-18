@@ -66,15 +66,19 @@ THE capture path SHALL not interact with user-session state: no main frame push,
 
 ### Requirement: Synthesized `toolCall` content block on success
 
-WHEN selected-driver capture receives schema-validated IPC-stashed arguments, THE bridge SHALL synthesize exactly one matching pi `toolCall` through `newTurnOutput(model)`; IPC stash is authoritative, observed driver tool-use is only a cross-check, and normalized terminal usage maps `input_tokens`→`usage.input`, `output_tokens`→`usage.output`, `cache_read_input_tokens`→`usage.cacheRead`, `cache_creation_input_tokens`→`usage.cacheWrite`, then `calculateCost` runs exactly once before terminal `done(toolUse)`.
+WHEN selected-driver capture receives schema-validated IPC-stashed arguments and selected driver completes successfully with required terminal result, THE bridge SHALL synthesize exactly one matching pi `toolCall` through `newTurnOutput(model)`; IPC stash is authoritative for arguments, observed tool-use is only cross-check, normalized terminal usage maps `input_tokens`→`usage.input`, `output_tokens`→`usage.output`, `cache_read_input_tokens`→`usage.cacheRead`, `cache_creation_input_tokens`→`usage.cacheWrite`, then `calculateCost` runs exactly once for pi-visible cost while driver-reported billing remains diagnostics/accounting metadata.
 
 #### Scenario: Successful capture
 - **WHEN** stash contains valid arguments and terminal usage exists
 - **THEN** returned assistant has one matching `toolCall`, `toolUse` stop reason, mapped usage, and calculated cost
 
 #### Scenario: Stash present but observed stream divergent
-- **WHEN** valid stash exists but selected-driver stream lacks matching tool observation
-- **THEN** bridge warns, trusts stash, and uses available terminal usage
+- **WHEN** valid stash exists, selected driver terminates successfully, but stream lacks matching tool observation
+- **THEN** bridge warns, trusts stash, and uses terminal usage
+
+#### Scenario: Stash present but terminal result missing
+- **IF** valid stash exists but selected driver closes without required successful terminal result
+- **THEN** bridge surfaces selected-driver error and does not synthesize capture success
 
 #### Scenario: Caller receives direct-provider shape
 - **WHEN** caller uses same capture tool shape across providers

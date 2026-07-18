@@ -56,6 +56,18 @@ THE warm-resume path SHALL only access bridge-owned sidecar outside `~/.claude/`
 - **WHEN** either driver warm-resumes
 - **THEN** bridge accesses only its sidecar and process protocol, never `~/.claude/`
 
+### Requirement: Aborted-Mid-Tool Sessions Remain Resumable
+
+WHERE selected-driver session ends with an unclosed tool call after abort or crash and sidecar otherwise validates, THE bridge SHALL warm-resume the same driver and SHALL not cold-start solely because of dangling call; selected driver SHALL repair or close the dangling call and return the new live turn.
+
+#### Scenario: Interactive dangling call
+- **WHEN** interactive session has dangling tool call and sidecar validates
+- **THEN** `claude-p` resume proceeds under existing proven repair behavior
+
+#### Scenario: Direct dangling call
+- **WHEN** direct session is aborted mid-held-tool and sidecar validates
+- **THEN** retained live integration evidence proves direct resume repairs/closes dangling call and produces new live answer
+
 ## ADDED Requirements
 
 ### Requirement: Resume Sidecar Records Driver Identity
@@ -92,5 +104,6 @@ IF persisted or in-memory hint driver differs from selected driver, THEN THE bri
 | warm-pi-resume.validated-warm-resume-on-pi-resume | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.driver-guarantees-a-live-resume-result-no-bridge-side-stale-guard | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.warm-path-performs-no-new-claude-config-access | [x] | [x] | [x] | [x] | [x] |
+| warm-pi-resume.aborted-mid-tool-sessions-remain-resumable | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.resume-sidecar-records-driver-identity | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.cross-driver-warm-resume-is-forbidden | [x] | [x] | [x] | [x] | [x] |

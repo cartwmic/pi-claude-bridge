@@ -10,7 +10,7 @@ WHERE `claude-p` is selected, WHEN the bridge starts a fresh turn for a `claude-
 
 #### Scenario: Fresh turn spawns one claude-p subprocess with bridged tool surface
 - **WHEN** selected driver is `claude-p` and fresh turn starts
-- **THEN** one `claude-p` process starts with `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, model, path-appropriate prompt, session id, stream-json output, verbose, and bridge-owned debug file
+- **THEN** one `claude-p` process starts with `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, model, path-appropriate prompt, session id, stream-json output, verbose, and default-on bridge-owned debug file unless documented disable env is set
 - **AND** args omit `--settings`, `-p`, `--print`, and `--timeout`
 - **AND** user prompt is delivered by positional argument or input file under existing text/image contract
 

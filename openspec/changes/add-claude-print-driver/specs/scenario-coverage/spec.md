@@ -16,7 +16,7 @@ THE scenario suite SHALL prove a large first prompt is accepted end-to-end by bo
 
 ### Requirement: Full Bridge Scenarios Run Against Both Drivers
 
-THE live scenario suite SHALL execute the bridge's S0–S27 main, tool, capture, resume, abort, steering, concurrency, and coherence behaviors against both `claude-p` and `claude-print`, except for the documented direct-mode peek difference.
+THE live scenario suite SHALL execute the bridge's `SCENARIOS.md` S0–S27 main, tool, capture, resume, abort, steering, concurrency, and coherence behaviors against both `claude-p` and `claude-print`, except for the documented direct-mode peek difference.
 
 #### Scenario: Direct parity run
 - **WHEN** scenario suite selects `claude-print`

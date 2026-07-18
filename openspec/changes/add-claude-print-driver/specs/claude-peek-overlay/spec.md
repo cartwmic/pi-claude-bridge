@@ -6,7 +6,7 @@
 
 ### Requirement: Overlay Toggle Command
 
-WHERE `claude-p` is selected, WHEN user invokes `/claude-peek`, THE bridge SHALL toggle read-only overlay while preserving editor focus. WHERE `claude-print` is selected, invocation SHALL display explicit unavailable state and SHALL not create overlay or tailer. IF selection changes to `claude-print` while overlay exists, THEN bridge SHALL dispose overlay/tailer and display unavailable notification rather than stale mirror.
+WHERE `claude-p` is selected, WHEN user invokes `/claude-peek`, THE bridge SHALL toggle read-only overlay while preserving editor focus. WHERE the next fresh-turn or peek-command resolution selects `claude-print`, THE bridge SHALL display explicit unavailability, create no overlay/tailer, and dispose any prior interactive overlay/tailer at that resolution point rather than show stale mirror.
 
 #### Scenario: Toggle on in interactive mode
 - **WHEN** `claude-p` is selected, command invoked, and overlay hidden

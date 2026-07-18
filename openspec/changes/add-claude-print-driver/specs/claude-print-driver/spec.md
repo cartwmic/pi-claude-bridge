@@ -6,11 +6,11 @@
 
 ### Requirement: Direct Print Invocation Uses Bidirectional Stream Protocol
 
-WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Claude Code with `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, selected model and system prompt, `--mcp-config <bridge-shim-config>`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--tools ""`, defense-in-depth native filtering, bridge-owned debug output, and fresh or resumed session identity; it SHALL NOT pass `--bare`.
+WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Claude Code with `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, selected model and system prompt, `--mcp-config <bridge-shim-config>`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--tools ""`, defense-in-depth native filtering, default-on bridge-owned debug output, and fresh or resumed session identity; it SHALL NOT pass `--bare`. Large or multiline system prompts SHALL use `--system-prompt-file <bridge-tempfile>` with cleanup rather than unsafe argv delivery.
 
 #### Scenario: Fresh direct invocation
 - **WHEN** a fresh direct turn starts
-- **THEN** argv includes `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--mcp-config <bridge-shim-config>`, `--strict-mcp-config`, `--setting-sources ""`, `--tools ""`, `--permission-mode bypassPermissions`, selected model, explicit system prompt, bridge-owned debug file, and `--session-id <uuid>`
+- **THEN** argv includes `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--mcp-config <bridge-shim-config>`, `--strict-mcp-config`, `--setting-sources ""`, `--tools ""`, `--permission-mode bypassPermissions`, selected model, explicit system prompt, default-on bridge-owned debug file unless documented disable env is set, and `--session-id <uuid>`
 - **AND** argv does not include `--bare`
 - **AND** one user NDJSON frame carries flattened pi history per the cold-start conversion contract
 - **AND** stdin remains open until terminal result, abort, or failure
@@ -24,7 +24,7 @@ WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Cla
 
 ### Requirement: Prompt Submission Waits For Exact MCP Readiness
 
-WHEN a direct subprocess starts, THE driver SHALL submit its user frame only after the owning shim has accepted `tools/list` and produced the exact declared bridged tool set; startup SHALL have a bounded pre-submit deadline that errors and reaps process/shim without imposing a post-submit inference timeout.
+WHEN a direct subprocess starts, THE driver SHALL submit its user frame only after the owning shim has accepted `tools/list` and produced the exact declared bridged tool set; startup SHALL have a documented default 30-second pre-submit deadline, overridable only by a documented positive operator environment value, that starts at process spawn and ends at readiness, errors and reaps process/shim, and imposes no post-submit inference timeout.
 
 #### Scenario: Readiness precedes prompt
 - **WHEN** direct startup has launched its shim but readiness has not been proven
@@ -68,7 +68,7 @@ WHEN direct stream-json output contains partial events followed by complete assi
 
 ### Requirement: Direct Protocol Drift Surfaces Explicitly
 
-IF direct stdout contains malformed NDJSON, invalid top-level partial block lifecycle, missing final assistant usage, more or fewer than one terminal result, session-id mismatch, or irreconcilable result subtype/stop reason, THEN THE driver SHALL return a structured protocol error and invalidate its resume hint; unknown well-formed observational records SHALL be logged and ignored without inventing content, and local abort state takes precedence over all post-abort records.
+IF direct stdout contains malformed NDJSON, invalid top-level partial block lifecycle, missing final assistant usage, more or fewer than one terminal result, session-id mismatch, or irreconcilable result subtype/stop reason, THEN THE driver SHALL return a structured protocol error and invalidate its resume hint. Recognized non-abort terminal error subtypes SHALL map to pi `stopReason: "error"`, surfaced message, diagnostics, and hint invalidation; unknown well-formed observational records SHALL be logged and ignored, and local abort state takes precedence over all post-abort records.
 
 #### Scenario: Malformed stream line
 - **IF** a non-empty stdout line is not valid JSON
@@ -118,7 +118,7 @@ WHEN pi aborts a direct invocation, THE driver SHALL classify from local abort s
 
 ### Requirement: Direct Failure And Retry Preserve Side-Effect Safety
 
-IF a direct invocation fails before any bridged tool call is routed and before user-visible content is committed, THEN THE driver MAY apply bounded logged retry; IF any tool call or user-visible content was emitted, THEN THE driver SHALL surface the failure without respawning.
+IF a direct invocation fails before any bridged tool call is routed and before the first assistant text/thinking delta is emitted to the pi-ai stream, THEN THE driver MAY apply at most two logged retries with short backoff and fresh process/shim identity; IF any tool call or visible delta was emitted, THEN THE driver SHALL surface failure without respawning.
 
 #### Scenario: Pre-output transient exit
 - **IF** direct process exits prematurely before routed tools or visible output

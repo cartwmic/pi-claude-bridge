@@ -20,7 +20,7 @@ THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachabl
 
 ### Requirement: Tool-call correlation across the split channels (D32)
 
-THE router SHALL reconcile shim MCP requests, selected-driver observational `tool_use` ids, and pi `toolResult.id` without making stdout a second execution path: park each shim call, match selected-driver tool observation by name + canonicalized arguments when the shim request lacks model id, key resolver by model id, and use positional pairing for identical calls while asserting counts. IF shim call carries model id directly, THEN that id is authoritative.
+THE router SHALL reconcile shim MCP requests, selected-driver observational `tool_use` ids, and pi `toolResult.id` without making stdout a second execution path: park each shim call, match selected-driver tool observation by name + canonicalized arguments when request lacks model id, key resolver by model id, and use positional pairing for identical calls while asserting counts. IF request carries model id, THEN that id is authoritative. IF counts or canonical pairing cannot reconcile, THEN owning invocation SHALL surface structured correlation error, safely drain pending resolvers, and invalidate resume hint rather than guess or hang.
 
 #### Scenario: Interactive correlation
 - **WHEN** interactive stdout and shim request describe same bridged call
@@ -38,7 +38,7 @@ THE router SHALL reconcile shim MCP requests, selected-driver observational `too
 
 ### Requirement: Shim readiness proves exact tool availability
 
-WHEN the shim accepts its first MCP `tools/list` request and constructs a response equal to the router-declared tool set, THE shim SHALL publish its per-spawn readiness signal; after the bridge submits the user frame, Claude SHALL not begin model generation until its MCP initialization completes.
+WHEN the shim accepts its first MCP `tools/list` request and constructs a response equal to the router-declared tool set, THE shim SHALL publish its per-spawn readiness signal; retained integration evidence SHALL prove no model-generation output precedes connected MCP initialization after bridge submits user frame.
 
 #### Scenario: Readiness signal follows exact tools list
 - **WHEN** shim handles first `tools/list`

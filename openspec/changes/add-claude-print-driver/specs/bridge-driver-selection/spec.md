@@ -25,8 +25,8 @@ THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-
 - **THEN** fresh bridge invocations use `claude-p`
 
 #### Scenario: Malformed or invalid configuration fails loud
-- **IF** a participating config file is malformed or the highest-precedence present driver value is non-string or unsupported
-- **THEN** the bridge returns an explicit configuration error before spawning an inference process
+- **IF** any present project/global config file is malformed or carries a non-string/unsupported driver, or the non-empty environment override is unsupported
+- **THEN** the bridge returns an explicit configuration error before spawning an inference process even when another layer has a valid value
 
 ### Requirement: Selected Driver Is Pinned To Invocation Lifecycle
 

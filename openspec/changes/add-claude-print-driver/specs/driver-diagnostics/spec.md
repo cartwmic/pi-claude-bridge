@@ -21,7 +21,7 @@ THE selected driver SHALL capture child stderr to dedicated per-spawn file under
 WHEN selected-driver spawn exits without terminal result and was not aborted, THE bridge SHALL append bounded last N stderr lines to surfaced error; with no captured stderr it SHALL preserve base premature-termination message.
 
 #### Scenario: Premature exit with stderr
-- **WHEN** either driver closes without result and stderr exists
+- **IF** either driver closes without result and stderr exists
 - **THEN** error names driver/cause and contains bounded tail
 
 #### Scenario: Premature exit without stderr
@@ -37,7 +37,7 @@ WHEN either driver aborts, is forced down, or exits prematurely, THE bridge SHAL
 - **THEN** structured dump contains required state and driver
 
 #### Scenario: Premature exit emits selected-driver state dump
-- **WHEN** either driver exits prematurely
+- **IF** either driver exits prematurely
 - **THEN** same fields are logged
 
 ### Requirement: claude debug logging is forwarded to a bridge-owned file

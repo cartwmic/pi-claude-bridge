@@ -6,7 +6,7 @@
 
 ### Requirement: Resume Sidecar Persisted On Successful Turn
 
-WHEN main-provider turn (not nested subagent) completes without error, including abort, THE bridge SHALL persist content-free sidecar outside `~/.claude/`, keyed by literal cwd + full pi session id, containing driver identity, driver session id, one-way history fingerprint chain, and Claude version.
+WHEN main-provider turn (not nested subagent) completes without error, including abort after prompt submission, THE bridge SHALL persist content-free sidecar outside `~/.claude/`, keyed by literal cwd + full pi session id, containing driver identity, driver session id, one-way history fingerprint chain, and Claude version. IF direct invocation aborts before its user frame is submitted, THEN THE bridge SHALL NOT advance the cached/sidecar history boundary or persist its fresh driver session id; a previously validated hint remains unchanged, otherwise next turn cold-starts.
 
 #### Scenario: Successful turn writes typed sidecar
 - **WHEN** main-provider turn finalizes non-error with cached session id
@@ -19,6 +19,11 @@ WHEN main-provider turn (not nested subagent) completes without error, including
 #### Scenario: Sidecar write failure does not break turn
 - **IF** sidecar write fails
 - **THEN** bridge logs failure, completes turn normally, and later resume cold-starts
+
+#### Scenario: Abort before direct prompt submission
+- **WHEN** caller aborts while direct invocation still waits for MCP readiness
+- **THEN** no new session hint is cached or persisted and current history fingerprint is not marked as seen
+- **AND** any prior validated hint remains unchanged
 
 ### Requirement: Validated Warm Resume On Pi Resume
 

@@ -24,7 +24,7 @@ WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Cla
 
 ### Requirement: Prompt Submission Waits For Exact MCP Readiness
 
-WHEN a direct subprocess starts, THE driver SHALL submit its user frame only after the owning shim has accepted `tools/list` and produced the exact declared bridged tool set; startup SHALL have a documented default 30-second pre-submit deadline, overridable only by a documented positive operator environment value, that starts at process spawn and ends at readiness, errors and reaps process/shim, and imposes no post-submit inference timeout.
+WHEN a direct subprocess starts, THE driver SHALL submit its user frame only after the owning shim has accepted `tools/list` and produced the exact declared bridged tool set; startup SHALL have a documented default 30-second pre-submit deadline, overridable only by positive integer `CLAUDE_BRIDGE_MCP_READY_TIMEOUT_MS`, that starts at process spawn and ends at readiness, errors and reaps process/shim, and imposes no post-submit inference timeout.
 
 #### Scenario: Readiness precedes prompt
 - **WHEN** direct startup has launched its shim but readiness has not been proven
@@ -34,6 +34,10 @@ WHEN a direct subprocess starts, THE driver SHALL submit its user frame only aft
 #### Scenario: Readiness never arrives
 - **IF** readiness is absent at the startup deadline or the process exits first
 - **THEN** the invocation returns an explicit pre-submit error, reaps process/shim, and performs no model generation against a missing tool surface
+
+#### Scenario: Caller aborts before readiness
+- **WHEN** caller aborts before the readiness sentinel and user-frame submission
+- **THEN** invocation resolves aborted, reaps process/shim, writes no user frame, incurs no model generation, and does not advance resume state
 
 ### Requirement: Direct Native Tool Surface Is Closed
 

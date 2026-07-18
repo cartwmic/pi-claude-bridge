@@ -20,7 +20,7 @@ THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachabl
 
 ### Requirement: Tool-call correlation across the split channels (D32)
 
-THE router SHALL reconcile shim MCP requests, selected-driver observational `tool_use` ids, and pi `toolResult.id` without making stdout a second execution path: park each shim call, match selected-driver tool observation by name + canonicalized arguments when request lacks model id, key resolver by model id, and use positional pairing for identical calls while asserting counts. IF request carries model id, THEN that id is authoritative. IF counts or canonical pairing cannot reconcile, THEN owning invocation SHALL surface structured correlation error, safely drain pending resolvers, and invalidate resume hint rather than guess or hang.
+THE router SHALL reconcile shim MCP requests, selected-driver observational `tool_use` ids, and pi `toolResult.id` without making stdout a second execution path: each shim call receives one bridge/pi id that remains the resolver key shown to and returned by pi; model tool id is correlation metadata aliased to that pi id when recovered by name + canonicalized arguments. Identical calls pair positionally inside one completed assistant tool-use batch while counts are asserted. IF request carries model id directly, THEN the alias is established immediately without replacing resolver key. IF counts or canonical pairing cannot reconcile, THEN owning invocation SHALL surface structured correlation error, safely drain pending resolvers, and invalidate resume hint rather than guess or hang.
 
 #### Scenario: Interactive correlation
 - **WHEN** interactive stdout and shim request describe same bridged call

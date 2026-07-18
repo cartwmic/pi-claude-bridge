@@ -66,7 +66,7 @@ THE capture path SHALL not interact with user-session state: no main frame push,
 
 ### Requirement: Synthesized `toolCall` content block on success
 
-WHEN selected-driver capture receives schema-validated IPC-stashed arguments and selected driver completes successfully with required terminal result, THE bridge SHALL synthesize exactly one matching pi `toolCall` through `newTurnOutput(model)`; IPC stash is authoritative for arguments, observed tool-use is only cross-check, normalized terminal usage maps `input_tokens`→`usage.input`, `output_tokens`→`usage.output`, `cache_read_input_tokens`→`usage.cacheRead`, `cache_creation_input_tokens`→`usage.cacheWrite`, then `calculateCost` runs exactly once for pi-visible cost while driver-reported billing remains diagnostics/accounting metadata.
+WHEN selected-driver capture receives schema-validated IPC-stashed arguments and selected driver completes successfully with required terminal result, THE bridge SHALL synthesize exactly one provider-compatible pi `toolCall`; IPC stash is authoritative for arguments, observed tool-use is only cross-check, normalized terminal usage maps `input_tokens`→`usage.input`, `output_tokens`→`usage.output`, `cache_read_input_tokens`→`usage.cacheRead`, `cache_creation_input_tokens`→`usage.cacheWrite`, then model cost calculation runs exactly once for pi-visible cost while driver-reported billing remains diagnostics/accounting metadata.
 
 #### Scenario: Successful capture
 - **WHEN** stash contains valid arguments and terminal usage exists
@@ -106,7 +106,7 @@ WHEN capture abort signal fires, THE capture path SHALL abort and reap its selec
 
 ### Requirement: Capture path forwards `systemPrompt` and replays message history (text-only, lossy)
 
-THE capture path SHALL forward caller system prompt verbatim to selected driver and replay all messages through `buildColdStartPrompt`, dropping images with warning at every position, truncating assistant tool-call arguments to 200 characters and tool-result content to 500 characters, while pi-UI prompt blending SHALL not apply.
+THE capture path SHALL forward caller system prompt verbatim to selected driver and replay all messages through the existing cold-start text conversion, dropping images with warning at every position, truncating assistant tool-call arguments to 200 characters and tool-result content to 500 characters, while pi-UI prompt blending SHALL not apply.
 
 #### Scenario: Caller system prompt reaches selected driver
 - **WHEN** capture caller supplies system prompt
@@ -118,7 +118,7 @@ THE capture path SHALL forward caller system prompt verbatim to selected driver 
 
 ### Requirement: Capture path does not leak resources
 
-ON capture completion, THE bridge SHALL tear down selected-driver process, shim, and IPC so no zombie, handler, resolver, or user-stack drain log remains; `[Tool execution interrupted by user before completion]` and `drainPendingResolversAsAborted` SHALL not appear for capture completion.
+ON capture completion, THE bridge SHALL tear down selected-driver process, shim, and IPC so no zombie, handler, resolver, synthetic user-facing interruption text, or main-frame resolver-drain log remains.
 
 #### Scenario: No user-stack drain text
 - **WHEN** capture completes

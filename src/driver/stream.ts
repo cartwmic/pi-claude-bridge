@@ -40,6 +40,10 @@ export type DriverStreamUsage = {
 };
 
 export type DriverStreamEvent =
+	// Direct partial streams expose explicit content-block lifecycle. Interactive
+	// claude-p continues emitting deltas only; index.ts infers boundaries there.
+	| { kind: "content-block-start"; blockType: "text" | "thinking" }
+	| { kind: "content-block-end"; blockType: "text" | "thinking" }
 	| { kind: "text-delta"; text: string }
 	| { kind: "thinking-delta"; text: string }
 	// Observational only (D32): carries the model's `toolu_…` id + name + full

@@ -47,7 +47,7 @@
 
 ## 2. Direct print process and protocol
 
-- [ ] 2.1 Build fixture-first direct stream-json decoder/state machine with byte-bounded NDJSON, exact record/subtype allowlists, partial text/thinking normalization, no duplicate complete-assistant emission, nested/native observation filtering, final-call context usage, cumulative terminal billing/session metadata, and local-abort precedence. ACs: `claude-print-driver.partial-stream-is-normalized-without-duplication`, `claude-print-driver.direct-protocol-drift-surfaces-explicitly`, `claude-print-driver.direct-usage-and-session-metadata-are-authoritative`.
+- [x] 2.1 Build fixture-first direct stream-json decoder/state machine with byte-bounded NDJSON, exact record/subtype allowlists, partial text/thinking normalization, no duplicate complete-assistant emission, nested/native observation filtering, final-call context usage, cumulative terminal billing/session metadata, and local-abort precedence. ACs: `claude-print-driver.partial-stream-is-normalized-without-duplication`, `claude-print-driver.direct-protocol-drift-surfaces-explicitly`, `claude-print-driver.direct-usage-and-session-metadata-are-authoritative`.
   - intent: feature
   - files_allowed:
       - openspec/changes/add-claude-print-driver/tasks.md

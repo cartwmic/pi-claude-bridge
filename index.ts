@@ -1992,6 +1992,27 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 	if (!frame.turnOutput) return;
 
 	switch (ev.kind) {
+		case "content-block-start": {
+			if (!frame.currentPiStream) return;
+			ensureTurnStarted(frame);
+			closeOpenInlineBlocks(frame);
+			if (ev.blockType === "text") {
+				const block = { type: "text" as const, text: "", index: frame.turnBlocks.length };
+				frame.turnBlocks.push(block);
+				syncTurnContent(frame);
+				frame.currentPiStream.push({ type: "text_start", contentIndex: block.index, partial: frame.turnOutput });
+			} else {
+				const block = { type: "thinking" as const, thinking: "", thinkingSignature: "", index: frame.turnBlocks.length };
+				frame.turnBlocks.push(block);
+				syncTurnContent(frame);
+				frame.currentPiStream.push({ type: "thinking_start", contentIndex: block.index, partial: frame.turnOutput });
+			}
+			return;
+		}
+		case "content-block-end": {
+			closeOpenInlineBlocks(frame, ev.blockType);
+			return;
+		}
 		case "text-delta": {
 			if (!frame.currentPiStream) return;
 			ensureTurnStarted(frame);

@@ -67,6 +67,8 @@ export interface ClaudePrintStreamParserOptions {
 	onEvent: (event: DriverStreamEvent) => void;
 	logger?: ClaudePrintStreamLogger;
 	onTurnAccepted?: () => void;
+	/** Process adapter closes stdin only after one structurally valid terminal record. */
+	onTerminalRecord?: () => void;
 }
 
 export interface ClaudePrintEndOfStreamArgs {
@@ -150,6 +152,7 @@ export class ClaudePrintStreamParser {
 	private readonly onEvent: (event: DriverStreamEvent) => void;
 	private readonly logger: ClaudePrintStreamLogger;
 	private readonly onTurnAccepted?: () => void;
+	private readonly onTerminalRecord?: () => void;
 	private pending = Buffer.alloc(0);
 	private ended = false;
 	private frozen = false;
@@ -172,6 +175,7 @@ export class ClaudePrintStreamParser {
 		this.onEvent = options.onEvent;
 		this.logger = options.logger ?? NOOP_LOGGER;
 		this.onTurnAccepted = options.onTurnAccepted;
+		this.onTerminalRecord = options.onTerminalRecord;
 	}
 
 	get pendingBufferBytes(): number {
@@ -641,6 +645,7 @@ export class ClaudePrintStreamParser {
 			totalCostUsd: record.total_cost_usd,
 			billing,
 		};
+		this.onTerminalRecord?.();
 	}
 
 	private requireSession(record: Record<string, unknown>): boolean {

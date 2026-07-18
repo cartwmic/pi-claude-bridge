@@ -326,7 +326,9 @@ export async function runShim(argv: string[], env: NodeJS.ProcessEnv = process.e
 			if (!raised) {
 				raised = true;
 				try {
-					writeFileSync(readyFile, "ready\n");
+					// Invocation owner supplies a path inside its 0700 directory. Create
+					// atomically/exclusively so stale or substituted sentinels fail closed.
+					writeFileSync(readyFile, "ready\n", { flag: "wx", mode: 0o600 });
 					shimLog({ level: "info", event: "mcp-ready-raised", file: readyFile });
 				} catch (err) {
 					shimLog({ level: "warn", event: "mcp-ready-write-failed", message: String(err) });

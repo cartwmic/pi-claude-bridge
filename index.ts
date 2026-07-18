@@ -63,6 +63,10 @@ import {
 	type PromptSource,
 } from "./src/driver/claudeP.js";
 import {
+	spawnClaudePrint as _realSpawnClaudePrint,
+	type ClaudePrintHandle,
+} from "./src/driver/claudePrint.js";
+import {
 	readSidecar,
 	writeSidecar,
 	invalidateSidecar,
@@ -139,12 +143,20 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 let _spawnClaudePFactory: typeof _realSpawnClaudeP = _realSpawnClaudeP;
+let _spawnClaudePrintFactory: typeof _realSpawnClaudePrint = _realSpawnClaudePrint;
 
 /** Test-only: swap the claude-p spawn (resilience) factory and return a restorer. */
 export function __setSpawnClaudePForTests(f: typeof _realSpawnClaudeP): () => void {
 	const prev = _spawnClaudePFactory;
 	_spawnClaudePFactory = f;
 	return () => { _spawnClaudePFactory = prev; };
+}
+
+/** Test-only: swap direct process spawn and return a restorer. */
+export function __setSpawnClaudePrintForTests(f: typeof _realSpawnClaudePrint): () => void {
+	const prev = _spawnClaudePrintFactory;
+	_spawnClaudePrintFactory = f;
+	return () => { _spawnClaudePrintFactory = prev; };
 }
 
 // ---------------------------------------------------------------------------
@@ -637,6 +649,15 @@ export function __resetClaudePrintVersionProbeForTests(): void {
 	cachedClaudePrintVersion = undefined;
 }
 
+let _claudePrintPreflight: () => void = () => { preflightBridgeDriver("claude-print"); };
+
+/** Test-only: replace direct version preflight while asserting spawn ordering. */
+export function __setClaudePrintPreflightForTests(preflight: () => void): () => void {
+	const previous = _claudePrintPreflight;
+	_claudePrintPreflight = preflight;
+	return () => { _claudePrintPreflight = previous; };
+}
+
 // ---------------------------------------------------------------------------
 // Driver-neutral inference adapter contracts (design D1/D7/D9).
 // ---------------------------------------------------------------------------
@@ -772,12 +793,48 @@ export const CLAUDE_P_DRIVER: InferenceDriverAdapter = {
 	},
 };
 
-/** Resolve the concrete adapter for a validated driver kind. Never falls back. */
+/** Direct print adapter. Process/protocol ownership stays in claudePrint.ts. */
+export const CLAUDE_PRINT_DRIVER: InferenceDriverAdapter = {
+	kind: "claude-print",
+	capabilities: { peek: "unavailable", mirror: false },
+	preflight() { _claudePrintPreflight(); },
+	spawnMainTurn({ config, options }) {
+		// Nested owners skip selection-time preflight, so enforce floor at adapter
+		// boundary immediately before every inference-child spawn (memoized probe).
+		_claudePrintPreflight();
+		const sessionId = config.session.sessionId;
+		const inner: ClaudePrintHandle = _spawnClaudePrintFactory(config as ClaudePSpawnConfig, {
+			onEvent: options.onEvent,
+			onPhase: (phase) => options.onLifecycleEvent?.({
+				kind: "attempt-phase",
+				driverKind: "claude-print",
+				phase,
+			}),
+			logger: options.logger as any,
+			binPath: options.executable,
+			diagnosticsDir: options.diagnosticsDir,
+		});
+		options.onLifecycleEvent?.({ kind: "spawned", driverKind: "claude-print", sessionId, pid: inner.pid });
+		const done = inner.done.then((result) => {
+			options.onLifecycleEvent?.({ kind: "settled", driverKind: "claude-print", result });
+			return result;
+		});
+		return {
+			driverKind: "claude-print",
+			get pid() { return inner.pid; },
+			abort() {
+				options.onLifecycleEvent?.({ kind: "abort-requested", driverKind: "claude-print", sessionId, pid: inner.pid });
+				inner.abort();
+			},
+			done,
+		};
+	},
+};
+
+/** Resolve concrete adapter for validated driver kind. Never falls back. */
 export function getInferenceDriverAdapter(kind: DriverKind): InferenceDriverAdapter {
 	if (kind === "claude-p") return CLAUDE_P_DRIVER;
-	if (kind === "claude-print") {
-		throw new Error("claude-print driver is not implemented");
-	}
+	if (kind === "claude-print") return CLAUDE_PRINT_DRIVER;
 	throw new Error(`Unsupported inference driver: ${String(kind)}`);
 }
 
@@ -1802,6 +1859,11 @@ function resolveClaudePBin(): string {
 	}
 }
 
+/** Authenticated Claude Code executable for direct print mode. */
+function resolveClaudePrintBin(): string {
+	return process.env.CLAUDE_BIN?.trim() || "claude";
+}
+
 /** Spill large/multiline content to a tmpfile under os.tmpdir() (NEVER ~/.claude). */
 function writeOverflowTmp(prefix: string, content: string): string {
 	const p = join(tmpdir(), `${prefix}-${randomBytes(8).toString("hex")}.txt`);
@@ -2370,7 +2432,12 @@ async function startFreshQuery(
 	// Prepend the MCP-startup-race guard so the model deterministically waits for
 	// the `custom-tools` shim to connect before declaring a bridged tool missing
 	// (root cause of S14/S25 on the claude-p path; see CLAUDE_P_MCP_WAIT_PREAMBLE).
-	const staticSystemPrompt = withClaudePMcpWaitPreamble(systemPromptAppend ?? "You are a helpful coding assistant.");
+	const baseSystemPrompt = systemPromptAppend ?? "You are a helpful coding assistant.";
+	// Direct path has structural tools/list readiness and --tools "" removes the
+	// native WaitForMcpServers tool. Keep historical preamble interactive-only.
+	const staticSystemPrompt = driverKind === "claude-p"
+		? withClaudePMcpWaitPreamble(baseSystemPrompt)
+		: baseSystemPrompt;
 
 	// Build the frame BEFORE the router (onPark closes over it).
 	const frame: QueryFrame = {
@@ -2442,14 +2509,19 @@ async function startFreshQuery(
 	});
 
 	// System prompt: inline text, or file when large.
-	const systemPrompt: SystemPromptSource = staticSystemPrompt.length > PROMPT_FILE_THRESHOLD_BYTES
-		? { kind: "file", path: writeOverflowTmp("pcb-sysprompt", staticSystemPrompt) }
-		: { kind: "text", text: staticSystemPrompt };
+	const systemPrompt: SystemPromptSource = driverKind === "claude-print"
+		? { kind: "text", text: staticSystemPrompt }
+		: staticSystemPrompt.length > PROMPT_FILE_THRESHOLD_BYTES
+			? { kind: "file", path: writeOverflowTmp("pcb-sysprompt", staticSystemPrompt) }
+			: { kind: "text", text: staticSystemPrompt };
 
-	// Prompt: positional, or --input-file when large/multiline.
-	const promptSrc: PromptSource = promptString.length > PROMPT_FILE_THRESHOLD_BYTES
-		? { kind: "file", path: writeOverflowTmp("pcb-prompt", promptString) }
-		: { kind: "positional", text: promptString };
+	// Direct user history always rides one stdin NDJSON frame; its adapter owns
+	// private prompt artifacts. Interactive keeps positional/overflow behavior.
+	const promptSrc: PromptSource = driverKind === "claude-print"
+		? { kind: "positional", text: promptString }
+		: promptString.length > PROMPT_FILE_THRESHOLD_BYTES
+			? { kind: "file", path: writeOverflowTmp("pcb-prompt", promptString) }
+			: { kind: "positional", text: promptString };
 
 	// Session identity: fresh (new uuid) XOR resume (cached id).
 	const session = useResume && cachedSessionHint
@@ -2564,7 +2636,7 @@ async function startFreshQuery(
 				frame.attemptPhase = "spawned";
 			},
 			logger: frame.log,
-			executable: resolveClaudePBin(),
+			executable: driverKind === "claude-print" ? resolveClaudePrintBin() : resolveClaudePBin(),
 			suppressResumeReplay,
 			livePromptText: useResume ? promptText : undefined,
 			diagnosticsDir: DIAGNOSTICS_DIR,

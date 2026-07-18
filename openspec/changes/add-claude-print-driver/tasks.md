@@ -113,7 +113,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 2.2 Implement `claude-print` process adapter: exact print/stream argv, strict MCP/settings/native isolation, fresh/resume sessions, private prompt artifacts, readiness-gated one-frame NDJSON submission, 30s validated timeout override, stdin lifetime, driver-specific diagnostics, version preflight integration, and all-path resource cleanup. ACs: `claude-print-driver.direct-print-invocation-uses-bidirectional-stream-protocol`, `claude-print-driver.prompt-submission-waits-for-exact-mcp-readiness`, `claude-print-driver.direct-native-tool-surface-is-closed`, `claude-print-driver.direct-driver-avoids-mutable-claude-filesystem-coupling`.
+- [x] 2.2 Implement `claude-print` process adapter: exact print/stream argv, strict MCP/settings/native isolation, fresh/resume sessions, private prompt artifacts, readiness-gated one-frame NDJSON submission, 30s validated timeout override, stdin lifetime, driver-specific diagnostics, version preflight integration, and all-path resource cleanup. ACs: `claude-print-driver.direct-print-invocation-uses-bidirectional-stream-protocol`, `claude-print-driver.prompt-submission-waits-for-exact-mcp-readiness`, `claude-print-driver.direct-native-tool-surface-is-closed`, `claude-print-driver.direct-driver-avoids-mutable-claude-filesystem-coupling`.
   - intent: feature
   - files_allowed:
       - README.md

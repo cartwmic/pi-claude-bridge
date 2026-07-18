@@ -537,6 +537,8 @@ export interface SpawnClaudePOptions {
 	logger?: ClaudePLogger;
 	/** Override the binary path (tests point this at a node stand-in). */
 	binPath?: string;
+	/** Child working directory. Capture passes isolated os.tmpdir(); main inherits. */
+	cwd?: string;
 	/** Optional external abort signal; aborting it is equivalent to handle.abort(). */
 	signal?: AbortSignal;
 	/** Override the abort grace window (ms) — tests use a tight value. */
@@ -739,6 +741,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	const child: ChildProcess = spawn(command, spawnArgs, {
 		detached: true,
 		stdio: ["ignore", "pipe", "pipe"],
+		cwd: opts.cwd,
 	});
 
 	const pgid = child.pid; // pgid === pid because detached.

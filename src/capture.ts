@@ -1,35 +1,7 @@
-// src/capture.ts
+// Selected-driver forced-tool capture path.
 //
-// claude-p forced-toolcall CAPTURE path (T2.1). The bridge's structured-output
-// mechanism on the claude-p driver: instead of the SDK's `outputFormat`, the
-// capture tool is advertised as the SOLE MCP tool on a dedicated, single-shot
-// claude-p spawn running in capture mode. The shim validates the model's
-// arguments against the capture tool's JSON schema locally and stashes the
-// validated args to a per-spawn in-process router via IPC; the bridge reads
-// `router.getCaptureStash()` at turn-end and synthesizes the pi `toolCall`
-// content block.
-//
-// This mirrors the SDK path's `runCaptureQuery` (index.ts) result shapes
-// exactly:
-//   - success  → start → done(reason:"toolUse") with ONE toolCall block
-//                (name = captureTool.name, arguments = stashed args),
-//                stopReason "toolUse", usage/cost from the terminal `result`.
-//   - absent   → start → error, stopReason "error" ("model did not call
-//                capture tool").
-//   - aborted  → start → error(reason:"aborted"), stopReason "aborted".
-//
-// ISOLATION (spec "Capture path isolation"): this module owns its OWN router,
-// socket, shim, and claude-p subprocess. It does NOT read or write the bridge's
-// cross-call state (`cachedSessionId`, `cachedSessionCwd`, `lastSentMessageHashes`),
-// does NOT touch the active-frame stack, and never supersedes a main-provider
-// frame. The bridge passes only the narrow set of pure helpers it needs via
-// `deps`; the state variables are deliberately NOT in that set so this code
-// CANNOT mutate them.
-//
-// Design anchors: D16/D21 (shim validates + stashes; stash authoritative),
-// D26 (claude-p driver), D28 (native disallow set), spec output-capture
-// (synthesized-toolcall-content-block-on-success, surface-absent-capture-tool-
-// call-as-error, capture-path-honors-abortsignal, capture-path-isolation).
+// Capture owns a dedicated process, router, shim, socket, readiness sentinel,
+// and fresh session. It never reads or mutates main-frame/cache/history state.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
@@ -42,396 +14,391 @@ import type {
 	SimpleStreamOptions,
 	Tool,
 } from "@mariozechner/pi-ai";
-import {
-	type ClaudePSpawnConfig,
-	type ClaudePHandle,
-	type ClaudePDoneResult,
-	type SystemPromptSource,
-	type PromptSource,
-	type SpawnClaudePOptions,
+import type {
+	ClaudePDoneResult,
+	ClaudePSpawnConfig,
+	PromptSource,
+	SystemPromptSource,
 } from "./driver/claudeP.js";
 import type { DriverStreamEvent, DriverStreamUsage } from "./driver/stream.js";
 import { createRouter, type ToolDef } from "./mcp/router.js";
 
-/** A spawn factory matching `spawnClaudeP` (NOT the resilience wrapper). */
-export type CaptureSpawnFactory = (
-	cfg: ClaudePSpawnConfig,
-	opts: SpawnClaudePOptions,
-) => ClaudePHandle;
+export type CaptureDriverKind = "claude-p" | "claude-print";
 
-/**
- * Narrow dependency surface the bridge (index.ts) injects. Deliberately PURE +
- * stateless helpers only — the cross-call state variables (`cachedSessionId`,
- * etc.) are intentionally absent so this module cannot touch them (isolation).
- */
-export interface CaptureDeps {
-	/** Build a fresh pi AssistantMessage skeleton (same helper the main path uses). */
-	newTurnOutput: (model: Model<any>) => AssistantMessage;
-	/** Cold-start prompt builder (full pi history → single text prompt). */
-	buildColdStartPrompt: (messages: Context["messages"]) => string;
-	/** Deep JSON-only clone of a TypeBox/JSON schema (drops symbol metadata). */
-	cleanSchemaForSdk: (schema: unknown) => Record<string, unknown>;
-	/** Populate usage.cost fields in-place for the given model+usage. */
-	calculateCost: (model: Model<any>, usage: AssistantMessage["usage"]) => void;
-	/** Resolve the stdio MCP shim path (dist or dev fallback). */
-	resolveShimPath: () => string;
-	/** node argv prefix to run the shim (adds `--import <abs tsx>` for .ts source). */
-	shimNodeArgs: (shimPath: string) => string[];
-	/** Resolve the claude-p binary (JS launcher or bare name). */
-	resolveClaudePBin: () => string;
-	/** Spill large/multiline content to a tmpfile under os.tmpdir(). */
-	writeOverflowTmp: (prefix: string, content: string) => string;
-	/** A pino-style child logger already scoped to the pi session. */
-	logger: {
-		child: (bindings: Record<string, unknown>) => CaptureLogger;
-	};
-	/** Node executable used to spawn the shim. */
-	execPath: string;
-	/** MCP server name (`custom-tools`). */
-	mcpServerName: string;
-	/**
-	 * Prepend the claude-p MCP-startup-race guard to the (verbatim) system prompt.
-	 * The capture shim is spawned + connected by `claude` ASYNCHRONOUSLY, exactly
-	 * like the main path, so the model's first turn can begin before the capture
-	 * tool's `mcp__custom-tools__*` roster entry exists. Without a wait instruction
-	 * the model (esp. haiku) declines ("I don't have access to <captureTool>; my
-	 * only tool is WaitForMcpServers"), no capture is stashed, and the call fails
-	 * spuriously. This guard makes the model call `WaitForMcpServers` first. It is
-	 * a purely operational preamble (NOT pi-UI material), so it does not violate
-	 * constitution V's "no semantic blending" rule. Index.ts owns the text.
-	 */
-	mcpWaitPreamble: (systemPrompt: string) => string;
-	/** >threshold bytes → tmpfile for system prompt / user prompt. */
-	promptFileThresholdBytes: number;
-	/** Diagnostics directory for per-spawn child-stderr capture (driver-diagnostics). */
+export interface CaptureDriverHandle {
+	readonly pid: number | undefined;
+	abort(): void;
+	readonly done: Promise<ClaudePDoneResult>;
+}
+
+export interface CaptureDriverSpawnOptions {
+	onEvent: (event: DriverStreamEvent) => void;
+	logger: CaptureLogger;
+	executable: string;
 	diagnosticsDir?: string;
-	/** Resolve the child claude's `--debug-file` path (or undefined when disabled). */
+	/** Capture subprocess cwd. Main invocation cwd is never reused here. */
+	cwd: string;
+}
+
+/** Adapter-owned single-attempt capture spawn. Capture never uses resilience. */
+export interface CaptureDriverAdapter {
+	readonly kind: CaptureDriverKind;
+	spawnCapture(config: ClaudePSpawnConfig, options: CaptureDriverSpawnOptions): CaptureDriverHandle;
+}
+
+/** Pure/stateless dependencies. Main cache/frame/hash state is intentionally absent. */
+export interface CaptureDeps {
+	newTurnOutput: (model: Model<any>) => AssistantMessage;
+	buildColdStartPrompt: (messages: Context["messages"]) => string;
+	calculateCost: (model: Model<any>, usage: AssistantMessage["usage"]) => void;
+	resolveShimPath: () => string;
+	shimNodeArgs: (shimPath: string) => string[];
+	resolveDriverExecutable: (kind: CaptureDriverKind) => string;
+	writeOverflowTmp: (prefix: string, content: string) => string;
+	logger: { child: (bindings: Record<string, unknown>) => CaptureLogger };
+	execPath: string;
+	mcpServerName: string;
+	promptFileThresholdBytes: number;
+	diagnosticsDir?: string;
 	resolveDebugFile?: (sessionId: string) => string | undefined;
-	/** Spawn factory (test seam). Defaults to the real single-shot `spawnClaudeP`. */
-	spawnClaudeP: CaptureSpawnFactory;
 }
 
 export interface CaptureLogger {
-	debug: (...a: unknown[]) => void;
-	info: (...a: unknown[]) => void;
-	warn: (...a: unknown[]) => void;
-	error: (...a: unknown[]) => void;
+	debug: (...args: unknown[]) => void;
+	info: (...args: unknown[]) => void;
+	warn: (...args: unknown[]) => void;
+	error: (...args: unknown[]) => void;
 	child: (bindings: Record<string, unknown>) => CaptureLogger;
 }
 
 /**
- * Run a single-shot claude-p forced-toolcall capture and resolve the pi-ai
- * stream. Emits EXACTLY one `start` event, then one terminal `done(toolUse)` or
- * `error` event (suppressing all intermediate text/thinking/tool-use stream
- * events, mirroring the SDK path). Never throws to the caller — every exit path
- * ends the stream.
- *
- * @param model        pi model (model.id → --model; cost calc).
- * @param captureTool  the sole capture tool (its name + JSON schema).
- * @param cleanedSchema JSON-only clone of captureTool.parameters (root must be object).
- * @param context      pi context (messages → prompt; systemPrompt forwarded verbatim).
- * @param options      SimpleStreamOptions (signal, reasoning, cwd).
- * @param stream       pi-ai event stream to resolve.
- * @param deps         injected pure helpers + spawn factory (isolation surface).
+ * Run one isolated forced-MCP capture through owning invocation's pinned driver.
+ * Emits exactly start then one terminal done(toolUse)/error event.
  */
-export async function runClaudePCapture(
+export async function runCapture(
 	model: Model<any>,
 	captureTool: Tool,
 	cleanedSchema: Record<string, unknown>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
+	driver: CaptureDriverAdapter,
 	deps: CaptureDeps,
 ): Promise<void> {
-	const log = deps.logger.child({ model: model.id, mode: "capture-claude-p", captureTool: captureTool.name });
-	log.info(`runClaudePCapture: starting capture for tool "${captureTool.name}" model=${model.id}`);
-
+	const log = deps.logger.child({
+		model: model.id,
+		mode: "capture",
+		driver: driver.kind,
+		captureTool: captureTool.name,
+	});
 	const signal = options?.signal;
 
-	// ── Pre-flight abort check (before any spawn / router) ────────────────────
 	if (signal?.aborted) {
-		const out = deps.newTurnOutput(model);
-		out.stopReason = "aborted";
-		out.errorMessage = "Operation aborted by user";
-		safePush(stream, { type: "start", partial: out });
-		safePush(stream, { type: "error", reason: "aborted", error: out });
-		safeEnd(stream);
-		log.info("runClaudePCapture: aborted via signal (pre-flight)");
+		finishPreflightError(model, stream, deps, "aborted", "Operation aborted by user");
 		return;
 	}
 
-	// ── Image content is rejected pre-spawn (capture path is text-only) ───────
-	// Per the image spec, image content on the capture path is surfaced as a
-	// stopReason error BEFORE spawning (claude-p cannot inject images, and a
-	// capture call dropping them silently would mislead the caller).
+	const systemPromptText = context.systemPrompt ?? "";
+	const replayPrompt = deps.buildColdStartPrompt(context.messages);
+	if (!systemPromptText && !replayPrompt) {
+		finishPreflightError(
+			model,
+			stream,
+			deps,
+			"error",
+			"capture path: both systemPrompt and prompt are empty — the model has nothing to act on. Provide at least one non-empty message or a non-empty systemPrompt.",
+		);
+		return;
+	}
+
 	let imageCount = 0;
-	for (const m of context.messages) {
-		const content = Array.isArray(m.content) ? m.content : [];
-		for (const b of content) if ((b as { type?: string }).type === "image") imageCount++;
+	for (const message of context.messages) {
+		const content = Array.isArray(message.content) ? message.content : [];
+		for (const block of content) if ((block as { type?: string }).type === "image") imageCount++;
 	}
 	if (imageCount > 0) {
-		const out = deps.newTurnOutput(model);
-		out.stopReason = "error";
-		out.errorMessage = `capture path: ${imageCount} image content block(s) present — the claude-p capture path is text-only and cannot inject images. Remove image content from a capture-shape call.`;
-		safePush(stream, { type: "start", partial: out });
-		safePush(stream, { type: "error", reason: "error", error: out });
-		safeEnd(stream);
-		log.warn({ imageCount }, `runClaudePCapture: rejecting ${imageCount} image block(s) — capture path is text-only`);
-		return;
+		log.warn(
+			{ imageCount },
+			`capture: dropping ${imageCount} image block(s) — selected driver ${driver.kind} capture is text-only`,
+		);
 	}
 
-	// ── Build prompt (text-only; systemPrompt forwarded verbatim) ─────────────
-	const systemPromptText = context.systemPrompt ?? "";
-	const promptString = deps.buildColdStartPrompt(context.messages);
-
-	// Empty-prompt guard: reject only when BOTH systemPrompt and prompt are empty.
-	if (!systemPromptText && !promptString) {
-		const out = deps.newTurnOutput(model);
-		out.stopReason = "error";
-		out.errorMessage = "capture path: both systemPrompt and prompt are empty — the model has nothing to act on. Provide at least one non-empty message or a non-empty systemPrompt.";
-		safePush(stream, { type: "start", partial: out });
-		safePush(stream, { type: "error", reason: "error", error: out });
-		safeEnd(stream);
-		return;
-	}
-
-	// ── Per-spawn router (capture mode) declaring EXACTLY the one capture tool ──
-	// We advertise the BARE captureTool.name (claude prefixes it to
-	// `mcp__<server>__<name>` for the MODEL itself, matching the main path). The
-	// shim, however, receives `tools/call` with the BARE name (MCP strips the
-	// server prefix before invoking the tool handler), and its capture-mode gate
-	// compares the called name against `--capture-tool`. So --capture-tool MUST be
-	// the BARE name — passing the prefixed form would make the shim treat the call
-	// as a main-mode forward and PARK it (deadlock).
-	const router = createRouter({ logger: log });
-	const captureMatchName = captureTool.name;
-	const toolDefs: ToolDef[] = [{
-		name: captureTool.name,
-		description: captureTool.description,
-		inputSchema: cleanedSchema,
-	}];
-	router.declareTools(toolDefs);
-	await router.start();
-
-	// ── --mcp-config pointing at the shim in CAPTURE mode ─────────────────────
-	const shimPath = deps.resolveShimPath();
-	const toolsB64 = Buffer.from(JSON.stringify(toolDefs), "utf-8").toString("base64");
-	// MCP-readiness sentinel (same mechanism as the main path): the capture shim
-	// creates it once it serves tools/list, so claude-p holds the submit Enter
-	// until the capture tool is live — otherwise the model emits the capture call
-	// as text and the stash never lands.
-	const mcpReadyFile = `${router.socketPath}.ready`;
-	const mcpConfig = JSON.stringify({
-		mcpServers: {
-			[deps.mcpServerName]: {
-				command: deps.execPath,
-				// .ts shim (no built dist) must run under tsx with an ABSOLUTE tsx path —
-				// see shimNodeArgs in index.ts (a bare `tsx` fails from the session cwd).
-				args: [
-					...deps.shimNodeArgs(shimPath),
-					"--socket", router.socketPath,
-					"--mode", "capture",
-					"--capture-tool", captureMatchName,
-					"--tools", toolsB64,
-					"--ready-file", mcpReadyFile,
-				],
-			},
-		},
-	});
-
-	// System prompt: keep the caller's prompt intact, but prepend two operational
-	// guards owned by the bridge: (1) MCP readiness, (2) capture-mode forcing.
-	// Capture calls are structured-output requests; prose completion with no stash
-	// is an implementation failure, not a useful answer. Make the sole capture tool
-	// mandatory so small models (notably haiku) do not answer in text and end the
-	// turn without an IPC stash.
-	const systemPromptWithGuard = buildCaptureSystemPrompt(
-		deps.mcpWaitPreamble(systemPromptText),
-		deps.mcpServerName,
-		captureTool,
-		cleanedSchema,
-	);
-	const systemPrompt: SystemPromptSource = systemPromptWithGuard.length > deps.promptFileThresholdBytes
-		? { kind: "file", path: deps.writeOverflowTmp("pcb-cap-sysprompt", systemPromptWithGuard) }
-		: { kind: "text", text: systemPromptWithGuard };
-
-	// Prompt: positional, or --input-file when large/multiline.
-	const promptSrc: PromptSource = promptString.length > deps.promptFileThresholdBytes
-		? { kind: "file", path: deps.writeOverflowTmp("pcb-cap-prompt", promptString) }
-		: { kind: "positional", text: promptString };
-
-	// Capture sessions are NEVER warm-resumed (single-shot, hermetic). Fresh uuid.
-	const captureSessionId = randomUUID();
-	const cfg: ClaudePSpawnConfig = {
-		model: model.id,
-		systemPrompt,
-		prompt: promptSrc,
-		mcpConfig,
-		session: { kind: "fresh", sessionId: captureSessionId },
-		debugFile: deps.resolveDebugFile?.(captureSessionId),
-		mcpReadyFile,
-	};
-
-	// ── Collect usage from the driver `usage` event (terminal `result` line) ──
-	let lastUsage: DriverStreamUsage | undefined;
-	const onEvent = (ev: DriverStreamEvent) => {
-		// Suppress all intermediate events on the capture path. Only `usage` is
-		// retained (for cost propagation) — text/thinking/tool-use/done/error are
-		// observed but not forwarded to pi (we synthesize the terminal shape from
-		// the stash + handle.done).
-		if (ev.kind === "usage") lastUsage = ev.usage;
-	};
-
-	// ── Spawn (single-shot — NO resilience wrapper on the capture path) ───────
-	// We pass NO opts.signal to spawnClaudeP; abort is wired below so teardown
-	// (router.stop) is centralized in one place.
-	const handle = deps.spawnClaudeP(cfg, {
-		onEvent,
-		logger: log as unknown as SpawnClaudePOptions["logger"],
-		binPath: deps.resolveClaudePBin(),
-		diagnosticsDir: deps.diagnosticsDir,
-	});
-
-	log.debug(
-		{ msgs: context.messages.length, schema: JSON.stringify(cleanedSchema).slice(0, 200) },
-		`runClaudePCapture: spawned claude-p model=${model.id} captureTool=${captureTool.name} prompt="${promptString.slice(0, 60)}"`,
-	);
-
-	// Push the single `start` event.
 	const startOut = deps.newTurnOutput(model);
 	safePush(stream, { type: "start", partial: startOut });
 
-	// ── Abort wiring ──────────────────────────────────────────────────────────
-	let streamEnded = false;
+	let router: ReturnType<typeof createRouter> | undefined;
+	let handle: CaptureDriverHandle | undefined;
+	let handleSettled = false;
 	let aborted = false;
-	const finish = () => {
-		// Best-effort router teardown (own socket — disjoint from any main spawn).
-		void router.stop().catch(() => {});
-		// Drop this spawn's MCP-readiness sentinel (best-effort; never throws).
-		try {
-			rmSync(mcpReadyFile, { force: true });
-		} catch {
-			/* ignore */
-		}
-	};
+	let terminalSent = false;
+	let cleaned = false;
+	let mcpReadyFile: string | undefined;
+	const temporaryPromptFiles: string[] = [];
+	let lastUsage: DriverStreamUsage | undefined;
+	let lastDriverError: string | undefined;
+	const observedCaptureArguments: string[] = [];
+
 	const onAbort = () => {
-		if (streamEnded) return;
+		if (terminalSent || aborted) return;
 		aborted = true;
-		handle.abort(); // SIGINT → grace → SIGKILL of the claude-p process group.
+		handle?.abort();
 	};
 	if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
-	// ── Wait for the turn to end, then read the authoritative stash ───────────
-	const res: ClaudePDoneResult = await handle.done;
-
-	if (streamEnded) {
-		finish();
+	const cleanup = async () => {
+		if (cleaned) return;
+		cleaned = true;
 		if (signal) signal.removeEventListener("abort", onAbort);
-		return;
-	}
+		try { await router?.stop(); }
+		catch (error) { log.warn({ error: errorMessage(error) }, "capture: router cleanup failed"); }
+		for (const path of [mcpReadyFile, ...temporaryPromptFiles]) {
+			if (!path) continue;
+			try { rmSync(path, { force: true }); }
+			catch (error) { log.warn({ path, error: errorMessage(error) }, "capture: artifact cleanup failed"); }
+		}
+	};
 
-	const usage = mapUsage(lastUsage);
-
-	// Aborted wins regardless of how the spawn classified itself.
-	if (aborted || res.stopReason === "aborted") {
-		streamEnded = true;
-		const out = deps.newTurnOutput(model);
-		applyUsage(out, usage, model, deps);
-		out.stopReason = "aborted";
-		out.errorMessage = "Operation aborted by user";
-		safePush(stream, { type: "error", reason: "aborted", error: out });
-		safeEnd(stream);
-		finish();
-		if (signal) signal.removeEventListener("abort", onAbort);
-		log.info("runClaudePCapture: aborted via signal");
-		return;
-	}
-
-	const stash = router.getCaptureStash();
-	const validationFailure = router.getCaptureValidationFailure();
-
-	if (stash !== undefined) {
-		// ── Success: IPC stash is authoritative (D21). Synthesize toolCall block. ─
-		streamEnded = true;
-		const out = deps.newTurnOutput(model);
-		applyUsage(out, usage, model, deps);
-		const toolCallId = "toolu_" + randomBytes(8).toString("hex");
-		out.stopReason = "toolUse";
-		out.content = [{
-			type: "toolCall",
-			id: toolCallId,
+	try {
+		router = createRouter({ logger: log });
+		const toolDefs: ToolDef[] = [{
 			name: captureTool.name,
-			arguments: stash,
+			description: captureTool.description,
+			inputSchema: cleanedSchema,
 		}];
-		log.info(
-			{ toolCallId, tool: captureTool.name, in: out.usage.input, out: out.usage.output },
-			`runClaudePCapture: success — stash synthesized toolCall for ${captureTool.name}`,
+		router.declareTools(toolDefs);
+		await router.start();
+		if (aborted || signal?.aborted) throw new CaptureAbort();
+
+		const shimPath = deps.resolveShimPath();
+		const toolsB64 = Buffer.from(JSON.stringify(toolDefs), "utf8").toString("base64");
+		mcpReadyFile = `${router.socketPath}.ready`;
+		const mcpConfig = JSON.stringify({
+			mcpServers: {
+				[deps.mcpServerName]: {
+					command: deps.execPath,
+					args: [
+						...deps.shimNodeArgs(shimPath),
+						"--socket", router.socketPath,
+						"--mode", "capture",
+						"--capture-tool", captureTool.name,
+						"--tools", toolsB64,
+						"--ready-file", mcpReadyFile,
+					],
+				},
+			},
+		});
+
+		// Constitution V: static system prompt equals caller bytes. Bridge-owned
+		// forcing/readiness guidance belongs only to user control suffix.
+		const systemPrompt = systemPromptSource(
+			systemPromptText,
+			deps.promptFileThresholdBytes,
+			() => deps.writeOverflowTmp("pcb-cap-sysprompt", systemPromptText),
 		);
-		safePush(stream, { type: "done", reason: "toolUse", message: out });
+		if (systemPrompt.kind === "file") temporaryPromptFiles.push(systemPrompt.path);
+
+		const controlSuffix = buildCaptureControlSuffix(
+			driver.kind,
+			deps.mcpServerName,
+			captureTool,
+			cleanedSchema,
+		);
+		const promptText = replayPrompt
+			? `${replayPrompt}\n\n${controlSuffix}`
+			: controlSuffix;
+		const prompt = userPromptSource(
+			promptText,
+			deps.promptFileThresholdBytes,
+			() => deps.writeOverflowTmp("pcb-cap-prompt", promptText),
+		);
+		if (prompt.kind === "file") temporaryPromptFiles.push(prompt.path);
+
+		const captureSessionId = randomUUID();
+		const config: ClaudePSpawnConfig = {
+			model: model.id,
+			systemPrompt,
+			prompt,
+			mcpConfig,
+			session: { kind: "fresh", sessionId: captureSessionId },
+			debugFile: deps.resolveDebugFile?.(captureSessionId),
+			// claude-p fork consumes this as --mcp-ready-file Enter gate. Direct
+			// adapter replaces it with its private pre-NDJSON readiness sentinel.
+			mcpReadyFile,
+		};
+
+		const qualifiedCaptureName = `mcp__${deps.mcpServerName}__${captureTool.name}`;
+		handle = driver.spawnCapture(config, {
+			onEvent: (event) => {
+				// Capture suppresses all intermediate pi events. Terminal billing is
+				// authoritative; observed tool_use is diagnostics-only cross-check.
+				if (event.kind === "usage") lastUsage = event.billing ?? event.usage;
+				else if (event.kind === "error") lastDriverError = event.errorMessage;
+				else if (event.kind === "tool-use" && event.name === qualifiedCaptureName) {
+					observedCaptureArguments.push(canonicalJson(event.arguments));
+				}
+			},
+			logger: log,
+			executable: deps.resolveDriverExecutable(driver.kind),
+			diagnosticsDir: deps.diagnosticsDir,
+			cwd: tmpdir(),
+		});
+
+		log.debug(
+			{ messages: context.messages.length, isolatedCwd: tmpdir() },
+			`capture: spawned ${driver.kind} for ${captureTool.name}`,
+		);
+
+		const result = await handle.done;
+		handleSettled = true;
+		if (aborted || result.stopReason === "aborted") throw new CaptureAbort();
+
+		const stash = router.getCaptureStash();
+		const validationFailure = router.getCaptureValidationFailure();
+		const out = deps.newTurnOutput(model);
+		applyUsageOnce(out, lastUsage, model, deps);
+
+		if (stash !== undefined && result.stopReason === "result") {
+			const matchingObservation = observedCaptureArguments.includes(canonicalJson(stash));
+			if (!matchingObservation) {
+				log.warn(
+					{ observedCaptureCalls: observedCaptureArguments.length, captureTool: captureTool.name },
+					"capture: divergent capture observation; trusting schema-valid IPC stash",
+				);
+			}
+			out.stopReason = "toolUse";
+			out.content = [{
+				type: "toolCall",
+				id: `toolu_${randomBytes(8).toString("hex")}`,
+				name: captureTool.name,
+				arguments: stash,
+			}];
+			await cleanup();
+			terminalSent = true;
+			safePush(stream, { type: "done", reason: "toolUse", message: out });
+			safeEnd(stream);
+			return;
+		}
+
+		out.stopReason = "error";
+		out.errorMessage = stash !== undefined
+			? lastDriverError ?? `capture path: ${driver.kind} did not complete with a successful terminal result (exitCode=${result.exitCode ?? "null"})`
+			: validationFailure
+				? `capture tool "${captureTool.name}" argument validation failed on attempt ${validationFailure.attempt} at ${validationFailure.field}: ${validationFailure.message}`
+				: lastDriverError ?? (result.stopReason === "error"
+					? `capture path: ${driver.kind} exited abnormally (exitCode=${result.exitCode ?? "null"}) before the model called capture tool "${captureTool.name}"`
+					: `model did not call capture tool "${captureTool.name}" (turn ended with no IPC-stashed arguments)`);
+		log.warn({ stopReason: result.stopReason, exitCode: result.exitCode }, `capture: ${out.errorMessage}`);
+		await cleanup();
+		terminalSent = true;
+		safePush(stream, { type: "error", reason: "error", error: out });
 		safeEnd(stream);
-		finish();
-		if (signal) signal.removeEventListener("abort", onAbort);
-		return;
+	} catch (error) {
+		if (!handleSettled) handle?.abort();
+		const wasAborted = error instanceof CaptureAbort || aborted || signal?.aborted;
+		const out = deps.newTurnOutput(model);
+		applyUsageOnce(out, lastUsage, model, deps);
+		out.stopReason = wasAborted ? "aborted" : "error";
+		out.errorMessage = wasAborted
+			? "Operation aborted by user"
+			: `capture path: ${driver.kind} failed: ${errorMessage(error)}`;
+		if (!terminalSent) {
+			await cleanup();
+			terminalSent = true;
+			safePush(stream, { type: "error", reason: wasAborted ? "aborted" : "error", error: out });
+			safeEnd(stream);
+		}
+	} finally {
+		await cleanup();
 	}
-
-	// ── Absent: no stash by turn-end → surface as error. ──────────────────────
-	streamEnded = true;
-	const out = deps.newTurnOutput(model);
-	applyUsage(out, usage, model, deps);
-	out.stopReason = "error";
-	out.errorMessage = validationFailure
-		? `capture tool "${captureTool.name}" argument validation failed on attempt ${validationFailure.attempt} at ${validationFailure.field}: ${validationFailure.message}`
-		: res.stopReason === "error"
-			? `capture path: claude-p exited abnormally (exitCode=${res.exitCode ?? "null"}) before the model called capture tool "${captureTool.name}"`
-			: `model did not call capture tool "${captureTool.name}" (turn ended with no IPC-stashed arguments)`;
-	log.warn({ stopReason: res.stopReason, exitCode: res.exitCode }, `runClaudePCapture: ${out.errorMessage}`);
-	safePush(stream, { type: "error", reason: "error", error: out });
-	safeEnd(stream);
-	finish();
-	if (signal) signal.removeEventListener("abort", onAbort);
 }
 
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
+/** Compatibility export for downstream imports while implementation is driver-neutral. */
+export const runClaudePCapture = runCapture;
 
-/** Map a driver usage event (already pi-shaped) → AssistantMessage usage numbers. */
-function mapUsage(u: DriverStreamUsage | undefined): DriverStreamUsage {
-	return u ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+function systemPromptSource(text: string, thresholdBytes: number, writeFile: () => string): SystemPromptSource {
+	return Buffer.byteLength(text, "utf8") > thresholdBytes
+		? { kind: "file", path: writeFile() }
+		: { kind: "text", text };
 }
 
-/** Apply usage numbers + cost to an AssistantMessage in-place. */
-function applyUsage(out: AssistantMessage, usage: DriverStreamUsage, model: Model<any>, deps: CaptureDeps): void {
-	out.usage.input = usage.input;
-	out.usage.output = usage.output;
-	out.usage.cacheRead = usage.cacheRead;
-	out.usage.cacheWrite = usage.cacheWrite;
-	out.usage.totalTokens = usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-	deps.calculateCost(model, out.usage);
+function userPromptSource(text: string, thresholdBytes: number, writeFile: () => string): PromptSource {
+	return Buffer.byteLength(text, "utf8") > thresholdBytes
+		? { kind: "file", path: writeFile() }
+		: { kind: "positional", text };
 }
 
-function buildCaptureSystemPrompt(
-	baseSystemPrompt: string,
+function buildCaptureControlSuffix(
+	driver: CaptureDriverKind,
 	mcpServerName: string,
 	captureTool: Tool,
 	cleanedSchema: Record<string, unknown>,
 ): string {
 	const qualifiedName = `mcp__${mcpServerName}__${captureTool.name}`;
-	const schemaJson = JSON.stringify(cleanedSchema);
-	const captureGuard = [
+	const readiness = driver === "claude-p"
+		? "If the required tool is not visible yet, call `WaitForMcpServers`, wait for connection, then call it."
+		: "Bridge readiness gate has completed before this user frame; the required tool is available for direct use.";
+	return [
+		"<bridge_capture_control>",
 		"You are in structured capture mode.",
 		`You MUST call exactly one tool: \`${qualifiedName}\` (bare MCP tool name \`${captureTool.name}\`).`,
 		"Do not answer in prose. Do not summarize in plain text. Do not end the turn until the capture tool has been called successfully.",
-		"If the tool is not visible yet, first call `WaitForMcpServers`, then call the required capture tool.",
-		`The tool arguments MUST satisfy this JSON schema: ${schemaJson}`,
+		readiness,
+		`Tool arguments MUST satisfy this JSON schema: ${JSON.stringify(cleanedSchema)}`,
+		"</bridge_capture_control>",
 	].join("\n");
-	return baseSystemPrompt ? `${captureGuard}\n\n${baseSystemPrompt}` : captureGuard;
 }
 
-function safePush(stream: AssistantMessageEventStream, ev: Parameters<AssistantMessageEventStream["push"]>[0]): void {
-	try { stream.push(ev); } catch { /* stream may have ended */ }
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		return `{${Object.entries(value as Record<string, unknown>)
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+function applyUsageOnce(
+	out: AssistantMessage,
+	usage: DriverStreamUsage | undefined,
+	model: Model<any>,
+	deps: CaptureDeps,
+): void {
+	const mapped = usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+	out.usage.input = mapped.input;
+	out.usage.output = mapped.output;
+	out.usage.cacheRead = mapped.cacheRead;
+	out.usage.cacheWrite = mapped.cacheWrite;
+	out.usage.totalTokens = mapped.totalTokens || mapped.input + mapped.output + mapped.cacheRead + mapped.cacheWrite;
+	deps.calculateCost(model, out.usage);
+}
+
+function finishPreflightError(
+	model: Model<any>,
+	stream: AssistantMessageEventStream,
+	deps: CaptureDeps,
+	reason: "aborted" | "error",
+	message: string,
+): void {
+	const out = deps.newTurnOutput(model);
+	out.stopReason = reason;
+	out.errorMessage = message;
+	safePush(stream, { type: "start", partial: out });
+	safePush(stream, { type: "error", reason, error: out });
+	safeEnd(stream);
+}
+
+class CaptureAbort extends Error {}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function safePush(stream: AssistantMessageEventStream, event: Parameters<AssistantMessageEventStream["push"]>[0]): void {
+	try { stream.push(event); } catch { /* stream may already be closed */ }
 }
 
 function safeEnd(stream: AssistantMessageEventStream): void {
-	try { stream.end(); } catch { /* stream may have ended */ }
+	try { stream.end(); } catch { /* stream may already be closed */ }
 }

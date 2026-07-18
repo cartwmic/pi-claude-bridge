@@ -196,7 +196,7 @@
 
 ## 3. Capture, diagnostics, and peek parity
 
-- [ ] 3.1 Make capture use owning pinned driver before tmpdir isolation; preserve classification/strict shape/event contract, restore verbatim static system prompt, move adapter-appropriate forcing/readiness text to user control suffix, warn/drop images, require stash plus successful terminal result, map usage/cost exactly once, and surface validation field paths. ACs: all delta requirements under `output-capture`.
+- [x] 3.1 Make capture use owning pinned driver before tmpdir isolation; preserve classification/strict shape/event contract, restore verbatim static system prompt, move adapter-appropriate forcing/readiness text to user control suffix, warn/drop images, require stash plus successful terminal result, map usage/cost exactly once, and surface validation field paths. ACs: all delta requirements under `output-capture`.
   - intent: feature
   - files_allowed:
       - README.md

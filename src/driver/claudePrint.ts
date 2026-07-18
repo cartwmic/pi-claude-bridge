@@ -45,6 +45,8 @@ export interface SpawnClaudePrintOptions {
 	onPhase?: (phase: ClaudePrintAttemptPhase) => void;
 	logger?: ClaudePrintLogger;
 	binPath?: string;
+	/** Child working directory. Capture passes isolated os.tmpdir(); main inherits. */
+	cwd?: string;
 	signal?: AbortSignal;
 	graceMs?: number;
 	diagnosticsDir?: string;
@@ -306,7 +308,7 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 	const spawnedAt = Date.now();
 	let child: ChildProcess;
 	try {
-		child = spawnImpl(bin, args, { detached: true, stdio: ["pipe", "pipe", "pipe"], env });
+		child = spawnImpl(bin, args, { detached: true, stdio: ["pipe", "pipe", "pipe"], env, cwd: opts.cwd });
 	} catch (error) {
 		rmSync(invocationDir, { recursive: true, force: true });
 		return failedHandle(opts, sessionId, `claude-print spawn failed: ${errorMessage(error)}`);

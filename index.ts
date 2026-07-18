@@ -79,7 +79,12 @@ import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
 import type { DriverStreamEvent, DriverToolUseBatch } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef, type CorrelationFailure } from "./src/mcp/router.js";
-import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
+import {
+	runCapture,
+	type CaptureDeps,
+	type CaptureDriverAdapter,
+	type CaptureDriverSpawnOptions,
+} from "./src/capture.js";
 import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
@@ -166,6 +171,7 @@ export function __setSpawnClaudePrintForTests(f: typeof _realSpawnClaudePrint): 
 // respawn could re-execute the model's turn). Tests inject a mock here.
 // ---------------------------------------------------------------------------
 
+type CaptureSpawnFactory = typeof _realSpawnClaudePSingle;
 let _captureSpawnFactory: CaptureSpawnFactory = _realSpawnClaudePSingle;
 
 /** Test-only: swap the claude-p CAPTURE spawn factory and return a restorer. */
@@ -742,11 +748,12 @@ export interface InferenceDriverMainTurnSpawn {
 }
 
 /** Driver-neutral adapter consumed by shared turn orchestration. */
-export interface InferenceDriverAdapter {
+export interface InferenceDriverAdapter extends CaptureDriverAdapter {
 	readonly kind: DriverKind;
 	readonly capabilities: DriverCapabilities;
 	preflight(): void;
 	spawnMainTurn(input: InferenceDriverMainTurnSpawn): InferenceDriverHandle;
+	spawnCapture(config: ClaudePSpawnConfig, options: CaptureDriverSpawnOptions): InferenceDriverHandle;
 }
 
 /** Interactive claude-p adapter — preserves argv/MCP isolation via claudeP module. */
@@ -754,6 +761,21 @@ export const CLAUDE_P_DRIVER: InferenceDriverAdapter = {
 	kind: "claude-p",
 	capabilities: { peek: "mirror", mirror: true },
 	preflight() {},
+	spawnCapture(config, options) {
+		const inner = _captureSpawnFactory(config, {
+			onEvent: options.onEvent,
+			logger: options.logger as any,
+			binPath: options.executable,
+			diagnosticsDir: options.diagnosticsDir,
+			cwd: options.cwd,
+		});
+		return {
+			driverKind: "claude-p",
+			get pid() { return inner.pid; },
+			abort: () => inner.abort(),
+			done: inner.done,
+		};
+	},
 	spawnMainTurn({ config, options, resilience }) {
 		const sessionId = config.session.sessionId;
 		const policy = options.onLifecycleEvent
@@ -803,6 +825,23 @@ export const CLAUDE_PRINT_DRIVER: InferenceDriverAdapter = {
 	kind: "claude-print",
 	capabilities: { peek: "unavailable", mirror: false },
 	preflight() { _claudePrintPreflight(); },
+	spawnCapture(config, options) {
+		_claudePrintPreflight();
+		const inner = _spawnClaudePrintFactory(config, {
+			onEvent: options.onEvent,
+			logger: options.logger as any,
+			binPath: options.executable,
+			diagnosticsDir: options.diagnosticsDir,
+			tmpDir: options.cwd,
+			cwd: options.cwd,
+		});
+		return {
+			driverKind: "claude-print",
+			get pid() { return inner.pid; },
+			abort: () => inner.abort(),
+			done: inner.done,
+		};
+	},
 	spawnMainTurn({ config, options, resilience }) {
 		const maxRetries = resilience.maxRetries ?? 2;
 		let aborted = false;
@@ -1851,9 +1890,39 @@ export function streamClaudeAgentSdk(
 		}
 
 		if (shape.kind === "single-capture") {
-			// Capture executor: the claude-p forced-toolcall capture path. The
-			// classification + strict-call-shape gate above is driver-agnostic.
-			void runClaudePCapture(model, shape.captureTool, shape.cleanedSchema, context, options, stream, buildCaptureDeps());
+			// Resolve owning driver from project/frame BEFORE capture replaces process
+			// cwd with os.tmpdir(). Never consult config from isolated capture cwd.
+			let captureDriver: InferenceDriverAdapter;
+			try {
+				if (active) {
+					captureDriver = active.driver;
+				} else {
+					const projectCwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+					captureDriver = getInferenceDriverAdapter(loadBridgeDriverConfig({ projectCwd }));
+				}
+				captureDriver.preflight();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				queueMicrotask(() => {
+					const out = newTurnOutput(model);
+					out.stopReason = "error";
+					out.errorMessage = message;
+					stream.push({ type: "start", partial: out });
+					stream.push({ type: "error", reason: "error", error: out });
+					stream.end();
+				});
+				return stream;
+			}
+			void runCapture(
+				model,
+				shape.captureTool,
+				shape.cleanedSchema,
+				context,
+				options,
+				stream,
+				captureDriver,
+				buildCaptureDeps(),
+			);
 			return stream;
 		}
 
@@ -2050,21 +2119,18 @@ function buildCaptureDeps(): CaptureDeps {
 	return {
 		newTurnOutput,
 		buildColdStartPrompt,
-		cleanSchemaForSdk,
-		// Opus-corrected so the capture path bills at Anthropic's published rate too.
+		// Opus-corrected so capture bills at Anthropic's published rate too.
 		calculateCost: calculateCostCorrected,
 		resolveShimPath,
 		shimNodeArgs,
-		resolveClaudePBin,
+		resolveDriverExecutable: (kind) => kind === "claude-p" ? resolveClaudePBin() : resolveClaudePrintBin(),
 		writeOverflowTmp,
 		logger: logger.child({ piSessionId: getPiSessionId() }) as unknown as CaptureDeps["logger"],
 		execPath: process.execPath,
 		mcpServerName: MCP_SERVER_NAME,
-		mcpWaitPreamble: withClaudePMcpWaitPreamble,
 		promptFileThresholdBytes: PROMPT_FILE_THRESHOLD_BYTES,
 		diagnosticsDir: DIAGNOSTICS_DIR,
 		resolveDebugFile: resolveClaudeDebugFile,
-		spawnClaudeP: (cfg, opts) => _captureSpawnFactory(cfg, opts),
 	};
 }
 

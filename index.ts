@@ -56,8 +56,6 @@ import {
 	spawnClaudeP as _realSpawnClaudePSingle,
 	getInstalledClaudeVersion,
 	type ClaudePSpawnConfig,
-	type ClaudePHandle,
-	type ClaudePDoneResult,
 	type SystemPromptSource,
 	type PromptSource,
 } from "./src/driver/claudeP.js";
@@ -164,7 +162,8 @@ export function __setCaptureSpawnForTests(f: CaptureSpawnFactory): () => void {
 // Layered driver configuration + direct-driver runtime preflight.
 // ---------------------------------------------------------------------------
 
-export type BridgeDriver = "claude-p" | "claude-print";
+export type DriverKind = "claude-p" | "claude-print";
+export type BridgeDriver = DriverKind;
 export const CLAUDE_PRINT_MIN_VERSION = "2.1.208";
 
 interface BridgeConfigFsOps {
@@ -364,6 +363,149 @@ export function preflightBridgeDriver(
 /** Test-only reset for process-wide direct-version probe memoization. */
 export function __resetClaudePrintVersionProbeForTests(): void {
 	cachedClaudePrintVersion = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Driver-neutral inference adapter contracts (design D1/D7/D9).
+// ---------------------------------------------------------------------------
+
+/** Normalized stream events consumed by shared orchestration. */
+export type InferenceDriverEvent = DriverStreamEvent;
+
+/** Terminal lifecycle classification for one driver attempt (or retried group). */
+export type InferenceDriverStopReason = "result" | "aborted" | "error";
+
+/** Driver-neutral turn completion payload, including resumable session identity. */
+export interface InferenceDriverDoneResult {
+	stopReason: InferenceDriverStopReason;
+	sessionId: string;
+	exitCode?: number | null;
+	signal?: NodeJS.Signals | null;
+}
+
+/** Per-driver feature surface (design D9). */
+export interface DriverCapabilities {
+	peek: "mirror" | "unavailable";
+	mirror: boolean;
+}
+
+/** Observable process lifecycle transitions; stream content uses InferenceDriverEvent. */
+export type InferenceDriverLifecycleEvent =
+	| { kind: "spawned"; driverKind: DriverKind; sessionId: string; pid: number | undefined }
+	| { kind: "retrying"; driverKind: DriverKind; attempt: number; sessionId: string }
+	| { kind: "abort-requested"; driverKind: DriverKind; sessionId: string; pid: number | undefined }
+	| { kind: "settled"; driverKind: DriverKind; result: InferenceDriverDoneResult };
+
+/** Process handle delegated abort + done lifecycle (design D7). */
+export interface InferenceDriverHandle {
+	readonly driverKind: DriverKind;
+	readonly pid: number | undefined;
+	abort(): void;
+	readonly done: Promise<InferenceDriverDoneResult>;
+}
+
+/** Driver-neutral attempt inputs. Adapters own argv/protocol translation. */
+export interface InferenceDriverAttemptConfig {
+	model: string;
+	systemPrompt: SystemPromptSource;
+	prompt: PromptSource;
+	mcpConfig: string;
+	session: { kind: "fresh" | "resume"; sessionId: string };
+	debugFile?: string;
+	mcpReadyFile?: string;
+	mirrorFile?: string;
+}
+
+/** Spawn-time options shared by main-turn orchestration. */
+export interface InferenceDriverSpawnOptions {
+	onEvent: (event: InferenceDriverEvent) => void;
+	onLifecycleEvent?: (event: InferenceDriverLifecycleEvent) => void;
+	logger: pino.Logger;
+	executable: string;
+	suppressResumeReplay: boolean;
+	livePromptText?: string;
+	diagnosticsDir: string;
+	isHeldRound: () => boolean;
+}
+
+/** Bounded retry policy wired by shared orchestration (design D7/D33). */
+export interface InferenceDriverResiliencePolicy {
+	maxRetries?: number;
+	shouldRetry: () => boolean;
+	onRetry?: (attempt: number, result: InferenceDriverDoneResult) => void;
+	freshSessionId?: () => string;
+	remintMirrorFile?: (sessionId: string) => string | undefined;
+}
+
+export interface InferenceDriverMainTurnSpawn {
+	config: InferenceDriverAttemptConfig;
+	options: InferenceDriverSpawnOptions;
+	resilience: InferenceDriverResiliencePolicy;
+}
+
+/** Driver-neutral adapter consumed by shared turn orchestration. */
+export interface InferenceDriverAdapter {
+	readonly kind: DriverKind;
+	readonly capabilities: DriverCapabilities;
+	preflight(): void;
+	spawnMainTurn(input: InferenceDriverMainTurnSpawn): InferenceDriverHandle;
+}
+
+/** Interactive claude-p adapter — preserves argv/MCP isolation via claudeP module. */
+export const CLAUDE_P_DRIVER: InferenceDriverAdapter = {
+	kind: "claude-p",
+	capabilities: { peek: "mirror", mirror: true },
+	preflight() {},
+	spawnMainTurn({ config, options, resilience }) {
+		const sessionId = config.session.sessionId;
+		const policy = options.onLifecycleEvent
+			? {
+					...resilience,
+					onRetry: (attempt: number, result: InferenceDriverDoneResult) => {
+						options.onLifecycleEvent?.({ kind: "retrying", driverKind: "claude-p", attempt, sessionId: result.sessionId });
+						resilience.onRetry?.(attempt, result);
+					},
+				}
+			: resilience;
+		const inner = _spawnClaudePFactory(
+			config as ClaudePSpawnConfig,
+			{
+				onEvent: options.onEvent,
+				logger: options.logger as any,
+				binPath: options.executable,
+				suppressResumeReplay: options.suppressResumeReplay,
+				livePromptText: options.livePromptText,
+				diagnosticsDir: options.diagnosticsDir,
+				isHeldRound: options.isHeldRound,
+			},
+			policy,
+		);
+		options.onLifecycleEvent?.({ kind: "spawned", driverKind: "claude-p", sessionId, pid: inner.pid });
+		const done = options.onLifecycleEvent
+			? inner.done.then((result) => {
+					options.onLifecycleEvent?.({ kind: "settled", driverKind: "claude-p", result });
+					return result;
+				})
+			: inner.done;
+		return {
+			driverKind: "claude-p",
+			get pid() { return inner.pid; },
+			abort() {
+				options.onLifecycleEvent?.({ kind: "abort-requested", driverKind: "claude-p", sessionId, pid: inner.pid });
+				inner.abort();
+			},
+			done,
+		};
+	},
+};
+
+/** Resolve the concrete adapter for a validated driver kind. Never falls back. */
+export function getInferenceDriverAdapter(kind: DriverKind): InferenceDriverAdapter {
+	if (kind === "claude-p") return CLAUDE_P_DRIVER;
+	if (kind === "claude-print") {
+		throw new Error("claude-print driver is not implemented");
+	}
+	throw new Error(`Unsupported inference driver: ${String(kind)}`);
 }
 
 /** Test-only: swap piApiRef and return a restorer. Not part of the public API. */
@@ -611,8 +753,11 @@ function detectHistoryDivergence(
  * MCP handler).
  */
 type QueryFrame = {
-	/** claude-p driver handle for this spawn. */
-	claudeHandle?: ClaudePHandle;
+	/** Pinned for the frame lifecycle (design D2); nested calls inherit owner. */
+	driverKind: DriverKind;
+	driver: InferenceDriverAdapter;
+	/** Selected driver's process handle for this spawn. */
+	driverHandle?: InferenceDriverHandle;
 	/** Per-spawn MCP router; its onPark drives the pi round-trip. */
 	router?: Router;
 	currentPiStream: AssistantMessageEventStream | null;
@@ -1280,7 +1425,7 @@ const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before com
  * Used by every abort/supersede/clearSession site.
  */
 function abortFrame(frame: QueryFrame): void {
-	frame.claudeHandle?.abort();
+	frame.driverHandle?.abort();
 	void frame.router?.stop();
 }
 
@@ -1652,7 +1797,7 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
  * the next turn cold-starts); finalizes the current pi stream like the SDK
  * finalizer; pops the frame iff it's the top and has no pending resolvers.
  */
-function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
+function finalizeClaudePFrame(frame: QueryFrame, res: InferenceDriverDoneResult): void {
 	// Best-effort: remove this turn's MCP-readiness sentinel (paired to the
 	// router socket). Per-attempt spawns already clear stale copies; this drops
 	// the final one so /tmp doesn't accumulate. Never throws.
@@ -1865,8 +2010,41 @@ async function startFreshQuery(
 	// (root cause of S14/S25 on the claude-p path; see CLAUDE_P_MCP_WAIT_PREAMBLE).
 	const staticSystemPrompt = withClaudePMcpWaitPreamble(systemPromptAppend ?? "You are a helpful coding assistant.");
 
+	// Select and pin the inference driver for this frame (design D2). Nested
+	// invocations inherit the owner's adapter; fresh main turns resolve config once.
+	let driverKind: DriverKind;
+	let driver: InferenceDriverAdapter;
+	try {
+		const ownerFrame = stack.length > 0 ? stack[stack.length - 1] : undefined;
+		if (ownerFrame) {
+			driverKind = ownerFrame.driverKind;
+			driver = ownerFrame.driver;
+		} else {
+			driverKind = loadBridgeDriverConfig({ projectCwd: cwd });
+			driver = getInferenceDriverAdapter(driverKind);
+			driver.preflight();
+		}
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd }).error(
+			{ err: msg },
+			`startFreshQuery: driver selection failed — ${msg}`,
+		);
+		queueMicrotask(() => {
+			const out = newTurnOutput(model);
+			out.stopReason = "error";
+			out.errorMessage = msg;
+			stream.push({ type: "start", partial: out });
+			stream.push({ type: "error", reason: "error", error: out });
+			stream.end();
+		});
+		return;
+	}
+
 	// Build the frame BEFORE the router (onPark closes over it).
 	const frame: QueryFrame = {
+		driverKind,
+		driver,
 		currentPiStream: stream,
 		turnOutput: newTurnOutput(model),
 		turnStarted: false,
@@ -1875,7 +2053,7 @@ async function startFreshQuery(
 		customToolNameToPi,
 		model,
 		cwd,
-		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: "claude-p" }),
+		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }),
 		pendingResolvers: new Map(),
 		pendingResults: new Map(),
 		wasAborted: false,
@@ -1952,7 +2130,9 @@ async function startFreshQuery(
 	// code-review r1 P0). prepareMirrorForSpawn is failure-isolated: any fs
 	// error → undefined and the spawn proceeds unmirrored.
 	const isMainTurnSpawn = stack.length === 0;
-	const mirrorFile = isMainTurnSpawn ? prepareMirrorForSpawn(session.sessionId, frame.log) : undefined;
+	const mirrorFile = isMainTurnSpawn && driver.capabilities.mirror
+		? prepareMirrorForSpawn(session.sessionId, frame.log)
+		: undefined;
 	// Retries re-mint a fresh mirror path (per-spawn naming); track the LATEST
 	// minted path so the turn-end owner check clears the right one.
 	let turnMirrorFile = mirrorFile;
@@ -2015,10 +2195,18 @@ async function startFreshQuery(
 	// No bridge-side liveness timer: a silent claude-p is recovered only by a real
 	// subprocess exit (classified `error` → D33 retry gate) or a caller-driven
 	// abort. See change `no-liveness-timeouts-add-visibility`.
-	const handle = _spawnClaudePFactory(
-		cfg,
-		{ onEvent: (ev: DriverStreamEvent) => { processDriverEvent(frame, ev); }, logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay, livePromptText: useResume ? promptText : undefined, diagnosticsDir: DIAGNOSTICS_DIR, isHeldRound: () => frame.pendingResolvers.size > 0 },
-		{
+	const handle = driver.spawnMainTurn({
+		config: cfg,
+		options: {
+			onEvent: (ev: InferenceDriverEvent) => { processDriverEvent(frame, ev); },
+			logger: frame.log,
+			executable: resolveClaudePBin(),
+			suppressResumeReplay,
+			livePromptText: useResume ? promptText : undefined,
+			diagnosticsDir: DIAGNOSTICS_DIR,
+			isHeldRound: () => frame.pendingResolvers.size > 0,
+		},
+		resilience: {
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,
 			freshSessionId: () => randomUUID(),
@@ -2027,7 +2215,7 @@ async function startFreshQuery(
 			// (claude-peek-overlay.peek-follows-latest-main-turn-spawn-only;
 			// code-review r4). Main-turn spawns only — subagent spawns never
 			// mirrored, so their retries stay unmirrored too.
-			remintMirrorFile: isMainTurnSpawn
+			remintMirrorFile: isMainTurnSpawn && driver.capabilities.mirror
 				? (sid) => {
 						turnMirrorFile = prepareMirrorForSpawn(sid, frame.log);
 						return turnMirrorFile;
@@ -2035,8 +2223,8 @@ async function startFreshQuery(
 				: undefined,
 			onRetry: (attempt) => frame.log.warn({ attempt }, `startFreshQueryClaudeP: retrying claude-p spawn (attempt ${attempt})`),
 		},
-	);
-	frame.claudeHandle = handle;
+	});
+	frame.driverHandle = handle;
 	frame.donePromise = handle.done
 		.then((res) => finalizeClaudePFrame(frame, res))
 		// Turn over → no active main-provider spawn: publish null so the overlay

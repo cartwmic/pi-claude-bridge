@@ -15,7 +15,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 1.2 Introduce `DriverKind` plus driver-neutral adapter/handle/event/lifecycle contracts; adapt existing `claude-p` path without external behavior change and preserve process-group abort, retry, prompt-file, MCP isolation, usage, and mirror capability. ACs: `claude-p-driver.claude-p-spawn-with-model-selection`, `bridge-driver-selection.selected-driver-is-pinned-to-invocation-lifecycle`.
+- [x] 1.2 Introduce `DriverKind` plus driver-neutral adapter/handle/event/lifecycle contracts; adapt existing `claude-p` path without external behavior change and preserve process-group abort, retry, prompt-file, MCP isolation, usage, and mirror capability. ACs: `claude-p-driver.claude-p-spawn-with-model-selection`, `bridge-driver-selection.selected-driver-is-pinned-to-invocation-lifecycle`.
   - intent: refactor
   - files_allowed:
       - openspec/changes/add-claude-print-driver/tasks.md

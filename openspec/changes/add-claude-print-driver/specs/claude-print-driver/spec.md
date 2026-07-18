@@ -134,7 +134,7 @@ IF a direct invocation fails before any bridged tool call is routed and before t
 
 #### Scenario: Warm attempt fails after submission but before visible output
 - **IF** a warm direct process fails after its user frame was submitted but before visible output or routed tools
-- **THEN** any retry uses a new session id and full canonical cold-start history exactly once
+- **THEN** each retry attempt uses a new session id and submits one full canonical cold-start history frame
 - **AND** it never resends the warm-only delta to the prior session
 
 #### Scenario: Failure after visible output or routed tool

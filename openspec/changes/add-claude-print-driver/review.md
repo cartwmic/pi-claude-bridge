@@ -11,7 +11,7 @@ loop_max_iterations: 80
 validation_source_mode: required
 spec_level: spec-anchored
 doneness_mode: required
-review_max_rounds: 5
+review_max_rounds: 8
 review_budget_mode: quiet-round
 ---
 
@@ -45,6 +45,7 @@ review_budget_mode: quiet-round
 
 ## Manual Adjustments
 
+- Owner's autonomous drive-to-green instruction preauthorizes continuing past the original five-round review budget without an interactive checkpoint; `review_max_rounds` extended to 8 after round 5 exposed objective remaining blockers.
 - Existing `claude-p` remains default while both paths are equally supported.
 - `/claude-peek` unavailability under `claude-print` is the only accepted parity exception.
 - Claude Code 2.1.208 is the direct-driver minimum because earlier versions can omit terminal `result` on large streamed output.
@@ -65,6 +66,7 @@ review_budget_mode: quiet-round
 - 2026-07-18 — Analyze/fidelity round 2 at `0a7ef20d6cb759f9f2c49f181be1f67c30959cba`: review approve/needs-revision/needs-revision, fidelity delivered/violated/violated; max P0=0, P1=3, P2=4, P3=5. Every judge attested correct integration root/HEAD and supplied 126 rows; two used noncanonical markdown wrappers around attestation, accepted for round evidence but not reusable as seal provenance. Read-only window unchanged. Fixes: phase-aware pre-submit-abort persistence, pi-id resolver authority with model-id aliases, fail-closed scenario harness, exact observational allowlist, deterministic capture validation retention, warn-on-divergence, two-retry envelope, concrete readiness env, source-of-record docs migration, and required S28/S29 integrations.
 - 2026-07-18 — Analyze/fidelity round 3 at `2b05c412eeff138e4d8be6a6f40f7c1d6622d66d`: review approve/needs-revision/needs-revision; fidelity delivered ×3 over exact 128-row sweeps; max P0=0, P1=1, P2=4, P3=4. Canonical attestation grammar and read-only window passed for every judge. Remaining plan-review blockers fixed without changing intent: private prompt artifacts (0700 directory/0600 exclusive files/all-exit cleanup) and version floor before inference-child spawn. Advisories tightened terminal/line bounds, D32 causal closure, retry logging, diagnostics failure tolerance, and mandatory S21 assertions.
 - 2026-07-18 — Analyze/fidelity round 4 at `cae93b36fe5751eb454c08b79b4f71011384fd4a`: review approve/needs-revision/needs-revision; fidelity delivered/violated/violated over exact 129-row sweeps; max P0=0, P1=3, P2=5, P3=4. All judges used canonical attestation and left tree unchanged. Final-budget fixes: cold/warm prompt construction and capture usage mapping, phase-aware direct acceptance persistence, submitted-warm retry cold repack, downgrade quarantine for direct sidecars, config I/O fail-loud rules, and explicit result/line/cleanup bounds.
+- 2026-07-18 — Analyze/fidelity round 5 at `45d472508c1a95face9989b96e811c4cdf227ae8`: review approve/needs-revision/needs-revision; fidelity delivered/violated/delivered over exact 131-row sweeps; max P0=0, P1=2, P2=4, P3=4. All attestation/read-only checks passed. Owner's standing autonomous drive-to-green directive resolves original hard-cap landing in favor of continued blind convergence; budget extended to 8. Fixes: post-submit/pre-accept abort invalidates direct session, rollback stop-before-quarantine ordering, S31 dual-driver evidence, bridged-only observation accounting, direct WaitFor preamble removal, nested-record rule, and fail-closed config symlink handling.
 
 ## Scope Expansions
 
@@ -78,3 +80,4 @@ review_budget_mode: quiet-round
 | 2 | violated | reviewer-1 delivered; reviewer-2 violated; reviewer-3 violated | `0a7ef20d6cb759f9f2c49f181be1f67c30959cba` |
 | 3 | delivered | reviewer-1 delivered; reviewer-2 delivered; reviewer-3 delivered | `2b05c412eeff138e4d8be6a6f40f7c1d6622d66d` |
 | 4 | violated | reviewer-1 delivered; reviewer-2 violated; reviewer-3 violated | `cae93b36fe5751eb454c08b79b4f71011384fd4a` |
+| 5 | violated | reviewer-1 delivered; reviewer-2 violated; reviewer-3 delivered | `45d472508c1a95face9989b96e811c4cdf227ae8` |

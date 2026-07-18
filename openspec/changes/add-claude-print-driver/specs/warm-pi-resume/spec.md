@@ -6,7 +6,7 @@
 
 ### Requirement: Resume Sidecar Persisted On Successful Turn
 
-WHEN main-provider turn (not nested subagent) completes without error, including abort only after direct turn acceptance is proven by its first top-level model `message_start` (interactive abort behavior unchanged), THE bridge SHALL persist content-free sidecar outside `~/.claude/`, keyed by literal cwd + full pi session id, containing driver identity, driver session id, one-way history fingerprint chain, and Claude version. IF direct invocation aborts before turn acceptance, whether before or after its user frame write, THEN THE bridge SHALL NOT advance the cached/sidecar history boundary or persist its fresh driver session id; a previously validated hint remains unchanged, otherwise next turn cold-starts.
+WHEN main-provider turn (not nested subagent) completes without error, including abort only after direct turn acceptance is proven by its first top-level model `message_start` (interactive abort behavior unchanged), THE bridge SHALL persist content-free sidecar outside `~/.claude/`, keyed by literal cwd + full pi session id, containing driver identity, driver session id, one-way history fingerprint chain, and Claude version. IF direct invocation aborts before user-frame submission, THEN THE bridge SHALL preserve any prior validated hint unchanged. IF it aborts after submission but before turn acceptance, THEN THE bridge SHALL invalidate the possibly mutated direct session hint/sidecar and force the next turn to canonical cold start. Neither path advances current history boundary or persists a fresh driver session id.
 
 #### Scenario: Successful turn writes typed sidecar
 - **WHEN** main-provider turn finalizes non-error with cached session id
@@ -27,8 +27,8 @@ WHEN main-provider turn (not nested subagent) completes without error, including
 
 #### Scenario: Abort after write but before direct turn acceptance
 - **WHEN** user frame write completes but caller aborts before first top-level model `message_start`
-- **THEN** no new session hint is cached or persisted and current history fingerprint is not marked as seen
-- **AND** next turn uses preserved prior hint or a canonical cold start
+- **THEN** any prior/fresh direct session hint and active sidecar are invalidated and current history fingerprint is not marked as seen
+- **AND** next turn uses full canonical cold start
 
 ### Requirement: Validated Warm Resume On Pi Resume
 

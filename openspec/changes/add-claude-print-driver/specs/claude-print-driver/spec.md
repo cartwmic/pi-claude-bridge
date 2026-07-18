@@ -68,14 +68,14 @@ WHEN direct stream-json output contains partial events followed by complete assi
 
 ### Requirement: Direct Protocol Drift Surfaces Explicitly
 
-IF direct stdout contains malformed NDJSON, invalid top-level partial block lifecycle, missing final assistant usage, more or fewer than one terminal result, session-id mismatch, or irreconcilable result subtype/stop reason, THEN THE driver SHALL return a structured protocol error and invalidate its resume hint. Recognized non-abort terminal error subtypes SHALL map to pi `stopReason: "error"`, surfaced message, diagnostics, and hint invalidation; unknown well-formed observational records SHALL be logged and ignored, and local abort state takes precedence over all post-abort records.
+IF direct stdout contains malformed NDJSON, invalid top-level partial block lifecycle, missing final assistant usage, more or fewer than one terminal result, session-id mismatch, or irreconcilable result subtype/stop reason, THEN THE driver SHALL return a structured protocol error and invalidate its resume hint. Recognized non-abort terminal error subtypes SHALL map to pi `stopReason: "error"`, surfaced message, diagnostics, and hint invalidation; explicitly allowlisted well-formed observational record types SHALL be logged and ignored, every genuinely unknown type SHALL be protocol drift, and local abort state takes precedence over all post-abort records.
 
 #### Scenario: Malformed stream line
 - **IF** a non-empty stdout line is not valid JSON
 - **THEN** the turn ends with an explicit protocol error rather than silently dropping the line
 
-#### Scenario: Unknown observational record
-- **WHEN** a well-formed unknown record does not affect required completion, usage, or content semantics
+#### Scenario: Allowlisted observational record
+- **WHEN** a well-formed record type belongs to the explicit observational allowlist and does not affect completion, usage, or content semantics
 - **THEN** the driver logs its type and continues without emitting fabricated pi content
 
 ### Requirement: One Direct Process Spans Held Tool Rounds

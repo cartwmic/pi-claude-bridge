@@ -6,7 +6,7 @@
 
 ### Requirement: claude-p spawn with model selection
 
-WHERE `claude-p` is selected, WHEN the bridge starts a fresh turn for a `claude-bridge` model, THE driver SHALL spawn maintained `claude-p` with resolved model via `--model`, path-appropriate system prompt via `--system-prompt` or large/multiline `--input-file`, explicit shim `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--session-id <uuid>` or `--resume <cached-id>`, `--output-format stream-json`, `--verbose`, and bridge-owned `--debug-file`; it SHALL NOT pass `--settings`, `-p`, `--print`, or `--timeout`.
+WHERE `claude-p` is selected, WHEN the bridge starts a fresh turn for a `claude-bridge` model, THE driver SHALL spawn maintained `claude-p` with resolved model via `--model`, path-appropriate system prompt via `--system-prompt` or large/multiline `--system-prompt-file`, explicit shim `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--session-id <uuid>` or `--resume <cached-id>`, `--output-format stream-json`, `--verbose`, and bridge-owned `--debug-file`; it SHALL NOT pass `--settings`, `-p`, `--print`, or `--timeout`.
 
 #### Scenario: Fresh turn spawns one claude-p subprocess with bridged tool surface
 - **WHEN** selected driver is `claude-p` and fresh turn starts

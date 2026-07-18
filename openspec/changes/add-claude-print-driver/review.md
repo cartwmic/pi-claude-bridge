@@ -61,6 +61,7 @@ review_budget_mode: quiet-round
 - 2026-07-18 — Clarify round 2 completed at `92d39851b5d3883238cc77b108a72ab1c3c8025e`: reviewer verdicts pass/fail/fail, max P0=0, P1=10, P2=7, P3=6; first split round, below disclosure trigger. All three attested integration root/HEAD and read-only window remained unchanged. Fixes preserve full frozen intent: explicit direct shim argv and record matrix, standalone capture resolution, sole router correlation, driver-neutral peek/correlation/diagnostics, exact MCP idle env, bare-restart resume, typed sidecar constitution PATCH clarification, capture mappings/truncation/error shape/empty-prompt semantics, and dual-driver large-prompt evidence.
 - 2026-07-18 — Clarify round-3 attempt at `1251cb860d6a54747d0403ea32bec79aaa132d5d`: reviewers 1/2 valid (pass/fail; max P1=2), reviewer 3 INVALID after cursor provider `EPIPE`; attempt incomplete and does not count. Read-only window remained unchanged. Fixed all valid must-fix findings plus advisories tied to intent: conditional debug flag, terminal-result-required capture success, explicit terminal error/correlation behavior, exact MCP config, project-owned standalone capture, config validation, direct prompt-file/timeout/retry bounds, resolution-point peek disposal, dangling direct warm resume evidence, and canonical scenario source.
 - 2026-07-18 — Clarify round 3 completed QUIET at `f73bc6e5745953dc40cd8b6bdb5cdfd29c960b14`: pass/pass/pass; max P0=0, P1=0, P2=9, P3=4. All reviewers attested integration root/HEAD; read-only window unchanged. Advisory decisions resolved in `clarify.md`; no unanswered/deferred findings.
+- 2026-07-18 — Analyze/fidelity round 1 at `9679d05231723e3f6b95dc9135123e2887222369`: review needs-revision ×3, fidelity delivered/violated/violated; max P0=0, P1=4, P2=5, P3=4. All judges supplied exact 126-row canonical sweeps and attested integration root/HEAD; read-only window unchanged. Fixes: large system prompt channel, fail-closed observational taxonomy, explicit direct steering, exact interactive denylist, asynchronous D32 coordinator, capture validation IPC + verbatim system-prompt channel, manifest-owned validation commands, hard live-proof stops, shared-refactor rollback, and stale path correction.
 
 ## Scope Expansions
 
@@ -70,3 +71,4 @@ review_budget_mode: quiet-round
 
 | Round | Fidelity | Per-judge verdicts | Attested HEAD |
 |---|---|---|---|
+| 1 | violated | reviewer-1 delivered; reviewer-2 violated; reviewer-3 violated | `9679d05231723e3f6b95dc9135123e2887222369` |

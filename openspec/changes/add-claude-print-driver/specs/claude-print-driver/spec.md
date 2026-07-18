@@ -126,11 +126,16 @@ WHEN pi aborts a direct invocation, THE driver SHALL classify from local abort s
 
 ### Requirement: Direct Failure And Retry Preserve Side-Effect Safety
 
-IF a direct invocation fails before any bridged tool call is routed and before the first assistant text/thinking delta is emitted to the pi-ai stream, THEN THE driver MAY apply at most two logged retries with short backoff and fresh process/shim identity; IF any tool call or visible delta was emitted, THEN THE driver SHALL surface failure without respawning.
+IF a direct invocation fails before any bridged tool call is routed and before the first assistant text/thinking delta is emitted to the pi-ai stream, THEN THE driver MAY apply at most two logged retries with short backoff and fresh process/shim identity; after any submitted failed attempt, retry SHALL abandon its session/hint and use a new session id with full canonical cold-start history rather than replaying a warm-only delta; IF any tool call or visible delta was emitted, THEN THE driver SHALL surface failure without respawning.
 
 #### Scenario: Pre-output transient exit
 - **IF** direct process exits prematurely before routed tools or visible output
 - **THEN** bounded retries may run and every retry is logged
+
+#### Scenario: Warm attempt fails after submission but before visible output
+- **IF** a warm direct process fails after its user frame was submitted but before visible output or routed tools
+- **THEN** any retry uses a new session id and full canonical cold-start history exactly once
+- **AND** it never resends the warm-only delta to the prior session
 
 #### Scenario: Failure after visible output or routed tool
 - **IF** direct process fails after visible output or a bridged tool call

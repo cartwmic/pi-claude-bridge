@@ -57,7 +57,7 @@ Interactive adapter preserves exact isolation contract and changes its audited d
 
 **Choice:** Spawn `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages` with explicit shim config, strict/empty settings sources, permission bypass, `--tools ""`, debug file, model/system prompt, and session identity. Start shim with ready-file. Wait for exact `tools/list` sentinel (default 30s; positive integer `CLAUDE_BRIDGE_MCP_READY_TIMEOUT_MS` override), then write exactly one user NDJSON frame and keep stdin open until result/abort/failure. Caller abort during readiness reaps without submission. Integration proves no generation before connected MCP init.
 
-Multiline or >=50KB system prompts use bridge-temp `--system-prompt-file`; user history always rides stdin NDJSON. Temp files and sentinel clean on every exit.
+Multiline or >=50KB system prompts use bridge-temp `--system-prompt-file`; user history always rides stdin NDJSON. Allocate one per-invocation temporary directory with mode `0700`; create prompt/sentinel artifacts exclusively (`O_CREAT|O_EXCL`, no-follow where platform supports) with mode `0600`; register them on driver-handle resource owner and remove in `finally` on result, readiness error, retry, abort, spawn failure, and capture completion. Never place prompt-bearing artifacts in a shared-mode temp file.
 
 **Alternatives considered:**
 - **Plain stdin/positional prompt:** spike starts generation while MCP pending and fails tools/capture.
@@ -73,7 +73,7 @@ Multiline or >=50KB system prompts use bridge-temp `--system-prompt-file`; user 
 
 **Choice:** New parser recognizes required direct records and explicit observational allowlist. `stream_event` top-level text/thinking lifecycle emits pi blocks; complete assistant records never re-emit those blocks. Missing required partial lifecycle is protocol error because partial mode is mandatory. Complete assistant supplies final-call context usage and tool observations for D32 correlation/cross-check only. Router/shim is sole pi-visible tool-call execution/correlation source. Terminal result supplies cumulative usage/billing, session id, and completion subtype; pi cost remains calculated from normalized usage while reported billing is logged separately.
 
-Require one terminal result, consistent session identity/completion, valid block lifecycle, and final assistant usage. Recognized non-abort error subtype maps to pi error and hint invalidation. Exact ignorable top-level allowlist is `system` with subtype `status` or `api_retry`, plus `rate_limit_event`; each gets retained fixture/schema guards and cannot carry content, usage, session, or completion semantics. Required `system/init`, `stream_event`, `assistant`, and `result` records follow dedicated parsers. Every other top-level type/subtype fails closed until deliberately added with fixtures. Local abort overrides all late records, including `error_during_execution` + exit zero.
+Require one terminal result, consistent session identity/completion, valid block lifecycle, and final assistant usage. Result matrix is table-driven: `success` with valid result maps normal completion; local-abort plus any late subtype maps aborted; documented non-success `error_*` subtypes map pi error + diagnostics + hint invalidation; unknown subtype or incompatible stop reason is protocol drift. NDJSON decoder caps pending/single line at 8 MiB and fails with UTF-8-safe 16 KiB diagnostic excerpt before unbounded growth. Exact ignorable top-level allowlist is `system` with subtype `status` or `api_retry`, plus `rate_limit_event`; each gets retained fixture/schema guards and cannot carry content, usage, session, or completion semantics. Required `system/init`, `stream_event`, `assistant`, and `result` records follow dedicated parsers. Every other top-level type/subtype fails closed until deliberately added with fixtures. Local abort overrides all late records, including `error_during_execution` + exit zero.
 
 **Alternatives considered:**
 - **Emit complete assistant records:** duplicates already streamed partials.
@@ -91,8 +91,8 @@ Require one terminal result, consistent session identity/completion, valid block
 
 1. `shim-first`: park request, mint pi id, emit one pi tool call, and queue canonical name/args awaiting optional model-id observation; result resolver remains keyed by that pi id for its entire lifetime.
 2. `observation-first`: queue observation within current assistant tool-use batch; matching shim request consumes it and records `modelId ↔ piId` metadata before/after pi emission without changing resolver key or execution authority.
-3. `identical parallel calls`: pair request and observation queues positionally only inside one completed assistant tool-use batch.
-4. `batch-close`: reconcile counts; mismatch transitions invocation to correlation error, drains pending resolvers, and invalidates resume.
+3. `identical parallel calls`: pair request and observation queues positionally only inside one assistant tool-use batch.
+4. `batch-close`: assistant `message_stop` seals expected observation count but does not reject a delayed shim request. Close successfully when sealed expected count equals matched shim count; reject immediately if shim count exceeds sealed expected count; if fewer shim requests exist, wait without a new liveness timer until missing requests arrive, terminal/process failure, or caller abort. Any unmatched count at terminal/failure transitions to correlation error, drains pending resolvers, and invalidates resume.
 5. `teardown`: abort/error closes coordinator idempotently; late observations/results cannot mutate settled state.
 
 When shim request carries model id directly, correlation metadata is authoritative immediately, but pi id remains resolver key because that is the id pi returns. Alias metadata is removed with resolver on completion/abort. Each concurrent frame owns process, shim, socket, router, queues, and session state, including mixed-driver overlap.
@@ -123,7 +123,7 @@ Direct resume treats successful terminal result after this submitted user frame 
 
 ### D7: Unified lifecycle, conservative retry, and no held-call idle cutoff
 
-**Choice:** Both drivers run detached process groups. Caller abort transitions stream locally, commits partial, SIGINTs group, escalates after existing grace, ignores late output, and verifies descendants reaped. Direct retry is at most two retries (three total attempts) with short backoff and fresh process/shim only before first pi-visible text/thinking delta and before routed tool; this is intentionally stricter than interactive record behavior because direct deltas cannot be retracted without duplication. No cross-driver retry.
+**Choice:** Both drivers run detached process groups. Caller abort transitions stream locally, commits partial, SIGINTs group, escalates after existing grace, ignores late output, and verifies descendants reaped. Direct retry is at most two retries (three total attempts) with short backoff and fresh process/shim only before first pi-visible text/thinking delta and before routed tool; every retry logs driver, attempt number, prior failure class, and new session/process identity; this is intentionally stricter than interactive record behavior because direct deltas cannot be retracted without duplication. No cross-driver retry.
 
 Steering never injects a second user frame into a live direct process: shared orchestrator first performs the same local abort/partial commit and waits for old stream detachment, then starts a fresh invocation pinned to the same selected driver with updated pi history. Old/new stream events cannot interleave.
 
@@ -158,7 +158,7 @@ Extend capture IPC with bounded `capture-validation-failed` observation containi
 
 ### D9: Peek capability is explicit, diagnostics are driver-neutral
 
-**Choice:** Adapter advertises peek support. `/claude-peek` follows active frame's pinned driver; `claude-p` uses mirror, `claude-print` reports unavailable and creates no tailer. On next resolution to print with no active interactive frame, stale overlay disposes. Diagnostics include driver/session/pid, distinct stderr/debug files, bounded surfaced stderr tail (last 20 lines, capped at 16 KiB encoded), terminal state dump, and default-on debug forwarding disabled only by existing env escape hatch.
+**Choice:** Adapter advertises peek support. `/claude-peek` follows active frame's pinned driver; `claude-p` uses mirror, `claude-print` reports unavailable and creates no tailer. On next resolution to print with no active interactive frame, stale overlay disposes. Diagnostics include driver/session/pid, distinct stderr/debug files, bounded surfaced stderr tail (last 20 lines, capped at 16 KiB encoded), terminal state dump, and default-on debug forwarding disabled only by `CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE=0`. Diagnostic file open/write failure logs structurally but never breaks inference; premature exit with no stderr preserves base error message.
 
 **Alternatives considered:**
 - **Synthetic stream overlay:** user rejected equivalence.
@@ -175,7 +175,7 @@ Extend capture IPC with bounded `capture-validation-failed` observation containi
 
 Extend `openspec/opsx-gates.yaml` with required stable commands: existing `npm run typecheck`; complete unit bundle; new `npm run test:integration:drivers` (deterministic + authenticated direct protocol gates); `openspec validate "$OPSX_CHANGE" --strict`; and new `npm run test:scenarios:drivers` dual-driver TUI matrix. Live commands preflight authenticated Claude >=2.1.208 and fail explicitly rather than skip. Retain per-driver evidence paths and stop before full scenario cost when deterministic or integration tier fails.
 
-Before matrix use, make harness itself fail closed: maintain explicit S0–S27 required inventory, convert S21 investigation to assertions or exclude it from required inventory, make S22/any required precondition skip a nonzero gate failure, assert requested driver actually spawned in every script, and add harness fixtures proving forced scenario failure/skip propagates nonzero. S28 idle-cutoff and S29 mid-held failure also run as required driver integration gates even though frozen TUI parity range ends at S27.
+Before matrix use, make harness itself fail closed: maintain explicit S0–S27 required inventory, convert S21 investigation into deterministic assertions (do not exclude it), make S22/any required precondition skip a nonzero gate failure, assert requested driver actually spawned in every script, and add harness fixtures proving forced scenario failure/skip propagates nonzero. S28 idle-cutoff and S29 mid-held failure also run as required driver integration gates even though frozen TUI parity range ends at S27.
 
 **Alternatives considered:**
 - **Unit-only:** cannot prove CLI/MCP/process semantics.

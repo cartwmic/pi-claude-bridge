@@ -18,7 +18,7 @@ THE selected driver SHALL capture child stderr to dedicated per-spawn file under
 
 ### Requirement: Premature-exit error surfaces the last stderr lines
 
-WHEN selected-driver spawn exits without terminal result and was not aborted, THE bridge SHALL append bounded last N stderr lines to surfaced error; with no captured stderr it SHALL preserve base premature-termination message.
+IF selected-driver spawn exits without terminal result and was not aborted, THEN THE bridge SHALL append bounded last N stderr lines to surfaced error; with no captured stderr it SHALL preserve base premature-termination message.
 
 #### Scenario: Premature exit with stderr
 - **IF** either driver closes without result and stderr exists

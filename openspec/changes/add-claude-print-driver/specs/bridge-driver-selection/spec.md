@@ -66,11 +66,11 @@ IF a selected driver fails during an invocation, THEN THE bridge SHALL surface t
 
 ### Requirement: Direct Driver Enforces Independent Version Floor
 
-WHERE `claude-print` is selected, THE bridge SHALL require installed Claude Code version 2.1.208 or newer before submitting a billed turn; this check SHALL NOT restrict `claude-p`.
+WHERE `claude-print` is selected, THE bridge SHALL require installed Claude Code version 2.1.208 or newer before spawning the inference child; this check SHALL NOT restrict `claude-p`.
 
 #### Scenario: Unsupported direct version
 - **IF** `claude-print` is selected and installed Claude Code is older than 2.1.208
-- **THEN** the bridge returns an explicit unsupported-version error before prompt submission
+- **THEN** the bridge returns an explicit unsupported-version error before any inference child is spawned
 
 #### Scenario: Interactive path remains independently supported
 - **WHEN** `claude-p` is selected on a version supported by that driver but older than the direct-driver floor

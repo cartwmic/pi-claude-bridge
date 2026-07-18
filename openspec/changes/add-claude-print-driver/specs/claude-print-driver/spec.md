@@ -15,6 +15,10 @@ WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Cla
 - **AND** one user NDJSON frame carries flattened pi history per the cold-start conversion contract
 - **AND** stdin remains open until terminal result, abort, or failure
 
+#### Scenario: Private temporary prompt artifacts
+- **WHEN** direct system prompt or readiness sentinel requires filesystem storage
+- **THEN** bridge creates a per-invocation private directory with owner-only access, creates prompt files exclusively with owner read/write mode, and cleans every artifact on result, readiness error, retry, abort, spawn failure, or capture completion
+
 #### Scenario: Warm direct invocation
 - **WHEN** a validated direct session hint starts a later turn
 - **THEN** argv retains `-p`, selected model/system prompt, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--tools ""`, `--permission-mode bypassPermissions`, `--strict-mcp-config`, `--setting-sources ""`, native filtering, explicit MCP config, and bridge-owned debug file

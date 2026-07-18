@@ -2,7 +2,7 @@
 
 ## 1. Driver-neutral foundations
 
-- [ ] 1.1 Add tested layered driver configuration loader and runtime preflight for `claude-p | claude-print`, including all-present-file fail-loud parsing, race-resistant regular-file reads, project/global/env precedence, default `claude-p`, and direct-only Claude >=2.1.208 pre-spawn check. ACs: `bridge-driver-selection.driver-selection-uses-layered-bridge-configuration`, `bridge-driver-selection.direct-driver-enforces-independent-version-floor`.
+- [x] 1.1 Add tested layered driver configuration loader and runtime preflight for `claude-p | claude-print`, including all-present-file fail-loud parsing, race-resistant regular-file reads, project/global/env precedence, default `claude-p`, and direct-only Claude >=2.1.208 pre-spawn check. ACs: `bridge-driver-selection.driver-selection-uses-layered-bridge-configuration`, `bridge-driver-selection.direct-driver-enforces-independent-version-floor`.
   - intent: feature
   - files_allowed:
       - openspec/changes/add-claude-print-driver/tasks.md

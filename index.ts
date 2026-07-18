@@ -29,7 +29,18 @@ import {
 } from "@mariozechner/pi-ai";
 import * as piAi from "@mariozechner/pi-ai";
 import { keyHint, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
+import {
+	closeSync,
+	constants as fsConstants,
+	existsSync,
+	fstatSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	type Stats,
+} from "fs";
 import pino from "pino";
 import { createStream } from "rotating-file-stream";
 import { homedir, tmpdir } from "os";
@@ -62,6 +73,7 @@ import { registerClaudePeekCommand } from "./src/peek/overlay.js";
 import type { DriverStreamEvent } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
 import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -149,27 +161,209 @@ export function __setCaptureSpawnForTests(f: CaptureSpawnFactory): () => void {
 }
 
 // ---------------------------------------------------------------------------
-// Driver selection (T3 cut-over). `claude-p` is now the ONLY inference driver;
-// the legacy in-process SDK path has been deleted. CLAUDE_BRIDGE_DRIVER defaults
-// to `claude-p` and the only other accepted value is `claude-p` itself. Setting
-// it to `sdk` is a removed configuration and surfaces a clear deprecation error
-// at module load (NOT a silent fallback) so operators migrate explicitly.
+// Layered driver configuration + direct-driver runtime preflight.
 // ---------------------------------------------------------------------------
 
-const _rawDriver = (process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p").trim().toLowerCase();
-if (_rawDriver === "sdk") {
-	throw new Error(
-		"CLAUDE_BRIDGE_DRIVER=sdk is no longer supported: the in-process Claude Agent SDK " +
-		"inference path was removed in the claude-p cut-over. pi-claude-bridge now drives " +
-		"the interactive `claude` TUI exclusively via the claude-p driver. Unset " +
-		"CLAUDE_BRIDGE_DRIVER (or set it to `claude-p`) to continue.",
-	);
+export type BridgeDriver = "claude-p" | "claude-print";
+export const CLAUDE_PRINT_MIN_VERSION = "2.1.208";
+
+interface BridgeConfigFsOps {
+	lstatSync(path: string): Stats;
+	openSync(path: string, flags: number): number;
+	fstatSync(fd: number): Stats;
+	readFileSync(fd: number, encoding: BufferEncoding): string;
+	closeSync(fd: number): void;
 }
-if (_rawDriver !== "claude-p") {
-	throw new Error(
-		`CLAUDE_BRIDGE_DRIVER="${process.env.CLAUDE_BRIDGE_DRIVER}" is not a valid driver. ` +
-		"The only supported value is `claude-p` (the default). Unset CLAUDE_BRIDGE_DRIVER to use it.",
-	);
+
+export interface BridgeDriverConfigOptions {
+	/** Owning pi/session project cwd; never a later isolated subprocess cwd. */
+	projectCwd?: string;
+	homeDir?: string;
+	env?: Record<string, string | undefined>;
+	/** Injectable filesystem seam for deterministic replacement-race tests. */
+	fsOps?: BridgeConfigFsOps;
+}
+
+const DEFAULT_CONFIG_FS: BridgeConfigFsOps = {
+	lstatSync,
+	openSync,
+	fstatSync,
+	readFileSync: (fd, encoding) => readFileSync(fd, encoding),
+	closeSync,
+};
+
+function configError(layer: "project" | "global", detail: string, path: string, cause?: unknown): Error {
+	const suffix = cause instanceof Error ? `: ${cause.message}` : cause === undefined ? "" : `: ${String(cause)}`;
+	return new Error(`Bridge ${layer} config ${detail} "${path}"${suffix}`);
+}
+
+function readConfigLayer(
+	layer: "project" | "global",
+	path: string,
+	fsOps: BridgeConfigFsOps,
+): BridgeDriver | undefined {
+	let before: Stats;
+	try {
+		before = fsOps.lstatSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+		throw configError(layer, "stat failed for", path, error);
+	}
+
+	if (before.isSymbolicLink()) throw configError(layer, "symlink is not allowed at", path);
+	if (!before.isFile()) throw configError(layer, "path must be a regular file at", path);
+	if (typeof fsConstants.O_NOFOLLOW !== "number") {
+		throw configError(layer, "cannot be read safely because O_NOFOLLOW is unavailable at", path);
+	}
+
+	let fd: number;
+	try {
+		fd = fsOps.openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+	} catch (error) {
+		throw configError(layer, "open failed for", path, error);
+	}
+
+	let text: string;
+	let operationError: unknown;
+	try {
+		let after: Stats;
+		try {
+			after = fsOps.fstatSync(fd);
+		} catch (error) {
+			throw configError(layer, "fstat failed for", path, error);
+		}
+		if (!after.isFile()) throw configError(layer, "opened path is not a regular file at", path);
+		if (before.dev !== after.dev || before.ino !== after.ino) {
+			throw configError(layer, "changed between lstat and open at", path);
+		}
+		try {
+			text = fsOps.readFileSync(fd, "utf8");
+		} catch (error) {
+			throw configError(layer, "read failed for", path, error);
+		}
+	} catch (error) {
+		operationError = error;
+		throw error;
+	} finally {
+		try {
+			fsOps.closeSync(fd);
+		} catch (error) {
+			if (operationError === undefined) throw configError(layer, "close failed for", path, error);
+		}
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text!);
+	} catch (error) {
+		throw configError(layer, "contains malformed JSON at", path, error);
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw configError(layer, "root must be an object at", path);
+	}
+
+	const value = (parsed as Record<string, unknown>).driver;
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") throw configError(layer, "driver must be a string at", path);
+	if (value !== "claude-p" && value !== "claude-print") {
+		throw configError(layer, `driver must be one of claude-p or claude-print, found ${JSON.stringify(value)} at`, path);
+	}
+	return value;
+}
+
+/**
+ * Resolve one driver after validating every present file. A higher-precedence
+ * value never hides malformed or unsafe lower-precedence configuration.
+ */
+export function loadBridgeDriverConfig(options: BridgeDriverConfigOptions = {}): BridgeDriver {
+	const projectCwd = options.projectCwd ?? process.cwd();
+	const homeDir = options.homeDir ?? homedir();
+	const env = options.env ?? process.env;
+	const fsOps = options.fsOps ?? DEFAULT_CONFIG_FS;
+	const projectPath = join(projectCwd, ".pi", "claude-bridge.json");
+	const globalPath = join(homeDir, ".pi", "agent", "claude-bridge.json");
+	const errors: Error[] = [];
+
+	let globalDriver: BridgeDriver | undefined;
+	let projectDriver: BridgeDriver | undefined;
+	try { globalDriver = readConfigLayer("global", globalPath, fsOps); } catch (error) { errors.push(error as Error); }
+	try { projectDriver = readConfigLayer("project", projectPath, fsOps); } catch (error) { errors.push(error as Error); }
+
+	const rawEnv = env.CLAUDE_BRIDGE_DRIVER;
+	const envValue = rawEnv?.trim() ?? "";
+	let envDriver: BridgeDriver | undefined;
+	if (envValue !== "") {
+		if (envValue === "claude-p" || envValue === "claude-print") envDriver = envValue;
+		else errors.push(new Error(
+			`CLAUDE_BRIDGE_DRIVER=${JSON.stringify(rawEnv)} is unsupported; expected claude-p or claude-print`,
+		));
+	}
+
+	if (errors.length > 0) {
+		throw new Error(`Bridge driver configuration failed:\n${errors.map((error) => `- ${error.message}`).join("\n")}`);
+	}
+	return envDriver ?? projectDriver ?? globalDriver ?? "claude-p";
+}
+
+export type ClaudeVersionProbe = () => string | null;
+let cachedClaudePrintVersion: string | null | undefined;
+
+function defaultClaudeVersionProbe(): string | null {
+	try {
+		return execFileSync("claude", ["--version"], {
+			encoding: "utf8",
+			timeout: 15_000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+	} catch {
+		return null;
+	}
+}
+
+function parseClaudeVersion(output: string | null): string | null {
+	if (output === null) return null;
+	return /\b(\d+)\.(\d+)\.(\d+)\b/.exec(output)?.[0] ?? null;
+}
+
+function compareVersions(left: string, right: string): number {
+	const a = left.split(".").map(Number);
+	const b = right.split(".").map(Number);
+	for (let i = 0; i < 3; i++) {
+		if (a[i] !== b[i]) return a[i] - b[i];
+	}
+	return 0;
+}
+
+/** Direct-only pre-spawn gate. `claude-p` never probes or inherits this floor. */
+export function preflightBridgeDriver(
+	driver: BridgeDriver,
+	probe: ClaudeVersionProbe = defaultClaudeVersionProbe,
+): string | undefined {
+	if (driver === "claude-p") return undefined;
+	if (driver !== "claude-print") throw new Error(`Unsupported bridge driver: ${String(driver)}`);
+	if (cachedClaudePrintVersion === undefined) {
+		try {
+			cachedClaudePrintVersion = parseClaudeVersion(probe());
+		} catch {
+			cachedClaudePrintVersion = null;
+		}
+	}
+	if (cachedClaudePrintVersion === null) {
+		throw new Error(
+			`claude-print requires Claude Code >=${CLAUDE_PRINT_MIN_VERSION}, but installed Claude version could not be read`,
+		);
+	}
+	if (compareVersions(cachedClaudePrintVersion, CLAUDE_PRINT_MIN_VERSION) < 0) {
+		throw new Error(
+			`claude-print cannot start with Claude Code ${cachedClaudePrintVersion}; version >=${CLAUDE_PRINT_MIN_VERSION} is required`,
+		);
+	}
+	return cachedClaudePrintVersion;
+}
+
+/** Test-only reset for process-wide direct-version probe memoization. */
+export function __resetClaudePrintVersionProbeForTests(): void {
+	cachedClaudePrintVersion = undefined;
 }
 
 /** Test-only: swap piApiRef and return a restorer. Not part of the public API. */

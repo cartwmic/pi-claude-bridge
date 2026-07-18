@@ -28,7 +28,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 1.3 Type in-memory and persisted resume hints by driver, migrate missing field to `claude-p`, invalidate malformed/mismatched hints, implement attempt-phase persistence safety, and add lock-aware idempotent `resume:quarantine-direct` downgrade command with tests. ACs: `bridge-driver-selection.in-memory-session-hints-are-driver-typed`, `warm-pi-resume.resume-sidecar-persisted-on-successful-turn`, `warm-pi-resume.resume-sidecar-records-driver-identity`, `warm-pi-resume.cross-driver-warm-resume-is-forbidden`.
+- [x] 1.3 Type in-memory and persisted resume hints by driver, migrate missing field to `claude-p`, invalidate malformed/mismatched hints, implement attempt-phase persistence safety, and add lock-aware idempotent `resume:quarantine-direct` downgrade command with tests. ACs: `bridge-driver-selection.in-memory-session-hints-are-driver-typed`, `warm-pi-resume.resume-sidecar-persisted-on-successful-turn`, `warm-pi-resume.resume-sidecar-records-driver-identity`, `warm-pi-resume.cross-driver-warm-resume-is-forbidden`.
   - intent: feature
   - files_allowed:
       - openspec/changes/add-claude-print-driver/tasks.md

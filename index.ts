@@ -34,10 +34,13 @@ import {
 	constants as fsConstants,
 	existsSync,
 	fstatSync,
+	fsyncSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
+	readdirSync,
+	renameSync,
 	rmSync,
 	type Stats,
 } from "fs";
@@ -65,6 +68,7 @@ import {
 	invalidateSidecar,
 	validateWarmResume,
 	computeSha256Chain,
+	resumeStoreDir,
 } from "./src/resume-store.js";
 import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
@@ -165,6 +169,274 @@ export function __setCaptureSpawnForTests(f: CaptureSpawnFactory): () => void {
 export type DriverKind = "claude-p" | "claude-print";
 export type BridgeDriver = DriverKind;
 export const CLAUDE_PRINT_MIN_VERSION = "2.1.208";
+
+/** Driver-typed in-memory resume hint. Session ids never cross driver boundaries. */
+export interface DriverSessionHint {
+	driver: DriverKind;
+	sessionId: string;
+	cwd: string;
+}
+
+/** Additive persisted shape. Missing `driver` is the sole legacy migration. */
+export interface DriverResumeSidecar {
+	driver: DriverKind;
+	claudeSessionId: string;
+	piSessionId: string;
+	historyHashChain: string[];
+	claudeVersion: string | null;
+}
+
+const RESUME_SIDECAR_KEYS = new Set([
+	"driver",
+	"claudeSessionId",
+	"piSessionId",
+	"historyHashChain",
+	"claudeVersion",
+]);
+
+/** Decode persisted metadata without admitting content or unknown schema fields. */
+export function decodeDriverResumeSidecar(value: unknown): DriverResumeSidecar | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).some((key) => !RESUME_SIDECAR_KEYS.has(key))) return null;
+	const rawDriver = record.driver;
+	const driver: DriverKind | null = rawDriver === undefined
+		? "claude-p"
+		: rawDriver === "claude-p" || rawDriver === "claude-print"
+			? rawDriver
+			: null;
+	if (
+		driver === null ||
+		typeof record.claudeSessionId !== "string" ||
+		typeof record.piSessionId !== "string" ||
+		!Array.isArray(record.historyHashChain) ||
+		!record.historyHashChain.every((hash) => typeof hash === "string") ||
+		!(record.claudeVersion === null || typeof record.claudeVersion === "string")
+	) return null;
+	return {
+		driver,
+		claudeSessionId: record.claudeSessionId,
+		piSessionId: record.piSessionId,
+		historyHashChain: record.historyHashChain as string[],
+		claudeVersion: record.claudeVersion as string | null,
+	};
+}
+
+function resumeStoreLockPath(): string {
+	return `${resumeStoreDir()}.lock`;
+}
+
+/**
+ * Serialize bridge reads/writes with rollback quarantine. O_EXCL creates one
+ * active-store lock. Dead-owner locks are reclaimed so a killed quarantine can
+ * be rerun; a live or unreadable owner fails loud instead of racing.
+ */
+export function withResumeStoreLock<T>(operation: () => T): T {
+	const lockPath = resumeStoreLockPath();
+	mkdirSync(dirname(lockPath), { recursive: true });
+	let lockFd: number | undefined;
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			lockFd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+			writeFileSync(lockFd, JSON.stringify({ pid: process.pid }));
+			fsyncSync(lockFd);
+			break;
+		} catch (error) {
+			if (lockFd !== undefined) {
+				try { closeSync(lockFd); } catch { /* ignore */ }
+				lockFd = undefined;
+				try { rmSync(lockPath, { force: true }); } catch { /* ignore */ }
+			}
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			let ownerPid: number | null = null;
+			try {
+				const owner = JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: unknown };
+				if (Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0) ownerPid = owner.pid as number;
+			} catch { /* unreadable owner is conservatively active */ }
+			let ownerAlive = true;
+			if (ownerPid !== null) {
+				try { process.kill(ownerPid, 0); }
+				catch (probeError) {
+					ownerAlive = (probeError as NodeJS.ErrnoException).code !== "ESRCH";
+				}
+			}
+			if (ownerAlive || attempt > 0) {
+				throw new Error(`Resume store is locked by another process: ${lockPath}`);
+			}
+			rmSync(lockPath, { force: true });
+		}
+	}
+	if (lockFd === undefined) throw new Error(`Could not acquire resume store lock: ${lockPath}`);
+	try {
+		return operation();
+	} finally {
+		try { closeSync(lockFd); } finally { rmSync(lockPath, { force: true }); }
+	}
+}
+
+/** Read, migrate, driver-check, and invalidate unsafe persisted hints atomically. */
+export function readDriverResumeSidecar(
+	cwd: string,
+	piSessionId: string,
+	selectedDriver: DriverKind,
+): DriverResumeSidecar | null {
+	return withResumeStoreLock(() => {
+		const raw = readSidecar(cwd, piSessionId);
+		const sidecar = decodeDriverResumeSidecar(raw);
+		if (!sidecar || sidecar.piSessionId !== piSessionId || sidecar.driver !== selectedDriver) {
+			// Missing is a harmless no-op; malformed/mismatched files are removed.
+			invalidateSidecar(cwd, piSessionId);
+			return null;
+		}
+		return sidecar;
+	});
+}
+
+/** Persist only additive, content-free, driver-typed resume metadata. */
+export function writeDriverResumeSidecar(
+	cwd: string,
+	piSessionId: string,
+	sidecar: DriverResumeSidecar,
+): void {
+	if (sidecar.piSessionId !== piSessionId) {
+		throw new Error("Resume sidecar piSessionId does not match its store key");
+	}
+	withResumeStoreLock(() => writeSidecar(cwd, piSessionId, sidecar));
+}
+
+export function invalidateDriverResumeSidecar(cwd: string, piSessionId: string): void {
+	withResumeStoreLock(() => invalidateSidecar(cwd, piSessionId));
+}
+
+export type DriverAttemptPhase = "spawned" | "ready" | "promptSubmitted" | "turnAccepted" | "terminal";
+export type ResumePersistenceAction = "preserve" | "invalidate" | "persist";
+
+const ATTEMPT_PHASE_ORDER: Record<DriverAttemptPhase, number> = {
+	spawned: 0,
+	ready: 1,
+	promptSubmitted: 2,
+	turnAccepted: 3,
+	terminal: 4,
+};
+
+/** Monotonic attempt-phase transition guard for direct-driver lifecycle wiring. */
+export function advanceDriverAttemptPhase(
+	current: DriverAttemptPhase,
+	next: DriverAttemptPhase,
+): DriverAttemptPhase {
+	if (ATTEMPT_PHASE_ORDER[next] < ATTEMPT_PHASE_ORDER[current]) {
+		throw new Error(`Driver attempt phase cannot regress from ${current} to ${next}`);
+	}
+	return next;
+}
+
+/** Persistence safety boundary shared by terminal and caller-abort handling. */
+export function resumePersistenceAction(input: {
+	driver: DriverKind;
+	phase: DriverAttemptPhase;
+	outcome: "result" | "aborted" | "error" | "retry";
+}): ResumePersistenceAction {
+	if (input.outcome === "error") return "invalidate";
+	if (input.outcome === "result") return "persist";
+	if (input.driver === "claude-p") return input.outcome === "retry" ? "preserve" : "persist";
+	if (input.outcome === "retry") {
+		return ATTEMPT_PHASE_ORDER[input.phase] >= ATTEMPT_PHASE_ORDER.promptSubmitted
+			? "invalidate"
+			: "preserve";
+	}
+	if (ATTEMPT_PHASE_ORDER[input.phase] < ATTEMPT_PHASE_ORDER.promptSubmitted) return "preserve";
+	if (ATTEMPT_PHASE_ORDER[input.phase] < ATTEMPT_PHASE_ORDER.turnAccepted) return "invalidate";
+	return "persist";
+}
+
+export interface ResumeQuarantineResult {
+	movedDirect: number;
+	movedInvalid: number;
+	backupDir: string | null;
+}
+
+export interface ResumeQuarantineOptions {
+	storeDir?: string;
+	/** Injectable timestamp for deterministic fixture tests. */
+	now?: () => Date;
+	/** Test-only crash point after N durable moves. */
+	crashAfterMoves?: number;
+}
+
+function fsyncDirectory(path: string): void {
+	const fd = openSync(path, fsConstants.O_RDONLY);
+	try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function quarantineCandidate(path: string): "direct" | "invalid" | null {
+	try {
+		const decoded = decodeDriverResumeSidecar(JSON.parse(readFileSync(path, "utf8")));
+		if (!decoded) return "invalid";
+		return decoded.driver === "claude-print" ? "direct" : null;
+	} catch {
+		return "invalid";
+	}
+}
+
+/**
+ * Atomically move direct/invalid hints outside active store. Per-file rename +
+ * directory fsync makes interruption restart-safe; rerun moves remaining files
+ * and returns zero once store is clean.
+ */
+export function quarantineDirectResumeSidecars(
+	options: ResumeQuarantineOptions = {},
+): ResumeQuarantineResult {
+	const storeDir = options.storeDir ?? resumeStoreDir();
+	const priorOverride = process.env.CLAUDE_BRIDGE_RESUME_DIR;
+	if (options.storeDir !== undefined) process.env.CLAUDE_BRIDGE_RESUME_DIR = storeDir;
+	try {
+		return withResumeStoreLock(() => {
+			let names: string[];
+			try {
+				names = readdirSync(storeDir).filter((name) => name.endsWith(".json")).sort();
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+					return { movedDirect: 0, movedInvalid: 0, backupDir: null };
+				}
+				throw error;
+			}
+			const candidates = names
+				.map((name) => ({ name, kind: quarantineCandidate(join(storeDir, name)) }))
+				.filter((entry): entry is { name: string; kind: "direct" | "invalid" } => entry.kind !== null);
+			if (candidates.length === 0) return { movedDirect: 0, movedInvalid: 0, backupDir: null };
+
+			const stamp = (options.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
+			const backupDir = join(dirname(storeDir), `${basename(storeDir)}-quarantine-${stamp}`);
+			mkdirSync(backupDir, { recursive: true });
+			let movedDirect = 0;
+			let movedInvalid = 0;
+			let moved = 0;
+			for (const candidate of candidates) {
+				const source = join(storeDir, candidate.name);
+				let destination = join(backupDir, candidate.name);
+				for (let suffix = 1; existsSync(destination); suffix++) {
+					destination = join(backupDir, `${candidate.name}.${suffix}`);
+				}
+				renameSync(source, destination);
+				candidate.kind === "direct" ? movedDirect++ : movedInvalid++;
+				moved++;
+				fsyncDirectory(backupDir);
+				fsyncDirectory(storeDir);
+				if (options.crashAfterMoves === moved) throw new Error(`Injected quarantine crash after ${moved} move(s)`);
+			}
+			const remainingUnsafe = readdirSync(storeDir)
+				.filter((name) => name.endsWith(".json"))
+				.some((name) => quarantineCandidate(join(storeDir, name)) !== null);
+			if (remainingUnsafe) throw new Error("Resume quarantine verification failed: active direct/invalid sidecars remain");
+			return { movedDirect, movedInvalid, backupDir };
+		});
+	} finally {
+		if (options.storeDir !== undefined) {
+			if (priorOverride === undefined) delete process.env.CLAUDE_BRIDGE_RESUME_DIR;
+			else process.env.CLAUDE_BRIDGE_RESUME_DIR = priorOverride;
+		}
+	}
+}
 
 interface BridgeConfigFsOps {
 	lstatSync(path: string): Stats;
@@ -392,6 +664,7 @@ export interface DriverCapabilities {
 /** Observable process lifecycle transitions; stream content uses InferenceDriverEvent. */
 export type InferenceDriverLifecycleEvent =
 	| { kind: "spawned"; driverKind: DriverKind; sessionId: string; pid: number | undefined }
+	| { kind: "attempt-phase"; driverKind: DriverKind; phase: DriverAttemptPhase }
 	| { kind: "retrying"; driverKind: DriverKind; attempt: number; sessionId: string }
 	| { kind: "abort-requested"; driverKind: DriverKind; sessionId: string; pid: number | undefined }
 	| { kind: "settled"; driverKind: DriverKind; result: InferenceDriverDoneResult };
@@ -522,8 +795,7 @@ export function __getDebugLogPathForTests(): string {
 
 /** Test-only: reset cross-call session cache. Not part of the public API. */
 export function __resetCachedSessionForTests(): void {
-	cachedSessionId = null;
-	cachedSessionCwd = null;
+	cachedSessionHint = null;
 	lastSentMessageHashes = null;
 	// Drop any frames a test left on the stack (e.g. a retained errored/aborted
 	// frame whose driver never popped) so the next test in the same file starts
@@ -665,8 +937,7 @@ function getFullPiSessionId(): string | null {
  * on /tree, on /compact — anything that diverges history — this is dropped
  * and the next turn cold-starts.
  */
-let cachedSessionId: string | null = null;
-let cachedSessionCwd: string | null = null;
+let cachedSessionHint: DriverSessionHint | null = null;
 
 // Context-window total (totalTokens) last reported to pi for the MAIN turn. Used
 // to SEED the in-progress assistant message's usage so pi's context bar holds at
@@ -793,6 +1064,11 @@ type QueryFrame = {
 	// finalizeClaudePFrame — which does not receive the messages — can persist the
 	// content-free resume sidecar on a successful main-turn finalize (design D1).
 	sha256Chain?: string[];
+	// In-memory divergence boundary rolls back when direct attempt was not accepted.
+	priorMessageHashes: string[] | null;
+	currentMessageHashes: string[];
+	// Direct attempt persistence boundary. claude-p keeps established abort semantics.
+	attemptPhase: DriverAttemptPhase;
 };
 
 const stack: QueryFrame[] = [];
@@ -1816,55 +2092,74 @@ function finalizeClaudePFrame(frame: QueryFrame, res: InferenceDriverDoneResult)
 	// "this is the main turn" discriminator (design D1). Persisting a subagent frame
 	// would make a later --resume reattach the wrong (subagent) transcript.
 	const isMainTurn = stack[0] === frame;
-	// Clear the cache on a spawn-level error OR a turn-level error so the next turn
-	// cold-starts — giving the MCP attach a fresh try.
-	if (res.stopReason === "error" || frame.turnOutput?.stopReason === "error") {
-		// Mark the frame as driver-errored so a tool-result that pi delivers AFTER
-		// the driver died (currentPiStream is null while pi executes a held tool)
-		// closes pi's stream with a terminal error instead of wiring into a dead
-		// driver and hanging forever. See streamClaudeAgentSdk Case 1
-		// (`willHangIfWired`). This is the error-path analogue of the abort path.
+	const errored = res.stopReason === "error" || frame.turnOutput?.stopReason === "error";
+	const outcome = errored
+		? "error" as const
+		: frame.wasAborted || res.stopReason === "aborted"
+			? "aborted" as const
+			: "result" as const;
+	const persistence = resumePersistenceAction({
+		driver: frame.driverKind,
+		phase: frame.attemptPhase,
+		outcome,
+	});
+
+	if (errored) {
+		// Error-path analogue of abort: late tool results close instead of hanging.
 		frame.driverErrored = true;
-		// Clear cache so the next turn cold-starts (spec: "any cached driver
-		// session id is cleared").
-		if (cachedSessionId === res.sessionId || cachedSessionCwd === cwd) {
-			cachedSessionId = null;
-			cachedSessionCwd = null;
-		}
-		// D7: invalidate the persisted sidecar UNCONDITIONALLY by key (the in-memory
-		// clear above is session-id-guarded, but a stale sidecar left on disk would
-		// warm-resume on the next restart). Includes the McpNotReady fail-fast path
-		// (a gated, never-submitted attempt persists no resumable sidecar).
+	}
+	if (persistence !== "persist" && isMainTurn && frame.driverKind === "claude-print") {
+		lastSentMessageHashes = frame.priorMessageHashes;
+	} else if (persistence === "persist" && isMainTurn) {
+		lastSentMessageHashes = frame.currentMessageHashes;
+	}
+	if (persistence === "invalidate") {
+		if (
+			cachedSessionHint?.driver === frame.driverKind &&
+			(cachedSessionHint.sessionId === res.sessionId || cachedSessionHint.cwd === cwd)
+		) cachedSessionHint = null;
 		if (isMainTurn) {
 			const fullSid = getFullPiSessionId();
-			if (fullSid) invalidateSidecar(cwd, fullSid);
+			if (fullSid) {
+				try { invalidateDriverResumeSidecar(cwd, fullSid); }
+				catch (err) {
+					frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "finalizeClaudePFrame: resume sidecar invalidation failed (ignored)");
+				}
+			}
 		}
-		frame.log.warn({ stopReason: res.stopReason, turnStopReason: frame.turnOutput?.stopReason, exitCode: res.exitCode, signal: res.signal }, `finalizeClaudePFrame: error (exitCode=${res.exitCode ?? "null"} signal=${res.signal ?? "null"}) — cleared cached session`);
-	} else if (res.sessionId) {
-		// Cache the session id for next-turn warm resume — even on abort, so the
-		// next turn can resume and the model sees the interrupted partial.
-		cachedSessionId = res.sessionId;
-		cachedSessionCwd = cwd;
-		// D1: persist the content-free resume sidecar for cross-restart warm resume.
-		// Main turn only (isMainTurn); abort is non-error and reaches here, so an
-		// aborted-mid-tool session stays resumable (R7). Best-effort: a write
-		// failure logs and the turn completes normally.
+		frame.log.warn(
+			{ driver: frame.driverKind, phase: frame.attemptPhase, outcome, exitCode: res.exitCode, signal: res.signal },
+			"finalizeClaudePFrame: invalidated resume hint",
+		);
+	} else if (persistence === "persist" && res.sessionId) {
+		cachedSessionHint = { driver: frame.driverKind, sessionId: res.sessionId, cwd };
 		if (isMainTurn && frame.sha256Chain) {
 			const fullSid = getFullPiSessionId();
 			if (fullSid) {
 				try {
-					writeSidecar(cwd, fullSid, {
+					writeDriverResumeSidecar(cwd, fullSid, {
+						driver: frame.driverKind,
 						claudeSessionId: res.sessionId,
 						piSessionId: fullSid,
 						historyHashChain: frame.sha256Chain,
 						claudeVersion: getInstalledClaudeVersion(),
 					});
 				} catch (err) {
+					// A failed replacement cannot be trusted for later warm resume.
+					try { invalidateDriverResumeSidecar(cwd, fullSid); } catch { /* ignore */ }
 					frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "finalizeClaudePFrame: resume sidecar write failed (ignored)");
 				}
 			}
 		}
-		frame.log.debug({ aborted: frame.wasAborted, session: res.sessionId.slice(0, 8) }, `finalizeClaudePFrame: caching session=${res.sessionId.slice(0, 8)}${frame.wasAborted ? " (aborted)" : ""}`);
+		frame.log.debug(
+			{ driver: frame.driverKind, aborted: frame.wasAborted, session: res.sessionId.slice(0, 8) },
+			`finalizeClaudePFrame: caching session=${res.sessionId.slice(0, 8)}${frame.wasAborted ? " (aborted)" : ""}`,
+		);
+	} else {
+		frame.log.debug(
+			{ driver: frame.driverKind, phase: frame.attemptPhase, outcome },
+			"finalizeClaudePFrame: preserving prior resume hint",
+		);
 	}
 
 	// Finalize the most recent stream (mirrors SDK finalizer).
@@ -1935,83 +2230,8 @@ async function startFreshQuery(
 		logger.child({ piSessionId: getPiSessionId(), model: model.id }).warn({ imageCount }, `streamSimple[claude-p]: dropping ${imageCount} image block(s) — claude-p path is text-only (image-strip-on-main-path)`);
 	}
 
-	// Divergence detection: if any prior-position content changed (or pi's
-	// history is shorter than what we last sent), pi has /tree-navigated,
-	// /fork-ed, or /compact-ed — the resumed transcript no longer matches and we
-	// must cold-start. Forward progress (history grew with new messages) is NOT
-	// divergence.
-	const newHashes = computeMessageHashes(context.messages);
-	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
-	if (diverged) {
-		logger.child({ piSessionId: getPiSessionId(), model: model.id }).info(
-			{ priorLen: lastSentMessageHashes?.length ?? 0, newLen: newHashes.length, droppedSession: cachedSessionId?.slice(0, 8) ?? null },
-			`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionId?.slice(0, 8) ?? "none"})`,
-		);
-		cachedSessionId = null;
-		cachedSessionCwd = null;
-	}
-
-	// Warm-pi-resume (design D4/D2): on the FIRST turn after a session_start:resume
-	// (where the literal frame cwd is finally known), read the keyed sidecar and
-	// run the pure validation gate. On a pass, set cachedSessionId/cachedSessionCwd
-	// so `useResume` below takes the warm `--resume` branch instead of cold-packing
-	// the full history. Any failure (no/invalid sidecar, divergence, version skew,
-	// unseen intervening messages) leaves the cache empty -> normal cold-start, the
-	// always-safe floor. A deleted transcript is NOT pre-checked here: it surfaces
-	// as a `--resume` runtime error -> sidecar invalidated -> next turn cold (T0.1).
-	const fingerprintItems = messagesToFingerprintItems(context.messages);
-	if (warmResumePending) {
-		warmResumePending = false; // one-shot, regardless of outcome
-		const fullSid = getFullPiSessionId();
-		if (cachedSessionId === null && fullSid) {
-			const sidecar = readSidecar(cwd, fullSid);
-			const decision = validateWarmResume({
-				sidecar,
-				currentMessages: fingerprintItems,
-				currentClaudeVersion: getInstalledClaudeVersion(),
-			});
-			const wlog = logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd });
-			if (decision.warm && sidecar) {
-				cachedSessionId = sidecar.claudeSessionId;
-				cachedSessionCwd = cwd;
-				wlog.info(
-					{ resume: sidecar.claudeSessionId.slice(0, 8), reason: decision.reason },
-					`startFreshQuery: warm-resume validated — resuming claude session ${sidecar.claudeSessionId.slice(0, 8)} (no cold re-pack)`,
-				);
-			} else {
-				wlog.info(
-					{ reason: decision.reason, hadSidecar: sidecar !== null },
-					`startFreshQuery: warm-resume not applicable (${decision.reason}) — cold-starting`,
-				);
-			}
-		}
-	}
-
-	// R6: set the in-memory divergence baseline by recomputing LOCALLY over pi's
-	// loaded history (hashMessage format) — NOT from the sidecar's sha256 chain —
-	// so subsequent in-process turns detect a fork after a warm resume.
-	lastSentMessageHashes = newHashes;
-
-	const useResume = cachedSessionId !== null && cachedSessionCwd === cwd;
-
-	// Cold → embed full pi history; warm → only the new user message (text-only).
-	const promptString = useResume
-		? promptText
-		: buildColdStartPrompt(context.messages);
-
-	// System-prompt assembly.
-	const skillsAppend = extractSkillsBlock(context.systemPrompt);
-	const agentsAppend = extractAgentsAppend();
-	const appendSystem = extractAppendSystem();
-	const appendParts = [agentsAppend, appendSystem, skillsAppend].filter((p): p is string => Boolean(p));
-	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
-	// Prepend the MCP-startup-race guard so the model deterministically waits for
-	// the `custom-tools` shim to connect before declaring a bridged tool missing
-	// (root cause of S14/S25 on the claude-p path; see CLAUDE_P_MCP_WAIT_PREAMBLE).
-	const staticSystemPrompt = withClaudePMcpWaitPreamble(systemPromptAppend ?? "You are a helpful coding assistant.");
-
-	// Select and pin the inference driver for this frame (design D2). Nested
-	// invocations inherit the owner's adapter; fresh main turns resolve config once.
+	// Resolve and pin driver before consulting any cache or persisted hint. Nested
+	// invocations inherit owner; fresh main turns resolve configuration once.
 	let driverKind: DriverKind;
 	let driver: InferenceDriverAdapter;
 	try {
@@ -2021,6 +2241,7 @@ async function startFreshQuery(
 			driver = ownerFrame.driver;
 		} else {
 			driverKind = loadBridgeDriverConfig({ projectCwd: cwd });
+			if (cachedSessionHint && cachedSessionHint.driver !== driverKind) cachedSessionHint = null;
 			driver = getInferenceDriverAdapter(driverKind);
 			driver.preflight();
 		}
@@ -2040,6 +2261,95 @@ async function startFreshQuery(
 		});
 		return;
 	}
+
+	// Divergence detection: if any prior-position content changed (or pi's
+	// history is shorter than what we last sent), pi has /tree-navigated,
+	// /fork-ed, or /compact-ed — the resumed transcript no longer matches and we
+	// must cold-start. Forward progress (history grew with new messages) is NOT
+	// divergence.
+	const newHashes = computeMessageHashes(context.messages);
+	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
+	if (diverged) {
+		logger.child({ piSessionId: getPiSessionId(), model: model.id }).info(
+			{ priorLen: lastSentMessageHashes?.length ?? 0, newLen: newHashes.length, droppedSession: cachedSessionHint?.sessionId.slice(0, 8) ?? null },
+			`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionHint?.sessionId.slice(0, 8) ?? "none"})`,
+		);
+		cachedSessionHint = null;
+	}
+
+	// Warm-pi-resume (design D4/D2): on the FIRST turn after a session_start:resume
+	// (where the literal frame cwd is finally known), read the keyed sidecar and
+	// run the pure validation gate. On a pass, set cachedSessionId/cachedSessionCwd
+	// so `useResume` below takes the warm `--resume` branch instead of cold-packing
+	// the full history. Any failure (no/invalid sidecar, divergence, version skew,
+	// unseen intervening messages) leaves the cache empty -> normal cold-start, the
+	// always-safe floor. A deleted transcript is NOT pre-checked here: it surfaces
+	// as a `--resume` runtime error -> sidecar invalidated -> next turn cold (T0.1).
+	const fingerprintItems = messagesToFingerprintItems(context.messages);
+	if (warmResumePending) {
+		warmResumePending = false; // one-shot, regardless of outcome
+		const fullSid = getFullPiSessionId();
+		if (cachedSessionHint === null && fullSid) {
+			let sidecar: DriverResumeSidecar | null = null;
+			try { sidecar = readDriverResumeSidecar(cwd, fullSid, driverKind); }
+			catch (err) {
+				logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }).warn(
+					{ err: err instanceof Error ? err.message : String(err) },
+					"startFreshQuery: resume store locked/unreadable — cold-starting",
+				);
+			}
+			const decision = validateWarmResume({
+				sidecar,
+				currentMessages: fingerprintItems,
+				currentClaudeVersion: getInstalledClaudeVersion(),
+			});
+			const wlog = logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind });
+			if (decision.warm && sidecar) {
+				cachedSessionHint = { driver: sidecar.driver, sessionId: sidecar.claudeSessionId, cwd };
+				wlog.info(
+					{ resume: sidecar.claudeSessionId.slice(0, 8), reason: decision.reason },
+					`startFreshQuery: warm-resume validated — resuming claude session ${sidecar.claudeSessionId.slice(0, 8)} (no cold re-pack)`,
+				);
+			} else {
+				wlog.info(
+					{ reason: decision.reason, hadSidecar: sidecar !== null },
+					`startFreshQuery: warm-resume not applicable (${decision.reason}) — cold-starting`,
+				);
+			}
+		}
+	}
+
+	// R6: keep prior boundary so an unaccepted direct attempt can roll back. The
+	// current boundary becomes durable only at the same acceptance-safe finalizer.
+	const priorMessageHashes = lastSentMessageHashes;
+	lastSentMessageHashes = newHashes;
+
+	if (cachedSessionHint && cachedSessionHint.driver !== driverKind) {
+		logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }).info(
+			{ hintDriver: cachedSessionHint.driver },
+			"startFreshQuery: dropping cross-driver in-memory resume hint",
+		);
+		cachedSessionHint = null;
+	}
+	const useResume = cachedSessionHint !== null &&
+		cachedSessionHint.cwd === cwd &&
+		cachedSessionHint.driver === driverKind;
+
+	// Cold → embed full pi history; warm → only the new user message (text-only).
+	const promptString = useResume
+		? promptText
+		: buildColdStartPrompt(context.messages);
+
+	// System-prompt assembly.
+	const skillsAppend = extractSkillsBlock(context.systemPrompt);
+	const agentsAppend = extractAgentsAppend();
+	const appendSystem = extractAppendSystem();
+	const appendParts = [agentsAppend, appendSystem, skillsAppend].filter((p): p is string => Boolean(p));
+	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	// Prepend the MCP-startup-race guard so the model deterministically waits for
+	// the `custom-tools` shim to connect before declaring a bridged tool missing
+	// (root cause of S14/S25 on the claude-p path; see CLAUDE_P_MCP_WAIT_PREAMBLE).
+	const staticSystemPrompt = withClaudePMcpWaitPreamble(systemPromptAppend ?? "You are a helpful coding assistant.");
 
 	// Build the frame BEFORE the router (onPark closes over it).
 	const frame: QueryFrame = {
@@ -2062,6 +2372,9 @@ async function startFreshQuery(
 		// Content-free fingerprint of pi's history at this turn's start, for the
 		// resume sidecar persisted on a successful main-turn finalize (design D1).
 		sha256Chain: computeSha256Chain(fingerprintItems),
+		priorMessageHashes,
+		currentMessageHashes: newHashes,
+		attemptPhase: "spawned",
 	};
 	resetTurnState(frame);
 
@@ -2118,8 +2431,8 @@ async function startFreshQuery(
 		: { kind: "positional", text: promptString };
 
 	// Session identity: fresh (new uuid) XOR resume (cached id).
-	const session = useResume && cachedSessionId
-		? { kind: "resume" as const, sessionId: cachedSessionId }
+	const session = useResume && cachedSessionHint
+		? { kind: "resume" as const, sessionId: cachedSessionHint.sessionId }
 		: { kind: "fresh" as const, sessionId: randomUUID() };
 
 	// Peek mirror: MAIN-TURN spawns only. startFreshQuery is the shared spawn
@@ -2149,8 +2462,8 @@ async function startFreshQuery(
 	};
 
 	frame.log.debug(
-		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionId?.slice(0, 8) : null },
-		`streamSimple[claude-p]: fresh spawn model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionId?.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
+		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionHint?.sessionId.slice(0, 8) : null },
+		`streamSimple[${driverKind}]: fresh spawn model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionHint?.sessionId.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
 	);
 
 	stack.push(frame);
@@ -2199,6 +2512,36 @@ async function startFreshQuery(
 		config: cfg,
 		options: {
 			onEvent: (ev: InferenceDriverEvent) => { processDriverEvent(frame, ev); },
+			onLifecycleEvent: (event: InferenceDriverLifecycleEvent) => {
+				if (event.kind === "attempt-phase") {
+					frame.attemptPhase = advanceDriverAttemptPhase(frame.attemptPhase, event.phase);
+					return;
+				}
+				if (event.kind !== "retrying") return;
+				const action = resumePersistenceAction({
+					driver: frame.driverKind,
+					phase: frame.attemptPhase,
+					outcome: "retry",
+				});
+				if (action === "invalidate") {
+					if (frame.driverKind === "claude-print" && stack[0] === frame) {
+						lastSentMessageHashes = frame.priorMessageHashes;
+					}
+					if (cachedSessionHint?.driver === frame.driverKind && cachedSessionHint.cwd === cwd) {
+						cachedSessionHint = null;
+					}
+					if (stack[0] === frame) {
+						const fullSid = getFullPiSessionId();
+						if (fullSid) {
+							try { invalidateDriverResumeSidecar(cwd, fullSid); }
+							catch (err) {
+								frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "startFreshQuery: retry sidecar invalidation failed (ignored)");
+							}
+						}
+					}
+				}
+				frame.attemptPhase = "spawned";
+			},
 			logger: frame.log,
 			executable: resolveClaudePBin(),
 			suppressResumeReplay,
@@ -2258,9 +2601,11 @@ export default function (pi: ExtensionAPI) {
 
 	// Reset session cache on pi lifecycle events that diverge history.
 	const clearSession = (event: string) => {
-		log.info({ event, droppedSession: cachedSessionId?.slice(0, 8) ?? null }, `${event}: dropping cached session ${cachedSessionId?.slice(0, 8) ?? "none"}`);
-		cachedSessionId = null;
-		cachedSessionCwd = null;
+		log.info(
+			{ event, droppedSession: cachedSessionHint?.sessionId.slice(0, 8) ?? null, driver: cachedSessionHint?.driver ?? null },
+			`${event}: dropping cached session ${cachedSessionHint?.sessionId.slice(0, 8) ?? "none"}`,
+		);
+		cachedSessionHint = null;
 		lastSentMessageHashes = null;
 		// Forget the seeded context window: a post-/compact (or /new, /fork, …) turn
 		// must show "?" until its real usage lands, not a stale prior size.
@@ -2345,3 +2690,13 @@ export default function (pi: ExtensionAPI) {
 void _resolveModelId;
 void keyHint;
 void pascalCase;
+
+if (process.argv.includes("--resume-quarantine-direct")) {
+	try {
+		const result = quarantineDirectResumeSidecars();
+		process.stdout.write(`${JSON.stringify(result)}\n`);
+	} catch (error) {
+		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+		process.exitCode = 1;
+	}
+}

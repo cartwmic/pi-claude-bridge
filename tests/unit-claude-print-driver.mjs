@@ -344,6 +344,159 @@ describe("resolveClaudePrintReadyTimeoutMs", () => {
 });
 
 describe("CLAUDE_PRINT_DRIVER adapter integration", () => {
+	it("submitted warm failure retries on same driver with fresh session and canonical cold config", async () => {
+		// claude-print-driver.direct-failure-and-retry-preserve-side-effect-safety
+		// bridge-driver-selection.driver-failures-never-trigger-cross-driver-fallback
+		const calls = [];
+		const lifecycle = [];
+		const restorePreflight = __setClaudePrintPreflightForTests(() => {});
+		const restoreSpawn = __setSpawnClaudePrintForTests((cfg, options) => {
+			calls.push(cfg);
+			const attempt = calls.length;
+			queueMicrotask(() => {
+				options.onPhase?.("ready");
+				options.onPhase?.("promptSubmitted");
+				if (attempt === 1) options.onEvent({ kind: "error", errorMessage: "submitted attempt failed" });
+			});
+			return {
+				pid: 80 + attempt,
+				abort() {},
+				done: Promise.resolve({
+					stopReason: attempt === 1 ? "error" : "result",
+					sessionId: cfg.session.sessionId,
+					exitCode: attempt === 1 ? 2 : 0,
+					signal: null,
+				}),
+			};
+		});
+		try {
+			const warm = baseConfig({
+				prompt: { kind: "positional", text: "WARM DELTA ONLY" },
+				session: { kind: "resume", sessionId: RESUME },
+			});
+			const handle = CLAUDE_PRINT_DRIVER.spawnMainTurn({
+				config: warm,
+				options: {
+					onEvent() {},
+					onLifecycleEvent: (event) => lifecycle.push(event),
+					logger: QUIET,
+					executable: "claude",
+					suppressResumeReplay: true,
+					diagnosticsDir: "/tmp",
+					isHeldRound: () => false,
+				},
+				resilience: {
+					maxRetries: 2,
+					shouldRetry: () => true,
+					freshSessionId: () => "fresh-retry-session",
+					coldRetryConfig: (sessionId) => baseConfig({
+						prompt: { kind: "positional", text: "FULL CANONICAL COLD HISTORY" },
+						session: { kind: "fresh", sessionId },
+					}),
+				},
+			});
+			const result = await handle.done;
+			assert.equal(result.stopReason, "result");
+			assert.equal(calls.length, 2, "one same-driver retry");
+			assert.deepEqual(calls[0].session, { kind: "resume", sessionId: RESUME });
+			assert.deepEqual(calls[1].session, { kind: "fresh", sessionId: "fresh-retry-session" });
+			assert.equal(calls[1].prompt.text, "FULL CANONICAL COLD HISTORY");
+			assert.ok(!calls[1].prompt.text.includes("WARM DELTA ONLY"));
+			assert.equal(lifecycle.filter((event) => event.kind === "retrying").length, 1);
+			assert.equal(lifecycle.filter((event) => event.kind === "spawned").length, 2);
+		} finally {
+			restoreSpawn();
+			restorePreflight();
+		}
+	});
+
+	it("visible direct delta closes retry gate", async () => {
+		// claude-print-driver.direct-failure-and-retry-preserve-side-effect-safety
+		let spawns = 0;
+		const surfaced = [];
+		const restorePreflight = __setClaudePrintPreflightForTests(() => {});
+		const restoreSpawn = __setSpawnClaudePrintForTests((cfg, options) => {
+			spawns++;
+			options.onEvent({ kind: "text-delta", text: "visible" });
+			options.onEvent({ kind: "error", errorMessage: "failed after visible output" });
+			return {
+				pid: 90,
+				abort() {},
+				done: Promise.resolve({ stopReason: "error", sessionId: cfg.session.sessionId, exitCode: 2, signal: null }),
+			};
+		});
+		try {
+			const handle = CLAUDE_PRINT_DRIVER.spawnMainTurn({
+				config: baseConfig(),
+				options: {
+					onEvent: (event) => surfaced.push(event),
+					logger: QUIET,
+					executable: "claude",
+					suppressResumeReplay: false,
+					diagnosticsDir: "/tmp",
+					isHeldRound: () => false,
+				},
+				resilience: { maxRetries: 2, shouldRetry: () => true, freshSessionId: () => "must-not-spawn" },
+			});
+			assert.equal((await handle.done).stopReason, "error");
+			assert.equal(spawns, 1);
+			assert.ok(surfaced.some((event) => event.kind === "error"));
+		} finally {
+			restoreSpawn();
+			restorePreflight();
+		}
+	});
+
+	it("keeps concurrent direct handles' abort/session/event state isolated", async () => {
+		// claude-print-driver.direct-concurrent-invocations-are-isolated
+		const attempts = new Map();
+		const restorePreflight = __setClaudePrintPreflightForTests(() => {});
+		const restoreSpawn = __setSpawnClaudePrintForTests((cfg, options) => {
+			let resolveDone;
+			const done = new Promise((resolve) => { resolveDone = resolve; });
+			attempts.set(cfg.session.sessionId, { cfg, options, resolveDone, aborted: false });
+			return {
+				pid: cfg.session.sessionId === "isolation-a" ? 501 : 502,
+				abort() {
+					const attempt = attempts.get(cfg.session.sessionId);
+					attempt.aborted = true;
+					resolveDone({ stopReason: "aborted", sessionId: cfg.session.sessionId, exitCode: null, signal: "SIGINT" });
+				},
+				done,
+			};
+		});
+		try {
+			const spawn = (sessionId, events) => CLAUDE_PRINT_DRIVER.spawnMainTurn({
+				config: baseConfig({ session: { kind: "fresh", sessionId } }),
+				options: {
+					onEvent: (event) => events.push(event),
+					logger: QUIET,
+					executable: "claude",
+					suppressResumeReplay: false,
+					diagnosticsDir: "/tmp",
+					isHeldRound: () => false,
+				},
+				resilience: { shouldRetry: () => false },
+			});
+			const eventsA = [];
+			const eventsB = [];
+			const handleA = spawn("isolation-a", eventsA);
+			const handleB = spawn("isolation-b", eventsB);
+			handleA.abort();
+			attempts.get("isolation-b").options.onEvent({ kind: "text-delta", text: "only-b" });
+			attempts.get("isolation-b").resolveDone({ stopReason: "result", sessionId: "isolation-b", exitCode: 0, signal: null });
+			assert.equal((await handleA.done).stopReason, "aborted");
+			assert.equal((await handleB.done).stopReason, "result");
+			assert.equal(attempts.get("isolation-a").aborted, true);
+			assert.equal(attempts.get("isolation-b").aborted, false);
+			assert.deepEqual(eventsA, []);
+			assert.deepEqual(eventsB, [{ kind: "text-delta", text: "only-b" }]);
+		} finally {
+			restoreSpawn();
+			restorePreflight();
+		}
+	});
+
 	it("selects direct adapter, runs version preflight before spawn, and returns normalized lifecycle handle", async () => {
 		const calls = [];
 		const restorePreflight = __setClaudePrintPreflightForTests(() => calls.push("preflight"));

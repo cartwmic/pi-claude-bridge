@@ -6,7 +6,7 @@
 
 ### Requirement: Shim lifecycle is bound to its spawn
 
-THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachable only by its owning Claude process through explicit MCP configuration, and SHALL terminate when its bridge IPC channel or owning process stdin closes.
+THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachable only by its owning Claude process through explicit MCP configuration, and SHALL terminate when its bridge IPC channel or its own MCP stdin closes; closure of the direct driver's user-input stream alone SHALL NOT tear down a shim that still owns held MCP rounds.
 
 #### Scenario: Selected driver exits
 - **WHEN** an owning `claude-p` or `claude-print` process exits for normal completion, abort, or failure
@@ -17,7 +17,7 @@ THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachabl
 
 ### Requirement: Shim readiness proves exact tool availability
 
-WHEN the shim accepts its first MCP `tools/list` request and constructs a response equal to the router-declared tool set, THE shim SHALL publish its per-spawn readiness signal; a direct driver's queued user frame SHALL not generate until Claude finishes that MCP initialization.
+WHEN the shim accepts its first MCP `tools/list` request and constructs a response equal to the router-declared tool set, THE shim SHALL publish its per-spawn readiness signal; after the bridge submits the user frame, Claude SHALL not begin model generation until its MCP initialization completes.
 
 #### Scenario: Readiness signal follows exact tools list
 - **WHEN** shim handles first `tools/list`

@@ -26,8 +26,8 @@ WHERE `claude-p` is selected, WHEN user invokes `/claude-peek`, THE bridge SHALL
 
 #### Scenario: Driver switches while overlay open
 - **WHEN** existing interactive overlay is open and owning selection switches to `claude-print`
-- **THEN** overlay/tailer are disposed before direct invocation is represented
-- **AND** stale interactive content is not shown
+- **THEN** overlay/tailer are disposed immediately and an unavailable notification is shown
+- **AND** stale interactive content is not shown at any later time
 
 ## ADDED Requirements
 

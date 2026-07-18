@@ -6,16 +6,25 @@
 
 ### Requirement: claude-p spawn with model selection
 
-WHERE `claude-p` is selected, WHEN the bridge starts a fresh turn for a `claude-bridge` model, THE driver SHALL spawn the maintained `claude-p` binary with selected model, path-appropriate system prompt, explicit bridge shim config, current native disallow list, strict MCP/settings isolation, permission bypass, fresh or resumed session identity, stream-json output, and verbose mode; it SHALL NOT pass `--settings`, `-p`, `--print`, or `--timeout`.
+WHERE `claude-p` is selected, WHEN the bridge starts a fresh turn for a `claude-bridge` model, THE driver SHALL spawn maintained `claude-p` with resolved model via `--model`, path-appropriate system prompt via `--system-prompt` or large/multiline `--input-file`, explicit shim `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--session-id <uuid>` or `--resume <cached-id>`, `--output-format stream-json`, `--verbose`, and bridge-owned `--debug-file`; it SHALL NOT pass `--settings`, `-p`, `--print`, or `--timeout`.
 
-#### Scenario: Fresh interactive turn
-- **WHEN** selected driver is `claude-p` and a fresh turn starts
-- **THEN** exactly one `claude-p` subprocess starts with existing required model, prompt, MCP, isolation, permission, session, output, and verbose flags
-- **AND** no print-mode flag is passed
+#### Scenario: Fresh turn spawns one claude-p subprocess with bridged tool surface
+- **WHEN** selected driver is `claude-p` and fresh turn starts
+- **THEN** one `claude-p` process starts with `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, model, path-appropriate prompt, session id, stream-json output, verbose, and bridge-owned debug file
+- **AND** args omit `--settings`, `-p`, `--print`, and `--timeout`
+- **AND** user prompt is delivered by positional argument or input file under existing text/image contract
+
+#### Scenario: User-global MCP server isolated from interactive driver
+- **WHEN** user has globally configured MCP server and selected driver is `claude-p`
+- **THEN** spawned Claude exposes only bridge shim tools and no user-global MCP tools
+
+#### Scenario: User permissions cannot re-enable disallowed native tool
+- **WHEN** user settings allow a native tool and selected driver is `claude-p`
+- **THEN** `--disallowedTools` plus `--setting-sources ""` keep that tool unavailable
 
 #### Scenario: Direct selection does not spawn interactive driver
 - **WHEN** selected driver is `claude-print`
-- **THEN** this requirement does not cause a `claude-p` process to spawn
+- **THEN** this requirement causes no `claude-p` process to spawn
 
 ### Requirement: Native tool emission is blocked via `--disallowedTools`
 

@@ -8,6 +8,10 @@
 
 THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-print` using key-wise precedence `CLAUDE_BRIDGE_DRIVER` compatibility override, project `<project>/.pi/claude-bridge.json`, global `~/.pi/agent/claude-bridge.json`, then default `claude-p`; an absent `driver` key falls through while malformed JSON, a non-string driver, or an unsupported driver value fails explicitly before spawn.
 
+#### Scenario: Environment override wins
+- **WHEN** `CLAUDE_BRIDGE_DRIVER=claude-print` and project/global config select `claude-p`
+- **THEN** fresh bridge invocations use `claude-print`
+
 #### Scenario: Project config selects direct driver
 - **WHEN** project config contains `{ "driver": "claude-print" }` and no environment override exists
 - **THEN** fresh bridge invocations for that project use `claude-print`

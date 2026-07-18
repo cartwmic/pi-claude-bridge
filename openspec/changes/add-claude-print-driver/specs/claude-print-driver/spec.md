@@ -6,7 +6,7 @@
 
 ### Requirement: Direct Print Invocation Uses Bidirectional Stream Protocol
 
-WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Claude Code with `-p`, stream-json input/output, verbose partial messages, selected model and system prompt, strict explicit MCP configuration, empty settings sources, permission bypass, `--tools ""`, defense-in-depth native filtering, bridge-owned debug output, and fresh or resumed session identity; it SHALL NOT pass `--bare`.
+WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Claude Code with `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, selected model and system prompt, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--tools ""`, defense-in-depth native filtering, bridge-owned debug output, and fresh or resumed session identity; it SHALL NOT pass `--bare`.
 
 #### Scenario: Fresh direct invocation
 - **WHEN** a fresh direct turn starts
@@ -16,8 +16,10 @@ WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Cla
 
 #### Scenario: Warm direct invocation
 - **WHEN** a validated direct session hint starts a later turn
-- **THEN** argv uses `--resume <direct-session-id>` without `--session-id` or `--bare`
+- **THEN** argv retains `-p`, selected model/system prompt, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--tools ""`, `--permission-mode bypassPermissions`, `--strict-mcp-config`, `--setting-sources ""`, native filtering, explicit MCP config, and bridge-owned debug file
+- **AND** argv replaces `--session-id` with `--resume <direct-session-id>` and does not include `--bare`
 - **AND** one user NDJSON frame contains only newly appended user material
+- **AND** stdin remains open until terminal result, abort, or failure so control traffic and held MCP lifecycle cannot be cut short
 
 ### Requirement: Prompt Submission Waits For Exact MCP Readiness
 

@@ -89,12 +89,17 @@ function makeMockSpawn(opts = {}) {
 
 			if (opts.holdForAbort) return; // wait for abort() to resolve.
 
-			if (opts.stash !== undefined) {
-				// Simulate the shim: connect to the router and stash validated args.
+			if (opts.stash !== undefined || opts.validationFailures?.length) {
+				// Simulate shim IPC: validation evidence and/or authoritative stash.
 				try {
 					const socketPath = socketFromCfg(cfg);
 					const client = await connectIpcClient(socketPath);
-					await client.request({ kind: "capture-stash", id: randomUUID(), arguments: opts.stash });
+					for (const failure of opts.validationFailures ?? []) {
+						await client.request({ kind: "capture-validation-failed", id: randomUUID(), ...failure });
+					}
+					if (opts.stash !== undefined) {
+						await client.request({ kind: "capture-stash", id: randomUUID(), arguments: opts.stash });
+					}
 					client.close();
 				} catch (err) {
 					// Surface as spawn error if the router isn't reachable.
@@ -278,6 +283,28 @@ describe("capture absent (claude-p)", () => {
 
 		assert.equal(result.stopReason, "error");
 		assert.match(result.errorMessage, /did not call capture tool/i);
+	});
+
+	// AC: output-capture.surface-absent-capture-tool-call-as-error
+	it("invalid-only attempts surface latest bounded field-path evidence", async () => {
+		restoreApi = __setPiApiRefForTests(makeApiStub([]));
+		restoreSpawn = __setCaptureSpawnForTests(makeMockSpawn({
+			validationFailures: [
+				{ attempt: 1, field: "$.headline", message: "required field missing" },
+				{ attempt: 2, field: "$.topics[0]", message: "expected string" },
+			],
+		}));
+
+		const result = await streamClaudeAgentSdk(MODEL, {
+			systemPrompt: "Summarize.",
+			messages: [{ role: "user", content: "please summarize", timestamp: ts() }],
+			tools: [submitDigestTool],
+		}).result();
+
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage, /validation failed/i);
+		assert.match(result.errorMessage, /\$\.topics\[0\]/);
+		assert.match(result.errorMessage, /attempt 2/);
 	});
 
 	it("claude-p exits abnormally (error stopReason, no stash) → stopReason error", async () => {

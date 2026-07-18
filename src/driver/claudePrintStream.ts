@@ -5,6 +5,8 @@
 import type {
 	DriverStreamEvent,
 	DriverStreamUsage,
+	DriverToolUseBatch,
+	DriverToolUseObservation,
 	ExitInfo,
 } from "./stream.js";
 
@@ -69,6 +71,8 @@ export interface ClaudePrintStreamParserOptions {
 	onTurnAccepted?: () => void;
 	/** Process adapter closes stdin only after one structurally valid terminal record. */
 	onTerminalRecord?: () => void;
+	/** D32 batch callback, published only after corresponding message_stop. */
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 }
 
 export interface ClaudePrintEndOfStreamArgs {
@@ -153,6 +157,7 @@ export class ClaudePrintStreamParser {
 	private readonly logger: ClaudePrintStreamLogger;
 	private readonly onTurnAccepted?: () => void;
 	private readonly onTerminalRecord?: () => void;
+	private readonly onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 	private pending = Buffer.alloc(0);
 	private ended = false;
 	private frozen = false;
@@ -165,6 +170,8 @@ export class ClaudePrintStreamParser {
 	private terminal: ParsedTerminal | null = null;
 	private messageOpen = false;
 	private messageDeltaSeen = false;
+	private currentMessageId: string | null = null;
+	private sealedMessageId: string | null = null;
 	private blocks = new Map<number, PartialBlock>();
 	private sawPartialMessage = false;
 	private lastAssistantUsage: DriverStreamUsage | null = null;
@@ -176,6 +183,7 @@ export class ClaudePrintStreamParser {
 		this.logger = options.logger ?? NOOP_LOGGER;
 		this.onTurnAccepted = options.onTurnAccepted;
 		this.onTerminalRecord = options.onTerminalRecord;
+		this.onToolUseBatch = options.onToolUseBatch;
 	}
 
 	get pendingBufferBytes(): number {
@@ -423,8 +431,14 @@ export class ClaudePrintStreamParser {
 			this.fail("claude-print message_start requires message object");
 			return;
 		}
+		const messageId = event.message.id;
+		if (typeof messageId !== "string" || messageId.length === 0) {
+			this.fail("claude-print message_start requires message.id");
+			return;
+		}
 		this.messageOpen = true;
 		this.messageDeltaSeen = false;
+		this.currentMessageId = messageId;
 		this.sawPartialMessage = true;
 		if (!this._turnAccepted) {
 			this._turnAccepted = true;
@@ -542,6 +556,8 @@ export class ClaudePrintStreamParser {
 		}
 		this.messageOpen = false;
 		this.messageDeltaSeen = false;
+		this.sealedMessageId = this.currentMessageId;
+		this.currentMessageId = null;
 	}
 
 	private handleAssistant(record: Record<string, unknown>): void {
@@ -569,6 +585,8 @@ export class ClaudePrintStreamParser {
 			this.fail(`claude-print assistant has unknown stop_reason "${String(message.stop_reason)}"`);
 			return;
 		}
+		const batchId = typeof message.id === "string" && message.id.length > 0 ? message.id : this.sealedMessageId;
+		const observations: DriverToolUseObservation[] = [];
 		for (const value of message.content) {
 			if (!isRecord(value) || !["text", "thinking", "tool_use"].includes(String(value.type))) {
 				this.fail(`claude-print unknown assistant content type "${String(isRecord(value) ? value.type : undefined)}"`);
@@ -593,7 +611,16 @@ export class ClaudePrintStreamParser {
 			if (this.observedToolIds.has(value.id)) continue;
 			this.observedToolIds.add(value.id);
 			this.onEvent({ kind: "tool-use", toolUseId: value.id, name: value.name, arguments: value.input });
+			observations.push({ modelId: value.id, name: value.name, arguments: value.input });
 		}
+		if (observations.length > 0) {
+			if (!batchId || batchId !== this.sealedMessageId) {
+				this.fail("claude-print bridged tool observations lack matching message_stop seal");
+				return;
+			}
+			this.onToolUseBatch?.({ batchId, observations });
+		}
+		if (batchId === this.sealedMessageId) this.sealedMessageId = null;
 	}
 
 	private handleResult(record: Record<string, unknown>): void {

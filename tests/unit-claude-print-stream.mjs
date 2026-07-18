@@ -96,11 +96,12 @@ function result(overrides = {}) {
 	};
 }
 
-function createParser() {
+function createParser(options = {}) {
 	const events = [];
 	const debug = [];
 	const parser = new ClaudePrintStreamParser({
 		onEvent: (event) => events.push(event),
+		...options,
 		logger: {
 			debug: (...args) => debug.push(args),
 			warn() {},
@@ -163,6 +164,32 @@ function validSuccessRecords() {
 }
 
 describe("claude-print partial stream normalization", () => {
+	// AC: mcp-stdio-shim.tool-call-correlation-across-the-split-channels-d32
+	it("publishes one bridged-only batch only after its message_stop seal", () => {
+		const batches = [];
+		const { parser } = createParser({ onToolUseBatch: (batch) => batches.push(batch) });
+		feedRecords(parser, [
+			init(),
+			messageStart("msg_batch"),
+			blockStart(0, { type: "tool_use", id: "toolu_batch", name: "mcp__custom-tools__read", input: {} }),
+			blockDelta(0, { type: "input_json_delta", partial_json: "{\"path\":\"x\"}" }),
+			blockStop(0),
+			messageDelta("tool_use"),
+		]);
+		assert.deepEqual(batches, [], "partial tool blocks cannot seal correlation count");
+		feedRecords(parser, [messageStop()]);
+		assert.deepEqual(batches, [], "message_stop seals but complete assistant supplies canonical args");
+		feedRecords(parser, [assistant("msg_batch", [
+			{ type: "tool_use", id: "toolu_native", name: "Read", input: {} },
+			{ type: "tool_use", id: "toolu_foreign", name: "mcp__foreign__read", input: {} },
+			{ type: "tool_use", id: "toolu_batch", name: "mcp__custom-tools__read", input: { path: "x" } },
+		], usage(5, 5))]);
+		assert.deepEqual(batches, [{
+			batchId: "msg_batch",
+			observations: [{ modelId: "toolu_batch", name: "mcp__custom-tools__read", arguments: { path: "x" } }],
+		}]);
+	});
+
 	it("emits top-level text/thinking boundaries once and filters nested/native/foreign observations", () => {
 		const { parser, events } = createParser();
 		const bytes = Buffer.from(validSuccessRecords().map(line).join(""));

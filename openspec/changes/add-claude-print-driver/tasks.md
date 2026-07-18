@@ -140,7 +140,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 2.3 Extend router/shim IPC with driver-neutral bridged-only D32 observation join, stable pi resolver ids, batch-scoped identical-call pairing, fail-loud count reconciliation, idempotent teardown, exact readiness publication, and bounded capture-validation-failure evidence. ACs: `mcp-stdio-shim.tool-call-correlation-across-the-split-channels-d32`, `mcp-stdio-shim.shim-readiness-proves-exact-tool-availability`, `mcp-stdio-shim.shim-lifecycle-is-bound-to-its-spawn`, `output-capture.surface-absent-capture-tool-call-as-error`.
+- [x] 2.3 Extend router/shim IPC with driver-neutral bridged-only D32 observation join, stable pi resolver ids, batch-scoped identical-call pairing, fail-loud count reconciliation, idempotent teardown, exact readiness publication, and bounded capture-validation-failure evidence. ACs: `mcp-stdio-shim.tool-call-correlation-across-the-split-channels-d32`, `mcp-stdio-shim.shim-readiness-proves-exact-tool-availability`, `mcp-stdio-shim.shim-lifecycle-is-bound-to-its-spawn`, `output-capture.surface-absent-capture-tool-call-as-error`.
   - intent: feature
   - files_allowed:
       - README.md

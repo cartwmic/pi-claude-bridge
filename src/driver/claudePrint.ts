@@ -25,7 +25,7 @@ import {
 	type SystemPromptSource,
 } from "./claudeP.js";
 import { ClaudePrintStreamParser } from "./claudePrintStream.js";
-import type { DriverStreamEvent } from "./stream.js";
+import type { DriverStreamEvent, DriverToolUseBatch } from "./stream.js";
 
 export const CLAUDE_PRINT_DEFAULT_READY_TIMEOUT_MS = 30_000;
 export const CLAUDE_PRINT_MAX_READY_TIMEOUT_MS = 2_147_483_647;
@@ -41,6 +41,7 @@ export interface ClaudePrintLogger extends ClaudePLogger {
 
 export interface SpawnClaudePrintOptions {
 	onEvent: (event: DriverStreamEvent) => void;
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 	onPhase?: (phase: ClaudePrintAttemptPhase) => void;
 	logger?: ClaudePrintLogger;
 	binPath?: string;
@@ -374,6 +375,7 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 			opts.onEvent(event);
 		},
 		logger,
+		onToolUseBatch: opts.onToolUseBatch,
 		onTurnAccepted: () => opts.onPhase?.("turnAccepted"),
 		onTerminalRecord: () => {
 			(child.stdin as Writable | null)?.end();

@@ -348,6 +348,7 @@ export async function runClaudePCapture(
 	}
 
 	const stash = router.getCaptureStash();
+	const validationFailure = router.getCaptureValidationFailure();
 
 	if (stash !== undefined) {
 		// ── Success: IPC stash is authoritative (D21). Synthesize toolCall block. ─
@@ -378,8 +379,9 @@ export async function runClaudePCapture(
 	const out = deps.newTurnOutput(model);
 	applyUsage(out, usage, model, deps);
 	out.stopReason = "error";
-	out.errorMessage =
-		res.stopReason === "error"
+	out.errorMessage = validationFailure
+		? `capture tool "${captureTool.name}" argument validation failed on attempt ${validationFailure.attempt} at ${validationFailure.field}: ${validationFailure.message}`
+		: res.stopReason === "error"
 			? `capture path: claude-p exited abnormally (exitCode=${res.exitCode ?? "null"}) before the model called capture tool "${captureTool.name}"`
 			: `model did not call capture tool "${captureTool.name}" (turn ended with no IPC-stashed arguments)`;
 	log.warn({ stopReason: res.stopReason, exitCode: res.exitCode }, `runClaudePCapture: ${out.errorMessage}`);

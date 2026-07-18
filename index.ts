@@ -76,8 +76,8 @@ import {
 } from "./src/resume-store.js";
 import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
-import type { DriverStreamEvent } from "./src/driver/stream.js";
-import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
+import type { DriverStreamEvent, DriverToolUseBatch } from "./src/driver/stream.js";
+import { createRouter, type Router, type ParkedCallInfo, type ToolDef, type CorrelationFailure } from "./src/mcp/router.js";
 import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
 import { execFileSync } from "node:child_process";
 
@@ -713,6 +713,7 @@ export interface InferenceDriverAttemptConfig {
 /** Spawn-time options shared by main-turn orchestration. */
 export interface InferenceDriverSpawnOptions {
 	onEvent: (event: InferenceDriverEvent) => void;
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 	onLifecycleEvent?: (event: InferenceDriverLifecycleEvent) => void;
 	logger: pino.Logger;
 	executable: string;
@@ -765,6 +766,7 @@ export const CLAUDE_P_DRIVER: InferenceDriverAdapter = {
 			config as ClaudePSpawnConfig,
 			{
 				onEvent: options.onEvent,
+				onToolUseBatch: options.onToolUseBatch,
 				logger: options.logger as any,
 				binPath: options.executable,
 				suppressResumeReplay: options.suppressResumeReplay,
@@ -805,6 +807,7 @@ export const CLAUDE_PRINT_DRIVER: InferenceDriverAdapter = {
 		const sessionId = config.session.sessionId;
 		const inner: ClaudePrintHandle = _spawnClaudePrintFactory(config as ClaudePSpawnConfig, {
 			onEvent: options.onEvent,
+			onToolUseBatch: options.onToolUseBatch,
 			onPhase: (phase) => options.onLifecycleEvent?.({
 				kind: "attempt-phase",
 				driverKind: "claude-print",
@@ -1106,6 +1109,8 @@ type QueryFrame = {
 	// the handler parks.
 	pendingResolvers: Map<string, (result: { content: { type: "text"; text: string }[]; isError?: boolean }) => void>;
 	pendingResults: Map<string, { content: { type: "text"; text: string }[]; isError?: boolean }>;
+	/** Pi ids routed for this frame, retained as tombstones after mismatch drain. */
+	routedPiIds: Set<string>;
 
 	wasAborted: boolean;
 	// Set true when the driver terminated with an error (claude-p exited/crashed/
@@ -1115,6 +1120,7 @@ type QueryFrame = {
 	// (the error-path analogue of `wasAborted`). See finalizeClaudePFrame +
 	// streamClaudeAgentSdk Case 1 (`willHangIfWired`).
 	driverErrored: boolean;
+	correlationFailed: boolean;
 	donePromise: Promise<void>;
 	// Warm-pi-resume: the one-way sha256 fingerprint chain of pi's history as it
 	// stood at THIS turn's start (over context.messages). Stashed at turn-start so
@@ -1587,7 +1593,7 @@ export function streamClaudeAgentSdk(
 		let matchedFrame: QueryFrame | null = null;
 		for (const r of trailing) {
 			for (let i = stack.length - 1; i >= 0; i--) {
-				if (stack[i].pendingResolvers.has(r.id)) { matchedFrame = stack[i]; break; }
+				if (stack[i].pendingResolvers.has(r.id) || stack[i].routedPiIds.has(r.id)) { matchedFrame = stack[i]; break; }
 			}
 			if (matchedFrame) break;
 		}
@@ -1614,10 +1620,17 @@ export function streamClaudeAgentSdk(
 				const resolver = f.pendingResolvers.get(r.id);
 				if (resolver) {
 					f.pendingResolvers.delete(r.id);
+					f.routedPiIds.delete(r.id);
 					resolver(result);
 					if (i !== stack.length - 1 || f.wasAborted) {
 						f.log.info({ id: r.id, aborted: f.wasAborted }, `tool-result delivery: matched ${f.wasAborted ? "aborted-frame" : "buried-frame"} resolver (post-abort late delivery)`);
 					}
+					resolved = true;
+					break;
+				}
+				if (f.routedPiIds.delete(r.id)) {
+					// Correlation teardown already drained shim resolver; tombstone keeps
+					// late pi delivery attached to its terminal frame.
 					resolved = true;
 					break;
 				}
@@ -1653,6 +1666,10 @@ export function streamClaudeAgentSdk(
 					{ deliveredFor: erroredNotAborted ? "errored-frame" : "aborted-frame" },
 					`tool-result delivery to ${erroredNotAborted ? "errored" : "aborted"} frame: closed pi stream with ${erroredNotAborted ? "error" : "aborted"}-error`,
 				);
+				if (top() === terminalFrame && terminalFrame.pendingResolvers.size === 0 && terminalFrame.routedPiIds.size === 0) {
+					void terminalFrame.router?.stop();
+					stack.pop();
+				}
 			});
 		}
 		return stream;
@@ -2000,6 +2017,7 @@ function updateUsageFromDriver(frame: QueryFrame, context: DriverUsage, billing?
  * and resolves it, unblocking the shim. Mirrors the SDK message_stop path.
  */
 function onRouterPark(frame: QueryFrame, info: ParkedCallInfo): void {
+	frame.routedPiIds.add(info.piId);
 	if (!frame.currentPiStream || !frame.turnOutput) return;
 	ensureTurnStarted(frame);
 	closeOpenInlineBlocks(frame);
@@ -2041,6 +2059,35 @@ function closeOpenInlineBlocks(frame: QueryFrame, onlyType?: "text" | "thinking"
 			frame.currentPiStream.push({ type: "thinking_end", contentIndex: i, content: b.thinking, partial: frame.turnOutput });
 		}
 	}
+}
+
+function applyCorrelationFailure(frame: QueryFrame, failure: CorrelationFailure): void {
+	if (frame.wasAborted || frame.correlationFailed) return;
+	frame.correlationFailed = true;
+	frame.driverErrored = true;
+	if (frame.turnOutput) {
+		frame.turnOutput.stopReason = "error";
+		frame.turnOutput.errorMessage = `bridge tool-call correlation failed: ${failure.message}`;
+	}
+	frame.log.error(
+		{ event: "bridge.toolCorrelation.failed", ...failure },
+		"bridge tool-call correlation failed; pending resolvers drained and resume invalidated",
+	);
+}
+
+function processDriverToolUseBatch(frame: QueryFrame, batch: DriverToolUseBatch): void {
+	const router = frame.router;
+	if (!router || frame.wasAborted) return;
+	for (const observation of batch.observations) {
+		router.observeToolUse({
+			batchId: batch.batchId,
+			modelId: observation.modelId,
+			name: observation.name,
+			arguments: observation.arguments,
+		});
+	}
+	const failure = router.sealToolUseBatch(batch.batchId);
+	if (failure) applyCorrelationFailure(frame, failure);
 }
 
 /**
@@ -2123,10 +2170,9 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			closeOpenInlineBlocks(frame);
 			// DISPLAY ONLY (D32). Best-effort: label an already-parked toolCall
 			// block whose name+args match. Do NOT push a new block; do NOT route.
-			const parked = frame.router?.listParkedCalls() ?? [];
-			const match = parked.find((p) => p.name === ev.name);
-			if (match) {
-				frame.log.debug({ toolu: ev.toolUseId, piId: match.piId }, "processDriverEvent: tool-use observed (display-only correlation)");
+			const piId = frame.router?.resolvePiIdForModelId(ev.toolUseId);
+			if (piId) {
+				frame.log.debug({ toolu: ev.toolUseId, piId }, "processDriverEvent: tool-use observed (display-only correlation)");
 			}
 			return;
 		}
@@ -2135,11 +2181,13 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			return;
 		}
 		case "done": {
+			const failure = frame.router?.finalizeToolUseCorrelation();
+			if (failure) applyCorrelationFailure(frame, failure);
 			if (frame.currentPiStream) {
 				closeOpenInlineBlocks(frame);
 				syncTurnContent(frame);
 			}
-			frame.turnOutput.stopReason = frame.turnSawToolCall ? "toolUse" : "stop";
+			if (!frame.correlationFailed) frame.turnOutput.stopReason = frame.turnSawToolCall ? "toolUse" : "stop";
 			return;
 		}
 		case "error": {
@@ -2157,6 +2205,8 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
  * finalizer; pops the frame iff it's the top and has no pending resolvers.
  */
 function finalizeClaudePFrame(frame: QueryFrame, res: InferenceDriverDoneResult): void {
+	const correlationFailure = frame.wasAborted ? undefined : frame.router?.finalizeToolUseCorrelation();
+	if (correlationFailure) applyCorrelationFailure(frame, correlationFailure);
 	// Best-effort: remove this turn's MCP-readiness sentinel (paired to the
 	// router socket). Per-attempt spawns already clear stale copies; this drops
 	// the final one so /tmp doesn't accumulate. Never throws.
@@ -2265,7 +2315,7 @@ function finalizeClaudePFrame(frame: QueryFrame, res: InferenceDriverDoneResult)
 	}
 
 	if (top() === frame) {
-		if (frame.pendingResolvers.size === 0) {
+		if (frame.pendingResolvers.size === 0 && frame.routedPiIds.size === 0) {
 			void frame.router?.stop();
 			stack.pop();
 		} else {
@@ -2454,8 +2504,10 @@ async function startFreshQuery(
 		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }),
 		pendingResolvers: new Map(),
 		pendingResults: new Map(),
+		routedPiIds: new Set(),
 		wasAborted: false,
 		driverErrored: false,
+		correlationFailed: false,
 		donePromise: Promise.resolve(),
 		// Content-free fingerprint of pi's history at this turn's start, for the
 		// resume sidecar persisted on a successful main-turn finalize (design D1).
@@ -2471,6 +2523,7 @@ async function startFreshQuery(
 	const router = createRouter({
 		logger: frame.log,
 		onPark: (info) => onRouterPark(frame, info),
+		onCorrelationFailure: (failure) => applyCorrelationFailure(frame, failure),
 	});
 	frame.router = router;
 	frame.pendingResolvers = router.pendingResolvers as any;
@@ -2605,6 +2658,7 @@ async function startFreshQuery(
 		config: cfg,
 		options: {
 			onEvent: (ev: InferenceDriverEvent) => { processDriverEvent(frame, ev); },
+			onToolUseBatch: (batch) => processDriverToolUseBatch(frame, batch),
 			onLifecycleEvent: (event: InferenceDriverLifecycleEvent) => {
 				if (event.kind === "attempt-phase") {
 					frame.attemptPhase = advanceDriverAttemptPhase(frame.attemptPhase, event.phase);

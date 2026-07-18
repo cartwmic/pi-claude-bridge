@@ -36,6 +36,8 @@ export type ToolCallRequest = {
 	id: string;
 	name: string;
 	arguments: Record<string, unknown>;
+	/** Optional model id when upstream MCP metadata exposes it; resolver stays pi id. */
+	modelToolUseId?: string;
 };
 
 /** The router's response to a parked `tools/call`. Returned to the shim verbatim. */
@@ -63,10 +65,27 @@ export type CaptureStashAck = {
 	id: string;
 };
 
+/** Bounded evidence that one capture call failed local schema validation. */
+export type CaptureValidationFailedRequest = {
+	kind: "capture-validation-failed";
+	id: string;
+	/** Monotonic within one shim spawn, starting at one. */
+	attempt: number;
+	/** Safe JSON-style path to the first failing field. */
+	field: string;
+	/** UTF-8-safe diagnostic, capped by the shim before transport. */
+	message: string;
+};
+
+export type CaptureValidationFailedAck = {
+	kind: "capture-validation-failed:ack";
+	id: string;
+};
+
 /** Anything the shim sends to the router. */
-export type IpcRequest = ToolCallRequest | CaptureStashRequest;
+export type IpcRequest = ToolCallRequest | CaptureStashRequest | CaptureValidationFailedRequest;
 /** Anything the router sends back to the shim. */
-export type IpcResponse = ToolCallResponse | CaptureStashAck;
+export type IpcResponse = ToolCallResponse | CaptureStashAck | CaptureValidationFailedAck;
 /** Union of every frame that can appear on the wire. */
 export type IpcMessage = IpcRequest | IpcResponse;
 
@@ -128,6 +147,8 @@ export type IpcServerHandlers = {
 	onToolCall: (req: ToolCallRequest) => Promise<ToolCallResponse> | ToolCallResponse;
 	/** Called for each `capture-stash` frame. Returns nothing; an ack is sent. */
 	onCaptureStash: (req: CaptureStashRequest) => Promise<void> | void;
+	/** Called for bounded capture validation evidence. */
+	onCaptureValidationFailed?: (req: CaptureValidationFailedRequest) => Promise<void> | void;
 };
 
 export type IpcServer = {
@@ -163,6 +184,10 @@ export function createIpcServer(socketPath: string, handlers: IpcServerHandlers)
 						await handlers.onCaptureStash(msg);
 						const ack: CaptureStashAck = { kind: "capture-stash:ack", id: msg.id };
 						socket.write(encodeFrame(ack));
+					} else if (msg.kind === "capture-validation-failed") {
+						await handlers.onCaptureValidationFailed?.(msg);
+						const ack: CaptureValidationFailedAck = { kind: "capture-validation-failed:ack", id: msg.id };
+						socket.write(encodeFrame(ack));
 					}
 				} catch {
 					// Transport stays up; the router owns error shaping. A swallowed
@@ -179,6 +204,7 @@ export function createIpcServer(socketPath: string, handlers: IpcServerHandlers)
 		socket.on("error", () => sockets.delete(socket));
 	});
 
+	let closePromise: Promise<void> | undefined;
 	return {
 		socketPath,
 		raw: server,
@@ -190,12 +216,16 @@ export function createIpcServer(socketPath: string, handlers: IpcServerHandlers)
 					resolve();
 				});
 			}),
-		close: () =>
-			new Promise<void>((resolve) => {
+		close: () => {
+			if (closePromise) return closePromise;
+			closePromise = new Promise<void>((resolve) => {
 				for (const s of sockets) s.destroy();
 				sockets.clear();
+				if (!server.listening) return resolve();
 				server.close(() => resolve());
-			}),
+			});
+			return closePromise;
+		},
 	};
 }
 
@@ -222,6 +252,7 @@ export type IpcClient = {
 export function connectIpcClient(socketPath: string): Promise<IpcClient> {
 	return new Promise((resolve, reject) => {
 		const pending = new Map<string, (res: IpcResponse) => void>();
+		const requests = new Map<string, { signature: string; promise: Promise<IpcResponse> }>();
 		const closeCbs: Array<() => void> = [];
 
 		const socket = connect(socketPath);
@@ -248,13 +279,24 @@ export function connectIpcClient(socketPath: string): Promise<IpcClient> {
 			});
 			resolve({
 				raw: socket,
-				request: (req: IpcRequest) =>
-					new Promise<IpcResponse>((resolveReq) => {
+				request: (req: IpcRequest) => {
+					const signature = JSON.stringify(req);
+					const prior = requests.get(req.id);
+					if (prior) {
+						if (prior.signature !== signature) return Promise.reject(new Error(`IPC request id ${req.id} reused with different payload`));
+						return prior.promise;
+					}
+					const promise = new Promise<IpcResponse>((resolveReq) => {
 						pending.set(req.id, resolveReq);
 						socket.write(encodeFrame(req));
-					}),
+					});
+					requests.set(req.id, { signature, promise });
+					return promise;
+				},
 				onClose: (cb) => closeCbs.push(cb),
-				close: () => socket.destroy(),
+				close: () => {
+					if (!socket.destroyed) socket.destroy();
+				},
 			});
 		});
 	});

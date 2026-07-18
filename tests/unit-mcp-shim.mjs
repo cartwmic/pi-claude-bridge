@@ -16,7 +16,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { spawn } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ function fakeRouter() {
 	const sock = generateSocketPath();
 	const parked = new Map(); // id -> resolve fn for the response
 	const stashed = [];
+	const validationFailures = [];
 	const onCall = new Map(); // id -> {resolveCall}
 	let pendingResolve = null;
 
@@ -50,11 +51,15 @@ function fakeRouter() {
 		onCaptureStash: (req) => {
 			stashed.push(req.arguments);
 		},
+		onCaptureValidationFailed: (req) => {
+			validationFailures.push(req);
+		},
 	});
 
 	return {
 		sock,
 		stashed,
+		validationFailures,
 		start: () => server.listen(),
 		stop: () => server.close(),
 		parkedCount: () => parked.size,
@@ -139,11 +144,11 @@ describe("shim — validateAgainstSchema", () => {
 	});
 	it("names the missing required field", () => {
 		const e = validateAgainstSchema(schema, { count: 1 });
-		assert.equal(e.field, "summary");
+		assert.equal(e.field, "$.summary");
 	});
 	it("names the wrong-typed field", () => {
 		const e = validateAgainstSchema(schema, { summary: 5 });
-		assert.equal(e.field, "summary");
+		assert.equal(e.field, "$.summary");
 		assert.match(e.message, /string/);
 	});
 });
@@ -243,17 +248,26 @@ describe("shim — capture mode", () => {
 		});
 	});
 
-	it("invalid args: -32602 naming the failing field path", async () => {
+	it("invalid args: -32602 plus monotonic bounded validation-failure IPC", async () => {
 		await withHandlers(captureConfig(), async (handlers, router) => {
-			await assert.rejects(
-				() => handlers.callTool("mcp__custom-tools__capture", { notsummary: 1 }),
-				(err) => {
-					assert.equal(err.code, -32602);
-					assert.match(err.message, /summary/);
-					return true;
-				},
-			);
+			for (let attempt = 1; attempt <= 2; attempt++) {
+				await assert.rejects(
+					() => handlers.callTool("mcp__custom-tools__capture", { notsummary: attempt }),
+					(err) => {
+						assert.equal(err.code, -32602);
+						assert.match(err.message, /\$\.summary/);
+						return true;
+					},
+				);
+			}
+			await new Promise((r) => setTimeout(r, 10));
 			assert.equal(router.stashed.length, 0, "no stash on invalid");
+			assert.deepEqual(router.validationFailures.map((f) => f.attempt), [1, 2]);
+			assert.deepEqual(router.validationFailures.map((f) => f.field), ["$.summary", "$.summary"]);
+			for (const failure of router.validationFailures) {
+				assert.ok(Buffer.byteLength(failure.field, "utf8") <= 500);
+				assert.ok(Buffer.byteLength(failure.message, "utf8") <= 500);
+			}
 		});
 	});
 
@@ -331,8 +345,10 @@ describe("shim — MCP-readiness sentinel (--ready-file)", () => {
 		try {
 			await client.connect(transport); // initialize handshake — NOT tools/list yet
 			const list = await client.listTools(); // this is what raises the sentinel
-			assert.deepEqual(list.tools.map((t) => t.name), ["mcp__custom-tools__read"]);
+			assert.deepEqual(list.tools, [{ name: "mcp__custom-tools__read", inputSchema: { type: "object" } }], "tools/list exactly equals declared surface");
 			assert.equal(existsSync(readyFile), true, "sentinel must exist after the first tools/list");
+			assert.equal(readFileSync(readyFile, "utf8"), "ready\n", "readiness payload is exact");
+			assert.equal(statSync(readyFile).mode & 0o077, 0, "readiness file is private");
 		} finally {
 			await client.close();
 			rmSync(readyFile, { force: true });

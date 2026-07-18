@@ -37,6 +37,7 @@ import { createRequire } from "node:module";
 import {
 	ClaudePStreamParser,
 	type DriverStreamEvent,
+	type DriverToolUseBatch,
 	type ResumeDiag,
 	type StreamLogger,
 } from "./stream.js";
@@ -530,6 +531,8 @@ export interface ClaudePDoneResult {
 export interface SpawnClaudePOptions {
 	/** Sink for parsed driver-internal stream events (forwarded from the parser). */
 	onEvent: (event: DriverStreamEvent) => void;
+	/** Completed bridged observation batch for D32 correlation. */
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 	/** Logger. Needs warn (parser) + info/error (lifecycle); all optional. */
 	logger?: ClaudePLogger;
 	/** Override the binary path (tests point this at a node stand-in). */
@@ -706,6 +709,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			opts.onEvent(event);
 		},
 		logger,
+		onToolUseBatch: opts.onToolUseBatch,
 		suppressResumeReplay: opts.suppressResumeReplay,
 		livePromptText: opts.livePromptText,
 		onResumeDiag: (diag: ResumeDiag) => {

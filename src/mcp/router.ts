@@ -1,37 +1,5 @@
-// src/mcp/router.ts
-//
-// In-process router for ONE claude-p spawn/frame. Owns the bridge side of the
-// MCP shim's IPC channel (via ipc.ts) and implements the held-open
-// promise-park that the Phase-0 spike validated: a `tools/call` arriving from
-// the shim is parked until pi delivers the tool result, then the resolved
-// payload flows back over IPC to the shim, which returns it as the MCP
-// response. `claude` blocks inline the whole time.
-//
-// This mirrors index.ts's existing per-frame contract (the
-// `pendingResolvers`/`pendingResults` maps populated by the SDK MCP handler)
-// so wiring from the bridge (T1.9) is mechanical.
-//
-// ---------------------------------------------------------------------------
-// D32 correlation — how the keying works here
-// ---------------------------------------------------------------------------
-// The held-open round-trip is split across two channels: the shim sends a
-// `tools/call` with its OWN request id (+ name + arguments) but NOT, in
-// general, the model's `toolu_…` id; pi delivers `toolResult.id` = a pi-facing
-// id. Per D32 the round-trip is DRIVEN BY THE SHIM, not by parsing stdout: the
-// router mints its OWN pi-facing id for each parked shim call and keys the
-// resolver by that id. pi echoes that id back on its `toolResult`, and the
-// bridge calls `router.deliver(piToolResultId, result)` to resolve the
-// matching parked call. The model's `toolu_…` id is therefore NOT needed to
-// ROUTE the round-trip; correlation to the stdout `toolu_…` (matching on
-// name + canonicalized args, positional fallback for identical parallel calls)
-// is UX-only and may be reconciled later — it does not gate resolution.
-//
-// Parallel held calls (S11): each parked call gets a distinct minted pi id, so
-// two concurrent calls — even with identical name+args — are keyed
-// independently and never cross-wire. The router asserts (via a structured log
-// warning, not a throw) the serialization invariant that no two outstanding
-// parked calls share the same (name, canonicalized-args) WITHIN one assistant
-// line; the minted-id keying keeps them disjoint regardless.
+// Per-invocation MCP router. Shim calls are execution-authoritative; selected-
+// driver tool_use records are observations joined only for D32 id correlation.
 
 import { randomBytes } from "node:crypto";
 import {
@@ -41,21 +9,18 @@ import {
 	type ToolCallRequest,
 	type ToolCallResponse,
 	type CaptureStashRequest,
+	type CaptureValidationFailedRequest,
 	type ToolResultContent,
 } from "./ipc.js";
 
 export type ToolResult = { content: ToolResultContent; isError?: boolean };
 
-/** A tool definition the router advertises to the shim for this spawn. */
 export type ToolDef = {
-	/** Fully-qualified MCP name, e.g. `mcp__custom-tools__read`. */
 	name: string;
 	description?: string;
-	/** JSON Schema for the tool's arguments (passed to the shim). */
 	inputSchema?: Record<string, unknown>;
 };
 
-/** Minimal logger shape (pino-compatible); defaults to a no-op. */
 export type RouterLogger = {
 	debug: (...a: any[]) => void;
 	info: (...a: any[]) => void;
@@ -70,81 +35,141 @@ const NOOP_LOG: RouterLogger = {
 	error() {},
 };
 
-/** Metadata recorded for each parked call (UX correlation per D32). */
+const BRIDGED_PREFIX = "mcp__custom-tools__";
+const CORRELATION_DRAIN_TEXT = "Bridge tool-call correlation failed; invocation was invalidated.";
+const TEARDOWN_DRAIN_TEXT = "Bridge invocation ended before the tool result was delivered.";
+const MAX_CAPTURE_EVIDENCE_BYTES = 500;
+
 export type ParkedCallInfo = {
-	/** The router-minted pi-facing id (the resolver/result key). */
+	/** Stable resolver key shown to pi and returned in pi toolResult.id. */
 	piId: string;
-	/** The shim-side JSON-RPC request id (for logging/trace). */
 	shimRequestId: string;
+	/** Bare router-declared tool name. */
 	name: string;
 	arguments: Record<string, unknown>;
-	/** Canonicalized arguments for name+args matching (D32 UX correlation). */
 	argsKey: string;
+	/** Driver/model id is metadata only and never replaces piId. */
+	modelId?: string;
+};
+
+export type DriverToolUseObservation = {
+	batchId: string;
+	modelId: string;
+	name: string;
+	arguments: Record<string, unknown>;
+};
+
+export type CorrelationFailure = {
+	code: "tool-call-correlation-mismatch";
+	message: string;
+	expectedObservationCount: number;
+	shimCallCount: number;
+	invalidateResumeHint: true;
+};
+
+export type CaptureValidationFailure = {
+	attempt: number;
+	field: string;
+	message: string;
 };
 
 export type RouterOptions = {
-	/** Socket path to listen on. Defaults to a unique-per-spawn path (D20). */
 	socketPath?: string;
 	logger?: RouterLogger;
-	/** Mint a pi-facing id for a parked call. Overridable for deterministic tests. */
 	mintPiId?: () => string;
-	/**
-	 * Invoked synchronously the instant a `tools/call` is parked (BEFORE the
-	 * await that blocks the shim). The bridge (T1.9) uses this as the
-	 * round-trip trigger: it pushes a pi toolCall block keyed by `info.piId`
-	 * and ends the pi stream so pi executes the tool. Defaults to a no-op so
-	 * existing router consumers are unaffected.
-	 */
 	onPark?: (info: ParkedCallInfo) => void;
+	onCorrelationFailure?: (failure: CorrelationFailure) => void;
 };
 
 export type Router = {
 	readonly socketPath: string;
-	/** Tools advertised to the shim for this spawn (read by the bridge for --mcp-config). */
 	readonly toolDefs: ToolDef[];
-	/** Mirrors index.ts: resolver fns keyed by the minted pi-facing id. */
 	readonly pendingResolvers: Map<string, (result: ToolResult) => void>;
-	/** Mirrors index.ts: results that arrived before a parked call was registered. */
 	readonly pendingResults: Map<string, ToolResult>;
-
-	/** Begin listening on the IPC socket. */
 	start: () => Promise<void>;
-	/** Declare the tools this spawn exposes (the bridge reads them for --mcp-config). */
 	declareTools: (defs: ToolDef[]) => void;
-	/**
-	 * Deliver a pi tool result for a previously-parked call (the bridge calls
-	 * this from streamSimple()). Resolves the parked Promise; if the call has
-	 * not been parked yet (early result race), stashes it in pendingResults.
-	 */
 	deliver: (piToolResultId: string, result: ToolResult) => void;
-	/** Read the validated capture args stashed by the shim (capture path, D21). */
+	observeToolUse: (observation: DriverToolUseObservation) => "accepted" | "duplicate" | "ignored" | "failed";
+	sealToolUseBatch: (batchId: string) => CorrelationFailure | undefined;
+	finalizeToolUseCorrelation: () => CorrelationFailure | undefined;
+	getCorrelationFailure: () => CorrelationFailure | undefined;
+	resolvePiIdForModelId: (modelId: string) => string | undefined;
 	getCaptureStash: () => Record<string, unknown> | undefined;
-	/** Inspect currently-parked calls (UX correlation + tests). */
+	getCaptureValidationFailure: () => CaptureValidationFailure | undefined;
 	listParkedCalls: () => ParkedCallInfo[];
-	/**
-	 * True once at least one `tools/call` has been routed to pi (i.e. onPark
-	 * fired) for this spawn. The resilience layer (D33 / T1.9a) reads this as
-	 * the side-effect-aware idempotency gate: a respawn is forbidden once a
-	 * tool call has been routed, because a side-effecting tool may have run.
-	 * Defaults to false. Additive; existing consumers ignore it.
-	 */
 	readonly everRoutedToolCall: boolean;
-	/** Close the IPC server and drop all connections. */
 	stop: () => Promise<void>;
 };
 
-/** Stable canonical serialization of args for name+args matching (D32). */
-function canonicalizeArgs(args: Record<string, unknown>): string {
-	const sortDeep = (v: any): any => {
-		if (Array.isArray(v)) return v.map(sortDeep);
-		if (v && typeof v === "object") {
-			const out: Record<string, any> = {};
-			for (const k of Object.keys(v).sort()) out[k] = sortDeep(v[k]);
+type Observation = {
+	batchId: string;
+	modelId: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	argsKey: string;
+	piId?: string;
+};
+
+type ObservationBatch = {
+	id: string;
+	observations: Observation[];
+	sealed: boolean;
+	sealRequestSeq: number;
+};
+
+type PendingCall = {
+	info: ParkedCallInfo;
+	key: string;
+	seq: number;
+	declaredModelId?: string;
+	settled: boolean;
+};
+
+type RequestRecord = {
+	signature: string;
+	promise: Promise<ToolCallResponse>;
+};
+
+/** Stable canonical serialization used for both argument matching and dedupe. */
+export function canonicalizeArgs(args: Record<string, unknown>): string {
+	const sortDeep = (value: unknown): unknown => {
+		if (Array.isArray(value)) return value.map(sortDeep);
+		if (value !== null && typeof value === "object") {
+			const out: Record<string, unknown> = {};
+			for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+				out[key] = sortDeep((value as Record<string, unknown>)[key]);
+			}
 			return out;
 		}
-		return v;
+		return value;
 	};
 	return JSON.stringify(sortDeep(args ?? {}));
+}
+
+function normalizeToolName(name: string): string | undefined {
+	if (name.startsWith(BRIDGED_PREFIX)) {
+		const bare = name.slice(BRIDGED_PREFIX.length);
+		return bare.length > 0 ? bare : undefined;
+	}
+	// Shim receives bare names because MCP strips server qualification.
+	return name.length > 0 && !name.startsWith("mcp__") ? name : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function truncateUtf8(value: string, maxBytes = MAX_CAPTURE_EVIDENCE_BYTES): string {
+	const bytes = Buffer.from(value, "utf8");
+	if (bytes.length <= maxBytes) return value;
+	let end = maxBytes;
+	while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+	return bytes.subarray(0, end).toString("utf8");
+}
+
+function safeEvidence(value: unknown): string {
+	const text = typeof value === "string" ? value : String(value ?? "");
+	return truncateUtf8(text.replace(/[\u0000-\u001f\u007f]/g, " "));
 }
 
 export function createRouter(opts: RouterOptions = {}): Router {
@@ -155,50 +180,133 @@ export function createRouter(opts: RouterOptions = {}): Router {
 	let toolDefs: ToolDef[] = [];
 	const pendingResolvers = new Map<string, (result: ToolResult) => void>();
 	const pendingResults = new Map<string, ToolResult>();
-	const parked = new Map<string, ParkedCallInfo>(); // keyed by piId
+	const parked = new Map<string, ParkedCallInfo>();
+	const requestsByShimId = new Map<string, RequestRecord>();
+	const batches = new Map<string, ObservationBatch>();
+	const batchOrder: ObservationBatch[] = [];
+	const observationsByModelId = new Map<string, Observation>();
+	const aliases = new Map<string, string>();
+	const unmatchedCalls: PendingCall[] = [];
+	let requestSeq = 0;
 	let captureStash: Record<string, unknown> | undefined;
+	let captureValidationFailure: CaptureValidationFailure | undefined;
 	let everRoutedToolCall = false;
-	const onPark = opts.onPark;
+	let correlationFailure: CorrelationFailure | undefined;
+	let stopped = false;
+	let stopPromise: Promise<void> | undefined;
 
-	const onToolCall = async (req: ToolCallRequest): Promise<ToolCallResponse> => {
-		const piId = mintPiId();
-		const argsKey = canonicalizeArgs(req.arguments);
+	const counts = () => ({
+		expected: batchOrder.reduce((sum, batch) => sum + batch.observations.length, 0),
+		shim: Array.from(observationsByModelId.values()).filter((observation) => observation.piId !== undefined).length,
+	});
 
-		// Serialization-invariant assertion (D32): warn, do not throw — the
-		// minted-id keying keeps calls disjoint regardless of name+args overlap.
-		for (const p of parked.values()) {
-			if (p.name === req.name && p.argsKey === argsKey) {
-				log.warn(
-					{ name: req.name, piId, existingPiId: p.piId },
-					"router: two outstanding parked calls share (name, args); minted ids keep them disjoint (D32)",
-				);
-				break;
-			}
+	const drain = (text: string): void => {
+		for (const [piId, resolve] of Array.from(pendingResolvers.entries())) {
+			pendingResolvers.delete(piId);
+			resolve({ content: [{ type: "text", text }], isError: true });
 		}
+		pendingResults.clear();
+	};
 
-		const info: ParkedCallInfo = {
-			piId,
-			shimRequestId: req.id,
-			name: req.name,
-			arguments: req.arguments,
-			argsKey,
+	const fail = (message: string): CorrelationFailure => {
+		if (correlationFailure) return correlationFailure;
+		const { expected, shim } = counts();
+		correlationFailure = {
+			code: "tool-call-correlation-mismatch",
+			message,
+			expectedObservationCount: expected,
+			shimCallCount: shim + unmatchedCalls.length,
+			invalidateResumeHint: true,
 		};
-		parked.set(piId, info);
-		log.debug({ name: req.name, piId, shimRequestId: req.id }, "router: parked tools/call");
+		log.error({ event: "router.correlation.failed", ...correlationFailure }, message);
+		drain(CORRELATION_DRAIN_TEXT);
+		try {
+			opts.onCorrelationFailure?.(correlationFailure);
+		} catch (error) {
+			log.error({ error: error instanceof Error ? error.message : String(error) }, "router: correlation failure callback threw");
+		}
+		return correlationFailure;
+	};
 
-		// Mark that a tool call has been routed (D33 idempotency gate) and fire
-		// the bridge's round-trip trigger SYNCHRONOUSLY, before the await below.
-		everRoutedToolCall = true;
-		if (onPark) {
-			try {
-				onPark(info);
-			} catch (err) {
-				log.error({ err: err instanceof Error ? err.message : String(err), piId }, "router: onPark callback threw");
+	const pair = (observation: Observation, call: PendingCall): void => {
+		observation.piId = call.info.piId;
+		call.info.modelId = observation.modelId;
+		if (!call.settled) aliases.set(observation.modelId, call.info.piId);
+		const index = unmatchedCalls.indexOf(call);
+		if (index >= 0) unmatchedCalls.splice(index, 1);
+		log.debug(
+			{ batchId: observation.batchId, modelId: observation.modelId, piId: call.info.piId, name: observation.name },
+			"router: joined driver observation to stable pi resolver",
+		);
+	};
+
+	const tryPair = (): void => {
+		if (correlationFailure || stopped) return;
+		for (const batch of batchOrder) {
+			for (const observation of batch.observations) {
+				if (observation.piId) continue;
+				const call = unmatchedCalls.find((candidate) =>
+					candidate.key === `${observation.name}\u0000${observation.argsKey}` &&
+					(candidate.declaredModelId === undefined || candidate.declaredModelId === observation.modelId));
+				if (call) pair(observation, call);
 			}
 		}
+	};
 
-		const result = await new Promise<ToolResult>((resolve) => {
-			// Early-result race: pi delivered before the shim's call was parked.
+	const reconcileSealed = (batch: ObservationBatch): CorrelationFailure | undefined => {
+		if (!batch.sealed || correlationFailure) return correlationFailure;
+		const remaining = batch.observations.filter((observation) => !observation.piId);
+		const callsPresentAtSeal = unmatchedCalls.filter((call) => call.seq <= batch.sealRequestSeq);
+		if (remaining.length === 0) {
+			if (callsPresentAtSeal.length > 0) {
+				return fail(`tool-call correlation count mismatch in sealed batch ${batch.id}: shim calls exceed ${batch.observations.length} bridged observations`);
+			}
+			return undefined;
+		}
+		if (callsPresentAtSeal.length > remaining.length) {
+			return fail(`tool-call correlation count mismatch in sealed batch ${batch.id}: shim calls exceed bridged observations`);
+		}
+		if (callsPresentAtSeal.length > 0) {
+			return fail(`tool-call correlation canonical mismatch in sealed batch ${batch.id}`);
+		}
+		// Under-count remains open without a liveness timer; delayed shim may join.
+		return undefined;
+	};
+
+	const reconcileAllSealed = (): CorrelationFailure | undefined => {
+		for (const batch of batchOrder) {
+			const failure = reconcileSealed(batch);
+			if (failure) return failure;
+		}
+		return undefined;
+	};
+
+	const handleNewToolCall = async (req: ToolCallRequest): Promise<ToolCallResponse> => {
+		if (stopped || correlationFailure) {
+			return { kind: "tools/call:response", id: req.id, content: [{ type: "text", text: correlationFailure?.message ?? TEARDOWN_DRAIN_TEXT }], isError: true };
+		}
+		const name = normalizeToolName(req.name);
+		if (!name || !isRecord(req.arguments)) {
+			const failure = fail(`invalid bridged shim call ${JSON.stringify(req.name)}`);
+			return { kind: "tools/call:response", id: req.id, content: [{ type: "text", text: failure.message }], isError: true };
+		}
+
+		const piId = mintPiId();
+		if (parked.has(piId) || pendingResolvers.has(piId)) {
+			const failure = fail(`router minted duplicate active pi resolver id ${piId}`);
+			return { kind: "tools/call:response", id: req.id, content: [{ type: "text", text: failure.message }], isError: true };
+		}
+		const argsKey = canonicalizeArgs(req.arguments);
+		const declaredModelId = typeof req.modelToolUseId === "string" && req.modelToolUseId.length > 0
+			? req.modelToolUseId
+			: undefined;
+		const info: ParkedCallInfo = { piId, shimRequestId: req.id, name, arguments: req.arguments, argsKey, modelId: declaredModelId };
+		const call: PendingCall = { info, key: `${name}\u0000${argsKey}`, seq: ++requestSeq, declaredModelId, settled: false };
+		parked.set(piId, info);
+		unmatchedCalls.push(call);
+		if (declaredModelId) aliases.set(declaredModelId, piId);
+
+		const resultPromise = new Promise<ToolResult>((resolve) => {
 			const early = pendingResults.get(piId);
 			if (early) {
 				pendingResults.delete(piId);
@@ -208,58 +316,157 @@ export function createRouter(opts: RouterOptions = {}): Router {
 			pendingResolvers.set(piId, resolve);
 		});
 
+		everRoutedToolCall = true;
+		try {
+			opts.onPark?.(info);
+		} catch (error) {
+			log.error({ error: error instanceof Error ? error.message : String(error), piId }, "router: onPark callback threw");
+		}
+
+		tryPair();
+		// A request arriving while an older sealed batch is under-counted belongs to
+		// that batch. If it cannot match, fail now rather than guess a later batch.
+		const oldestIncomplete = batchOrder.find((batch) => batch.sealed && batch.observations.some((observation) => !observation.piId));
+		if (oldestIncomplete && unmatchedCalls.includes(call)) {
+			fail(`tool-call correlation canonical mismatch in sealed batch ${oldestIncomplete.id}`);
+		} else {
+			reconcileAllSealed();
+		}
+
+		const result = await resultPromise;
+		call.settled = true;
 		parked.delete(piId);
 		pendingResolvers.delete(piId);
-		return {
-			kind: "tools/call:response",
-			id: req.id,
-			content: result.content,
-			isError: result.isError,
-		};
+		// Unpaired metadata stays until observation reconciliation. This preserves
+		// observation/result order independence without retaining a live resolver.
+		if (info.modelId) aliases.delete(info.modelId);
+		return { kind: "tools/call:response", id: req.id, content: result.content, isError: result.isError };
+	};
+
+	const onToolCall = (req: ToolCallRequest): Promise<ToolCallResponse> => {
+		const signature = `${req.name}\u0000${canonicalizeArgs(isRecord(req.arguments) ? req.arguments : {})}\u0000${req.modelToolUseId ?? ""}`;
+		const prior = requestsByShimId.get(req.id);
+		if (prior) {
+			if (prior.signature !== signature) {
+				const failure = fail(`duplicate shim request id ${req.id} carried different call metadata`);
+				return Promise.resolve({ kind: "tools/call:response", id: req.id, content: [{ type: "text", text: failure.message }], isError: true });
+			}
+			return prior.promise;
+		}
+		const promise = handleNewToolCall(req);
+		requestsByShimId.set(req.id, { signature, promise });
+		return promise;
 	};
 
 	const onCaptureStash = (req: CaptureStashRequest): void => {
-		// First valid capture wins (D21). The shim already enforces this (a
-		// second valid call gets -32603 and is not stashed), so any stash that
-		// reaches here is authoritative; we keep the first defensively.
 		if (captureStash !== undefined) {
 			log.warn({ id: req.id }, "router: capture-stash arrived after a stash already exists; keeping first");
 			return;
 		}
 		captureStash = req.arguments;
+		captureValidationFailure = undefined;
 		log.debug({ id: req.id }, "router: capture args stashed");
 	};
 
-	const ipc: IpcServer = createIpcServer(socketPath, { onToolCall, onCaptureStash });
+	const onCaptureValidationFailed = (req: CaptureValidationFailedRequest): void => {
+		if (captureStash !== undefined) return;
+		if (!Number.isSafeInteger(req.attempt) || req.attempt < 1) {
+			log.warn({ attempt: req.attempt }, "router: ignored invalid capture validation attempt");
+			return;
+		}
+		if (captureValidationFailure && req.attempt <= captureValidationFailure.attempt) return;
+		captureValidationFailure = {
+			attempt: req.attempt,
+			field: safeEvidence(req.field),
+			message: safeEvidence(req.message),
+		};
+	};
+
+	const ipc: IpcServer = createIpcServer(socketPath, { onToolCall, onCaptureStash, onCaptureValidationFailed });
 
 	return {
 		socketPath,
-		get toolDefs() {
-			return toolDefs;
-		},
+		get toolDefs() { return toolDefs; },
 		pendingResolvers,
 		pendingResults,
 		start: () => ipc.listen(),
-		declareTools: (defs) => {
-			toolDefs = defs.slice();
-		},
+		declareTools: (defs) => { toolDefs = defs.slice(); },
 		deliver: (piToolResultId, result) => {
+			if (stopped || correlationFailure) return;
 			const resolve = pendingResolvers.get(piToolResultId);
 			if (resolve) {
 				pendingResolvers.delete(piToolResultId);
 				resolve(result);
 				return;
 			}
-			// Result arrived before the call was parked (or after teardown):
-			// stash so the parking path can pick it up (mirrors index.ts).
 			pendingResults.set(piToolResultId, result);
 			log.debug({ piToolResultId }, "router: deliver before park — stashed in pendingResults");
 		},
-		getCaptureStash: () => captureStash,
-		listParkedCalls: () => Array.from(parked.values()),
-		get everRoutedToolCall() {
-			return everRoutedToolCall;
+		observeToolUse: (input) => {
+			if (stopped || correlationFailure) return "failed";
+			if (!input.name.startsWith(BRIDGED_PREFIX)) return "ignored";
+			const name = normalizeToolName(input.name);
+			if (!name || typeof input.modelId !== "string" || input.modelId.length === 0 || !isRecord(input.arguments)) {
+				fail("invalid bridged driver tool observation");
+				return "failed";
+			}
+			const argsKey = canonicalizeArgs(input.arguments);
+			const prior = observationsByModelId.get(input.modelId);
+			if (prior) {
+				if (prior.name === name && prior.argsKey === argsKey && prior.batchId === input.batchId) return "duplicate";
+				fail(`duplicate model tool id ${input.modelId} carried different observation metadata`);
+				return "failed";
+			}
+			let batch = batches.get(input.batchId);
+			if (!batch) {
+				batch = { id: input.batchId, observations: [], sealed: false, sealRequestSeq: 0 };
+				batches.set(input.batchId, batch);
+				batchOrder.push(batch);
+			}
+			if (batch.sealed) {
+				fail(`driver observation arrived after batch ${input.batchId} was sealed`);
+				return "failed";
+			}
+			const observation: Observation = { batchId: input.batchId, modelId: input.modelId, name, arguments: input.arguments, argsKey };
+			batch.observations.push(observation);
+			observationsByModelId.set(input.modelId, observation);
+			tryPair();
+			return correlationFailure ? "failed" : "accepted";
 		},
-		stop: () => ipc.close(),
+		sealToolUseBatch: (batchId) => {
+			if (stopped || correlationFailure) return correlationFailure;
+			const batch = batches.get(batchId);
+			if (!batch) return undefined; // batch contained only ignored observations
+			if (batch.sealed) return reconcileSealed(batch);
+			batch.sealed = true;
+			batch.sealRequestSeq = requestSeq;
+			tryPair();
+			return reconcileSealed(batch);
+		},
+		finalizeToolUseCorrelation: () => {
+			if (correlationFailure) return correlationFailure;
+			for (const batch of batchOrder) {
+				if (!batch.sealed || batch.observations.some((observation) => !observation.piId)) {
+					return fail(`tool-call correlation ended with unmatched observations in batch ${batch.id}`);
+				}
+			}
+			if (unmatchedCalls.length > 0) return fail("tool-call correlation ended with unmatched shim calls");
+			return undefined;
+		},
+		getCorrelationFailure: () => correlationFailure,
+		resolvePiIdForModelId: (modelId) => aliases.get(modelId),
+		getCaptureStash: () => captureStash,
+		getCaptureValidationFailure: () => captureValidationFailure,
+		listParkedCalls: () => Array.from(parked.values()),
+		get everRoutedToolCall() { return everRoutedToolCall; },
+		stop: () => {
+			if (stopPromise) return stopPromise;
+			stopped = true;
+			drain(TEARDOWN_DRAIN_TEXT);
+			aliases.clear();
+			unmatchedCalls.length = 0;
+			stopPromise = ipc.close();
+			return stopPromise;
+		},
 	};
 }

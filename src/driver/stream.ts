@@ -39,6 +39,18 @@ export type DriverStreamUsage = {
 	totalTokens: number;
 };
 
+export type DriverToolUseObservation = {
+	modelId: string;
+	name: string;
+	arguments: Record<string, unknown>;
+};
+
+/** One completed assistant tool-use batch, sealed by its assistant boundary. */
+export type DriverToolUseBatch = {
+	batchId: string;
+	observations: DriverToolUseObservation[];
+};
+
 export type DriverStreamEvent =
 	// Direct partial streams expose explicit content-block lifecycle. Interactive
 	// claude-p continues emitting deltas only; index.ts infers boundaries there.
@@ -173,6 +185,8 @@ export interface ClaudePStreamParserOptions {
 	onEvent: (event: DriverStreamEvent) => void;
 	/** Optional logger for warn-level drift/malformed notices. Defaults to no-op. */
 	logger?: StreamLogger;
+	/** D32 batch callback; observations remain non-executing metadata. */
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 	/**
 	 * Warm-resume RE-ECHO suppression (G5). On a `--resume` turn, claude-p 0.1.0
 	 * drains the FULL replayed transcript to stdout before the live turn, so without
@@ -247,6 +261,7 @@ const MAX_PREFIX = 200; // chars of a bad line to name in the warn log
 export class ClaudePStreamParser {
 	private readonly onEvent: (event: DriverStreamEvent) => void;
 	private readonly logger: StreamLogger;
+	private readonly onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 
 	/** Partial-line buffer: bytes read before a newline boundary. */
 	private buffer = "";
@@ -268,6 +283,9 @@ export class ClaudePStreamParser {
 	 * replayed prior-turn content), then flushed in order at the terminal `result`.
 	 */
 	private liveTurnBuffer: DriverStreamEvent[] = [];
+	private liveToolBatchBuffer: DriverToolUseBatch[] = [];
+	private readonly emittedToolBatchIds = new Set<string>();
+	private toolBatchSeq = 0;
 
 	// Per-call usage of the LAST assistant message that carried real input-side
 	// tokens. claude-p's terminal `result.usage` is the CUMULATIVE sum across all
@@ -305,6 +323,7 @@ export class ClaudePStreamParser {
 	constructor(opts: ClaudePStreamParserOptions) {
 		this.onEvent = opts.onEvent;
 		this.logger = opts.logger ?? NOOP_LOGGER;
+		this.onToolUseBatch = opts.onToolUseBatch;
 		this.suppressResumeReplay = opts.suppressResumeReplay === true;
 		this.livePromptText = opts.livePromptText;
 		this.onResumeDiag = opts.onResumeDiag;
@@ -348,10 +367,13 @@ export class ClaudePStreamParser {
 		// (premature exit OR abort), flush whatever live-turn content was buffered
 		// so the aborted partial is the LIVE turn's text — NOT lost, and NOT the
 		// replayed prefix. (On a clean turn the result handler already flushed.)
-		if (this.suppressResumeReplay && !this.resultSeen && this.liveTurnBuffer.length > 0) {
+		if (this.suppressResumeReplay && !this.resultSeen && (this.liveTurnBuffer.length > 0 || this.liveToolBatchBuffer.length > 0)) {
 			const buffered = this.liveTurnBuffer;
 			this.liveTurnBuffer = [];
 			for (const ev of buffered) this.onEvent(ev);
+			const batches = this.liveToolBatchBuffer;
+			this.liveToolBatchBuffer = [];
+			for (const batch of batches) this.onToolUseBatch?.(batch);
 		}
 
 		this.ended = true;
@@ -497,6 +519,15 @@ export class ClaudePStreamParser {
 		this.liveTurnBuffer.push(event);
 	}
 
+	private emitToolBatch(batch: DriverToolUseBatch): void {
+		if (!this.onToolUseBatch) return;
+		if (!this.suppressResumeReplay) {
+			this.onToolUseBatch(batch);
+			return;
+		}
+		this.liveToolBatchBuffer.push(batch);
+	}
+
 	/**
 	 * Classify a `user` line. With warm-resume suppression ON, a real user-PROMPT
 	 * line marks a (possibly replayed) turn boundary: DISCARD the buffer so any
@@ -524,6 +555,7 @@ export class ClaudePStreamParser {
 		// New prompt boundary → discard any buffered (replayed) prior-turn content
 		// AND its billing rounds, so only the live turn's usage survives to `result`.
 		this.liveTurnBuffer = [];
+		this.liveToolBatchBuffer = [];
 		this.liveBillingById.clear();
 		this.liveBillingNoIdSeq = 0;
 	}
@@ -574,6 +606,7 @@ export class ClaudePStreamParser {
 		}
 		const content = (message as Record<string, unknown>).content;
 		if (!Array.isArray(content)) return;
+		const observations: DriverToolUseObservation[] = [];
 
 		for (const block of content) {
 			if (block === null || typeof block !== "object") continue;
@@ -611,12 +644,23 @@ export class ClaudePStreamParser {
 						name,
 						arguments: b.input,
 					});
+					if (name.startsWith("mcp__custom-tools__") && id && b.input !== null && typeof b.input === "object" && !Array.isArray(b.input)) {
+						observations.push({ modelId: id, name, arguments: b.input as Record<string, unknown> });
+					}
 					break;
 				}
 				default:
 					// Unknown block types within a recognized assistant line are
 					// ignored (forward-compatible); not turn-ending.
 					break;
+			}
+		}
+		if (observations.length > 0) {
+			const rawId = (message as Record<string, unknown>).id;
+			const batchId = typeof rawId === "string" && rawId.length > 0 ? rawId : `assistant-${++this.toolBatchSeq}`;
+			if (!this.emittedToolBatchIds.has(batchId)) {
+				this.emittedToolBatchIds.add(batchId);
+				this.emitToolBatch({ batchId, observations });
 			}
 		}
 	}
@@ -628,10 +672,13 @@ export class ClaudePStreamParser {
 		// now (everything accumulated since the last user-prompt line — i.e. the live
 		// turn's text/thinking/tool_use in order), then emit usage + done directly so
 		// the terminal pair is NEVER buffered/suppressed.
-		if (this.suppressResumeReplay && this.liveTurnBuffer.length > 0) {
+		if (this.suppressResumeReplay && (this.liveTurnBuffer.length > 0 || this.liveToolBatchBuffer.length > 0)) {
 			const buffered = this.liveTurnBuffer;
 			this.liveTurnBuffer = [];
 			for (const ev of buffered) this.onEvent(ev);
+			const batches = this.liveToolBatchBuffer;
+			this.liveToolBatchBuffer = [];
+			for (const batch of batches) this.onToolUseBatch?.(batch);
 		}
 		// `result.usage` is the CUMULATIVE turn usage (exact sum over all rounds) →
 		// use it for cost (billing). For the context-window indicator emit the LAST

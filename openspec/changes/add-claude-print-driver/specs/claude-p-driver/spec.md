@@ -59,7 +59,7 @@ IF a main-provider turn contains image blocks, THEN THE bridge SHALL strip them,
 
 ### Requirement: Interactive Held Calls Have No Upstream Idle Cutoff
 
-WHILE an interactive invocation waits on a held bridge MCP call, THE child Claude process SHALL receive unlimited MCP idle policy and SHALL not terminate the call because of its default stdio-MCP idle interval.
+WHILE an interactive invocation waits on a held bridge MCP call, THE bridge SHALL set `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` in the Claude child environment so the default stdio-MCP idle interval cannot terminate the call.
 
 #### Scenario: Tool exceeds upstream idle default
 - **WHEN** a healthy pi tool remains held longer than Claude Code's default stdio-MCP idle interval

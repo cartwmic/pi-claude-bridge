@@ -1,8 +1,9 @@
 # pi-claude-bridge Constitution
 
-**Version:** 2.0.0
+**Version:** 2.0.1
 **Ratified:** 2026-05-20
-**Last updated:** 2026-06-06 (Principle I amended: permit a content-free resume-metadata sidecar for validated warm `--resume`; partial reversal of "MUST NOT persist conversation history" → MAJOR bump)
+**Last updated:** 2026-07-18 (Principle I content-free sidecar enumeration clarified to include inference-driver identity; PATCH because no principle or persistence boundary changes)
+**Prior update:** 2026-06-06 (Principle I amended: permit a content-free resume-metadata sidecar for validated warm `--resume`; partial reversal of "MUST NOT persist conversation history" → MAJOR bump)
 **Prior:** 2026-05-31 (Principle IV wording reconciled: binding guarantee is non-routing/non-execution, not "blocked at emission"); 2026-05-21 (Principle III deterministic-path exemption — now DEAD under the claude-p driver, which reads no transcript)
 
 ## Core Principles
@@ -15,9 +16,9 @@ pi's state as input on every turn and MUST NOT persist conversation
 history of its own.
 
 **Exception (amended 2026-06-06, v2.0.0) — content-free resume metadata.**
-The bridge MAY persist a *content-free* resume sidecar — a driver
-session id, a one-way fingerprint digest of pi's message history, and
-the `claude` version — to a bridge-owned location outside `~/.claude/`,
+The bridge MAY persist a *content-free* resume sidecar — inference-driver
+identity, a driver session id, a one-way fingerprint digest of pi's message
+history, and the `claude` version — to a bridge-owned location outside `~/.claude/`,
 solely to validate a warm `--resume` of the prior driver session across
 a pi restart. The sidecar MUST NOT contain any recoverable conversation
 content: the fingerprint chain MUST be a one-way digest (e.g. `sha256`

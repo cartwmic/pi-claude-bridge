@@ -30,7 +30,7 @@ The bridge SHALL classify tools only at fresh user-turn dispatch, partitioning a
 
 ### Requirement: Strict call-shape — capture mode mutually exclusive with executable tools, root must be object
 
-THE bridge SHALL accept capture only for exactly one capture tool, zero executable tools, and object-root schema; any other capture-bearing shape SHALL error before invoking either driver and name offending tools or root type.
+THE bridge SHALL accept capture only for exactly one capture tool, zero executable tools, and object-root schema; any other capture-bearing shape SHALL invoke no driver, emit `start` then `error` naming offending tools or root type, and resolve an assistant with `stopReason === "error"`.
 
 #### Scenario: Two capture tools rejected
 - **IF** classification yields two capture tools
@@ -66,7 +66,7 @@ THE capture path SHALL not interact with user-session state: no main frame push,
 
 ### Requirement: Synthesized `toolCall` content block on success
 
-WHEN selected-driver capture receives schema-validated IPC-stashed arguments, THE bridge SHALL synthesize exactly one matching pi `toolCall`; IPC stash is authoritative, normalized terminal driver metadata supplies usage/cost, observed driver tool-use is only a cross-check, and terminal pi event is `done(toolUse)`.
+WHEN selected-driver capture receives schema-validated IPC-stashed arguments, THE bridge SHALL synthesize exactly one matching pi `toolCall` through `newTurnOutput(model)`; IPC stash is authoritative, observed driver tool-use is only a cross-check, and normalized terminal usage maps `input_tokens`→`usage.input`, `output_tokens`→`usage.output`, `cache_read_input_tokens`→`usage.cacheRead`, `cache_creation_input_tokens`→`usage.cacheWrite`, then `calculateCost` runs exactly once before terminal `done(toolUse)`.
 
 #### Scenario: Successful capture
 - **WHEN** stash contains valid arguments and terminal usage exists
@@ -82,7 +82,7 @@ WHEN selected-driver capture receives schema-validated IPC-stashed arguments, TH
 
 ### Requirement: Surface absent capture-tool call as error
 
-IF selected driver completes without valid IPC stash, THEN capture SHALL return error distinguishing no call from schema-validation failure and SHALL retain available usage/cost; it SHALL not retry through the other driver.
+IF selected driver completes without valid IPC stash, THEN capture SHALL emit `start` then `error`, resolve `stopReason === "error"`, distinguish no call from schema-validation failure with field path when available, retain terminal usage/cost, and SHALL not retry through the other driver.
 
 #### Scenario: Text only
 - **IF** selected driver completes with no capture stash or matching valid call
@@ -102,7 +102,7 @@ WHEN capture abort signal fires, THE capture path SHALL abort and reap its selec
 
 ### Requirement: Capture path forwards `systemPrompt` and replays message history (text-only, lossy)
 
-THE capture path SHALL forward caller system prompt verbatim to selected driver and replay messages through existing cold-start text conversion, dropping images with warning and retaining existing argument/result truncation limits; pi-UI prompt blending SHALL not apply.
+THE capture path SHALL forward caller system prompt verbatim to selected driver and replay all messages through `buildColdStartPrompt`, dropping images with warning at every position, truncating assistant tool-call arguments to 200 characters and tool-result content to 500 characters, while pi-UI prompt blending SHALL not apply.
 
 #### Scenario: Caller system prompt reaches selected driver
 - **WHEN** capture caller supplies system prompt
@@ -114,7 +114,7 @@ THE capture path SHALL forward caller system prompt verbatim to selected driver 
 
 ### Requirement: Capture path does not leak resources
 
-ON capture completion, THE bridge SHALL tear down selected-driver process, shim, and IPC so no zombie, handler, resolver, or user-stack drain log remains.
+ON capture completion, THE bridge SHALL tear down selected-driver process, shim, and IPC so no zombie, handler, resolver, or user-stack drain log remains; `[Tool execution interrupted by user before completion]` and `drainPendingResolversAsAborted` SHALL not appear for capture completion.
 
 #### Scenario: No user-stack drain text
 - **WHEN** capture completes
@@ -123,6 +123,26 @@ ON capture completion, THE bridge SHALL tear down selected-driver process, shim,
 #### Scenario: Capture resources cleaned
 - **WHEN** capture completes
 - **THEN** selected process and shim stop and no tracked frame entry remains
+
+### Requirement: Empty-prompt handling
+
+THE capture path SHALL accept a non-empty system prompt with empty message replay and SHALL reject both empty system prompt and empty message replay before selected-driver spawn.
+
+#### Scenario: System-prompt-only call accepted
+- **WHEN** system prompt is non-empty, messages are empty, and one object-root capture tool exists
+- **THEN** selected-driver capture process starts with that system prompt
+
+#### Scenario: Both empty rejected
+- **IF** system prompt and replayed message text are both empty
+- **THEN** no driver starts, stream emits `start` then `error` naming empty prompt, and result stop reason is error
+
+### Requirement: Capture path emits no intermediate stream events
+
+THE capture path through either driver SHALL emit exactly one `start` followed by one terminal `done(toolUse)` or `error` and SHALL not emit text, thinking, or tool-call partial lifecycle events.
+
+#### Scenario: Direct partial records suppressed
+- **WHEN** direct capture emits thinking, text, tool-use, or input-json partial records
+- **THEN** capture pi stream still contains only initial start and terminal event
 
 ## ADDED Requirements
 
@@ -142,14 +162,6 @@ WHEN a valid capture call starts, THE bridge SHALL use the owning invocation's p
 - **IF** selected capture driver fails without valid stash
 - **THEN** its error surfaces and other driver is not used
 
-### Requirement: Capture Suppresses Driver Partial Content
-
-WHILE capture runs through either driver, THE capture pi stream SHALL emit only initial start and one terminal done or error event.
-
-#### Scenario: Direct partial events arrive
-- **WHEN** direct driver emits thinking, text, or tool-input partials
-- **THEN** none become intermediate capture events and finalization still trusts stash
-
 ---
 
 ## Acceptance criterion quality checklist
@@ -164,5 +176,6 @@ WHILE capture runs through either driver, THE capture pi stream SHALL emit only 
 | output-capture.capture-path-honors-abortsignal | [x] | [x] | [x] | [x] | [x] |
 | output-capture.capture-path-forwards-systemprompt-and-replays-message-history-text-only-lossy | [x] | [x] | [x] | [x] | [x] |
 | output-capture.capture-path-does-not-leak-resources | [x] | [x] | [x] | [x] | [x] |
+| output-capture.empty-prompt-handling | [x] | [x] | [x] | [x] | [x] |
+| output-capture.capture-path-emits-no-intermediate-stream-events | [x] | [x] | [x] | [x] | [x] |
 | output-capture.capture-uses-owning-invocation-driver | [x] | [x] | [x] | [x] | [x] |
-| output-capture.capture-suppresses-driver-partial-content | [x] | [x] | [x] | [x] | [x] |

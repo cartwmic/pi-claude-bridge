@@ -6,13 +6,14 @@
 
 ### Requirement: Direct Print Invocation Uses Bidirectional Stream Protocol
 
-WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Claude Code with `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, selected model and system prompt, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--tools ""`, defense-in-depth native filtering, bridge-owned debug output, and fresh or resumed session identity; it SHALL NOT pass `--bare`.
+WHEN `claude-print` starts an invocation, THE driver SHALL run authenticated Claude Code with `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, selected model and system prompt, `--mcp-config <bridge-shim-config>`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--tools ""`, defense-in-depth native filtering, bridge-owned debug output, and fresh or resumed session identity; it SHALL NOT pass `--bare`.
 
 #### Scenario: Fresh direct invocation
 - **WHEN** a fresh direct turn starts
-- **THEN** argv includes `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--tools ""`, `--permission-mode bypassPermissions`, selected model, explicit system prompt, strict MCP config, empty setting sources, bridge-owned debug file, and `--session-id <uuid>`
+- **THEN** argv includes `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--mcp-config <bridge-shim-config>`, `--strict-mcp-config`, `--setting-sources ""`, `--tools ""`, `--permission-mode bypassPermissions`, selected model, explicit system prompt, bridge-owned debug file, and `--session-id <uuid>`
 - **AND** argv does not include `--bare`
 - **AND** one user NDJSON frame carries flattened pi history per the cold-start conversion contract
+- **AND** stdin remains open until terminal result, abort, or failure
 
 #### Scenario: Warm direct invocation
 - **WHEN** a validated direct session hint starts a later turn
@@ -58,7 +59,8 @@ WHEN direct stream-json output contains partial events followed by complete assi
 
 #### Scenario: Tool observations arrive
 - **WHEN** stream tool-use or input-json records describe a bridged call
-- **THEN** they may support display/cross-checking but do not create a second routing or execution path
+- **THEN** they are used only for structured logging and consistency cross-checks
+- **AND** router/shim-originated correlation is sole source of pi-visible tool-call lifecycle and execution
 
 #### Scenario: Nested records arrive
 - **WHEN** a record carries a non-null `parent_tool_use_id`
@@ -66,7 +68,7 @@ WHEN direct stream-json output contains partial events followed by complete assi
 
 ### Requirement: Direct Protocol Drift Surfaces Explicitly
 
-IF direct stdout contains malformed NDJSON, an invalid required record, or closes without required terminal metadata, THEN THE driver SHALL return a structured protocol error and invalidate its resume hint; unknown well-formed observational records SHALL be logged and ignored without inventing content.
+IF direct stdout contains malformed NDJSON, invalid top-level partial block lifecycle, missing final assistant usage, more or fewer than one terminal result, session-id mismatch, or irreconcilable result subtype/stop reason, THEN THE driver SHALL return a structured protocol error and invalidate its resume hint; unknown well-formed observational records SHALL be logged and ignored without inventing content, and local abort state takes precedence over all post-abort records.
 
 #### Scenario: Malformed stream line
 - **IF** a non-empty stdout line is not valid JSON
@@ -128,7 +130,7 @@ IF a direct invocation fails before any bridged tool call is routed and before u
 
 ### Requirement: Direct Driver Has No Inference Liveness Timeout
 
-WHILE a submitted direct turn remains alive, THE bridge SHALL NOT terminate it because of elapsed idle or wall time and SHALL set child MCP idle policy to unlimited.
+WHILE a submitted direct turn remains alive, THE bridge SHALL NOT terminate it because of elapsed idle or wall time and SHALL set `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` in the Claude child environment.
 
 #### Scenario: Long healthy held tool
 - **WHEN** a pi tool remains held longer than Claude's default stdio-MCP idle interval

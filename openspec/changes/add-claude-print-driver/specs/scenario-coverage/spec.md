@@ -2,6 +2,16 @@
 
 <!-- authored: in-session -->
 
+## MODIFIED Requirements
+
+### Requirement: Large Cold Start Prompt Coverage
+
+THE scenario suite SHALL prove a large first prompt is accepted end-to-end by both selected drivers.
+
+#### Scenario: Large cold-start prompt reaches model through either driver
+- **WHEN** fresh pi starts with no session and first prompt exceeds 800 bytes with unique sentinel under `claude-p` and `claude-print` runs
+- **THEN** each run completes selected-driver turn, logs no prompt-delivery failure, returns sentinel, and contains no non-delivery disclaimer
+
 ## ADDED Requirements
 
 ### Requirement: Full Bridge Scenarios Run Against Both Drivers
@@ -56,6 +66,7 @@ WHEN direct main, capture, and nested invocations overlap in live scenarios, THE
 
 | AC ID | Testable | Solution-free | Unambiguous | Consistent | Complete |
 |---|---|---|---|---|---|
+| scenario-coverage.large-cold-start-prompt-coverage | [x] | [x] | [x] | [x] | [x] |
 | scenario-coverage.full-bridge-scenarios-run-against-both-drivers | [x] | [x] | [x] | [x] | [x] |
 | scenario-coverage.direct-protocol-integration-gates-are-retained | [x] | [x] | [x] | [x] | [x] |
 | scenario-coverage.both-stream-schemas-have-deterministic-fixtures | [x] | [x] | [x] | [x] | [x] |

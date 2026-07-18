@@ -6,7 +6,7 @@
 
 ### Requirement: Driver Selection Uses Layered Bridge Configuration
 
-THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-print` using key-wise precedence `CLAUDE_BRIDGE_DRIVER` compatibility override, project `<project>/.pi/claude-bridge.json`, global `~/.pi/agent/claude-bridge.json`, then default `claude-p`; an absent `driver` key falls through while malformed JSON, a non-string driver, or an unsupported driver value fails explicitly before spawn.
+THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-print` using key-wise precedence `CLAUDE_BRIDGE_DRIVER` compatibility override, project `<project>/.pi/claude-bridge.json`, global `~/.pi/agent/claude-bridge.json`, then default `claude-p`; empty environment value is absent, an absent `driver` key falls through, and every present project/global file is parsed so malformed JSON, non-string driver, or unsupported driver fails explicitly even when a higher layer supplies a valid value.
 
 #### Scenario: Environment override wins
 - **WHEN** `CLAUDE_BRIDGE_DRIVER=claude-print` and project/global config select `claude-p`
@@ -39,6 +39,10 @@ WHEN an invocation creates a frame, THE bridge SHALL pin its selected driver unt
 #### Scenario: Capture follows owning selection
 - **WHEN** capture runs from an invocation whose project selection is `claude-print` while its subprocess cwd is an isolated temporary directory
 - **THEN** capture uses `claude-print` rather than resolving config from the temporary directory
+
+#### Scenario: Standalone capture resolves project before isolation
+- **WHEN** capture has no parent frame
+- **THEN** bridge resolves and pins driver from invocation/session project cwd before replacing subprocess cwd with `os.tmpdir()`
 
 #### Scenario: Nested invocation follows owner
 - **WHEN** a nested same-provider invocation starts while its parent frame is parked

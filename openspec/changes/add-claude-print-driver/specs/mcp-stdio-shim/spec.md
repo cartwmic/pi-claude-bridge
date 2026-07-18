@@ -13,6 +13,27 @@ THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachabl
 - **THEN** its dedicated shim exits within teardown grace
 - **AND** no shim remains attached to completed invocation
 
+#### Scenario: Direct user-input stream does not own shim lifetime
+- **WHEN** direct user frame has been written and a held MCP round remains active
+- **THEN** ending or idling user-input stream alone does not terminate shim
+- **AND** shim remains until its MCP stdin or bridge IPC closes
+
+### Requirement: Tool-call correlation across the split channels (D32)
+
+THE router SHALL reconcile shim MCP requests, selected-driver observational `tool_use` ids, and pi `toolResult.id` without making stdout a second execution path: park each shim call, match selected-driver tool observation by name + canonicalized arguments when the shim request lacks model id, key resolver by model id, and use positional pairing for identical calls while asserting counts. IF shim call carries model id directly, THEN that id is authoritative.
+
+#### Scenario: Interactive correlation
+- **WHEN** interactive stdout and shim request describe same bridged call
+- **THEN** router pairs them and matching pi result resolves only that call
+
+#### Scenario: Direct correlation
+- **WHEN** direct stream observational tool record and shim request describe same bridged call
+- **THEN** router pairs them without routing or executing from stream record
+
+#### Scenario: Parallel identical calls
+- **WHEN** selected driver emits multiple identical-name+args calls in one assistant turn
+- **THEN** positional pairing preserves model ids and pi results do not cross-wire
+
 ## ADDED Requirements
 
 ### Requirement: Shim readiness proves exact tool availability
@@ -35,4 +56,5 @@ WHEN the shim accepts its first MCP `tools/list` request and constructs a respon
 | AC ID | Testable | Solution-free | Unambiguous | Consistent | Complete |
 |---|---|---|---|---|---|
 | mcp-stdio-shim.shim-lifecycle-is-bound-to-its-spawn | [x] | [x] | [x] | [x] | [x] |
+| mcp-stdio-shim.tool-call-correlation-across-the-split-channels-d32 | [x] | [x] | [x] | [x] | [x] |
 | mcp-stdio-shim.shim-readiness-proves-exact-tool-availability | [x] | [x] | [x] | [x] | [x] |

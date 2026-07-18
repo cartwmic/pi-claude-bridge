@@ -4,9 +4,25 @@
 
 ## MODIFIED Requirements
 
+### Requirement: Resume Sidecar Persisted On Successful Turn
+
+WHEN main-provider turn (not nested subagent) completes without error, including abort, THE bridge SHALL persist content-free sidecar outside `~/.claude/`, keyed by literal cwd + full pi session id, containing driver identity, driver session id, one-way history fingerprint chain, and Claude version.
+
+#### Scenario: Successful turn writes typed sidecar
+- **WHEN** main-provider turn finalizes non-error with cached session id
+- **THEN** sidecar records selected driver, session id, fingerprint chain, and Claude version
+
+#### Scenario: Subagent does not write sidecar
+- **WHEN** nested frame finalizes
+- **THEN** no main-session sidecar is replaced by child session
+
+#### Scenario: Sidecar write failure does not break turn
+- **IF** sidecar write fails
+- **THEN** bridge logs failure, completes turn normally, and later resume cold-starts
+
 ### Requirement: Validated Warm Resume On Pi Resume
 
-WHEN first post-resume turn has a sidecar for literal cwd + full pi session id whose history chain is a safe prefix-extension, appended material contains only new turn messages, Claude version matches, and sidecar driver matches selected driver, THE bridge SHALL warm-resume that selected driver with recorded session id; validation occurs at turn start, not session-start handler.
+WHEN first post-resume turn after `session_start:resume` or bare bridge restart with empty in-memory cache has a sidecar for literal cwd + full pi session id whose history chain is a safe prefix-extension, appended material contains only new turn messages, Claude version matches, and sidecar driver matches selected driver, THE bridge SHALL warm-resume that selected driver with recorded session id; validation occurs at turn start, not session-start handler.
 
 #### Scenario: Valid same-driver sidecar
 - **WHEN** sidecar validates and driver identity matches current selection
@@ -72,6 +88,7 @@ IF persisted or in-memory hint driver differs from selected driver, THEN THE bri
 
 | AC ID | Testable | Solution-free | Unambiguous | Consistent | Complete |
 |---|---|---|---|---|---|
+| warm-pi-resume.resume-sidecar-persisted-on-successful-turn | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.validated-warm-resume-on-pi-resume | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.driver-guarantees-a-live-resume-result-no-bridge-side-stale-guard | [x] | [x] | [x] | [x] | [x] |
 | warm-pi-resume.warm-path-performs-no-new-claude-config-access | [x] | [x] | [x] | [x] | [x] |

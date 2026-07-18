@@ -53,6 +53,7 @@ review_budget_mode: quiet-round
 ## Execution Notes
 
 - 2026-07-18 — Frozen baseline: `intent.md`; semantic edits require explicit owner authorization.
+- 2026-07-18 — Assumption: adding the inert `<!-- authored: in-session -->` marker required by the configured author-role gate is metadata only and does not alter frozen intent meaning.
 - 2026-07-18 — Feasibility evidence proved readiness-gated stream-json input, held multi-round MCP, capture stash, partial streaming, warm cache read, abort partials, and `--tools ""` MCP preservation.
 - 2026-07-18 — Worktree locator pending apply lifecycle.
 

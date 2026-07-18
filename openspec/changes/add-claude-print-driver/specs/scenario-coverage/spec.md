@@ -34,6 +34,22 @@ THE validation suite SHALL retain real-driver integration evidence for readiness
 - **IF** either driver's live initialized tool roster contains a native or foreign MCP tool
 - **THEN** the integration gate fails as a Constitution IV violation
 
+### Requirement: Both Stream Schemas Have Deterministic Fixtures
+
+THE unit suite SHALL retain fixtures for interactive `claude-p` stream records and direct partial/complete stream records, covering nominal text/thinking, held tools, malformed input, abort, and missing terminal result.
+
+#### Scenario: Parser regression without live billing
+- **WHEN** either driver's parser contract changes
+- **THEN** deterministic fixtures prove normalized pi events, usage, stop reason, and error classification before live scenarios run
+
+### Requirement: Direct Concurrency Scenarios Prove State Isolation
+
+WHEN direct main, capture, and nested invocations overlap in live scenarios, THE suite SHALL prove disjoint processes, shims, routers, IPC channels, queues, session state, and tool correlation rather than process exit alone.
+
+#### Scenario: Concurrent direct paths
+- **WHEN** direct main is parked while capture and nested calls execute
+- **THEN** scenario verifies correct result returns to each owner with no cross-frame stream, resolver, or session contamination
+
 ---
 
 ## Acceptance criterion quality checklist
@@ -42,3 +58,5 @@ THE validation suite SHALL retain real-driver integration evidence for readiness
 |---|---|---|---|---|---|
 | scenario-coverage.full-bridge-scenarios-run-against-both-drivers | [x] | [x] | [x] | [x] | [x] |
 | scenario-coverage.direct-protocol-integration-gates-are-retained | [x] | [x] | [x] | [x] | [x] |
+| scenario-coverage.both-stream-schemas-have-deterministic-fixtures | [x] | [x] | [x] | [x] | [x] |
+| scenario-coverage.direct-concurrency-scenarios-prove-state-isolation | [x] | [x] | [x] | [x] | [x] |

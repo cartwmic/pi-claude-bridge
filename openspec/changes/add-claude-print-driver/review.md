@@ -56,6 +56,7 @@ review_budget_mode: quiet-round
 - 2026-07-18 — Assumption: adding the inert `<!-- authored: in-session -->` marker required by the configured author-role gate is metadata only and does not alter frozen intent meaning.
 - 2026-07-18 — Feasibility evidence proved readiness-gated stream-json input, held multi-round MCP, capture stash, partial streaming, warm cache read, abort partials, and `--tools ""` MCP preservation.
 - 2026-07-18 — Worktree locator pending apply lifecycle.
+- 2026-07-18 — Clarify round 1 blind dispatch at `8e6e71fc2bc71260e050a1dbaa9abd60417aa499`: configured review set all attested integration root/HEAD and failed (max P0=0, P1=17, P2=4, P3=7). `opsx_dispatch` refused because runtime reported no armed loop despite arm-generation context; fallback launched exact `opsx models review` models as three parallel read-only `pi --no-session` processes, writing sole findings sources under `/tmp/add-claude-print-driver-clarify-r1/`. Read-only window remained unchanged. Resolutions applied autonomously per frozen intent: driver-neutral brownfield restatements, typed memory/sidecars, explicit config/protocol failures, exact native controls, retry safety, direct isolation/images/steering, and deterministic dual-schema fixtures.
 
 ## Scope Expansions
 

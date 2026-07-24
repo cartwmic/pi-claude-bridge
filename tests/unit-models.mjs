@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MODEL_IDS_IN_ORDER, buildModels, resolveModelId } from "../models.js";
+import { MODEL_IDS_IN_ORDER, FALLBACK_MODELS, buildModels, resolveModelId } from "../models.js";
 
 // Simulated pi-ai registry entry — extra fields mimic the ones pi-ai exposes
 // that must not leak into the provider-registered MODELS array.
@@ -33,18 +33,26 @@ describe("MODELS projection", () => {
 		assert.deepEqual(models.map((m) => m.id), MODEL_IDS_IN_ORDER);
 	});
 
-	it("silently drops IDs missing from pi-ai (no fallback)", () => {
-		// Only haiku present — opus/sonnet vanish from picker.
+	it("drops IDs missing from pi-ai unless FALLBACK_MODELS covers them", () => {
+		// Only haiku present in pi-ai — fallback ids (opus-5) survive, the rest vanish.
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
-		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
+		assert.deepEqual(models.map((m) => m.id), ["claude-opus-5", "claude-haiku-4-5"]);
+	});
+
+	it("fallback entries carry usable metadata and every fallback id is in order list", () => {
+		for (const [id, def] of Object.entries(FALLBACK_MODELS)) {
+			assert.equal(def.id, id);
+			assert.ok(MODEL_IDS_IN_ORDER.includes(id));
+			assert.ok(def.contextWindow > 0 && def.maxTokens > 0);
+		}
 	});
 });
 
 describe("resolveModelId", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 
-	it("opus shortcut resolves to claude-opus-4-8 (first opus in order)", () => {
-		assert.equal(resolveModelId(models, "opus"), "claude-opus-4-8");
+	it("opus shortcut resolves to claude-opus-5 (first opus in order)", () => {
+		assert.equal(resolveModelId(models, "opus"), "claude-opus-5");
 	});
 
 	it("haiku shortcut resolves to claude-haiku-4-5", () => {

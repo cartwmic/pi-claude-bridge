@@ -1,23 +1,33 @@
 # warm-pi-resume Specification
 
 ## Purpose
-TBD - created by archiving change enable-warm-pi-resume. Update Purpose after archive.
+Content-free, driver-typed resume hints that preserve warm Claude sessions across Pi restarts while keeping Pi history canonical and falling back safely to cold replay.
 ## Requirements
 ### Requirement: Resume Sidecar Persisted On Successful Turn
 
-WHEN the main-provider turn (not a subagent turn) completes without error — including the abort path, so an aborted-mid-tool session stays resumable per R7 — THE bridge SHALL persist a resume sidecar — driver session id, the pi message-history fingerprint chain (a one-way digest), and the `claude` version — to a bridge-owned location outside `~/.claude/`, keyed by the literal spawn cwd + the full pi `sessionId`.
+WHEN main-provider turn (not nested subagent) completes without error, including abort only after direct turn acceptance is proven by its first top-level model `message_start` (interactive abort behavior unchanged), THE bridge SHALL persist content-free sidecar outside `~/.claude/`, keyed by literal cwd + full pi session id, containing driver identity, driver session id, one-way history fingerprint chain, and Claude version. IF direct invocation aborts before user-frame submission, THEN THE bridge SHALL preserve any prior validated hint unchanged. IF it aborts after submission but before turn acceptance, THEN THE bridge SHALL invalidate the possibly mutated direct session hint/sidecar and force the next turn to canonical cold start. Neither path advances current history boundary or persists a fresh driver session id.
 
-#### Scenario: Successful turn writes the sidecar
-- **WHEN** the main-provider turn finalizes with a non-error stop reason and a cached driver session id
-- **THEN** a sidecar file outside `~/.claude/`, keyed by the literal spawn cwd + full pi session id, records that driver session id, the history fingerprint chain, and the claude version
+#### Scenario: Successful turn writes typed sidecar
+- **WHEN** main-provider turn finalizes non-error with cached session id
+- **THEN** sidecar records selected driver, session id, fingerprint chain, and Claude version
 
-#### Scenario: A subagent turn does not write the sidecar
-- **WHEN** a subagent frame (not the top-of-stack main-provider turn) finalizes
-- **THEN** no resume sidecar is written for it — only the main-provider turn's session is recorded, so a later resume reattaches the main session and not a subagent's
+#### Scenario: Subagent does not write sidecar
+- **WHEN** nested frame finalizes
+- **THEN** no main-session sidecar is replaced by child session
 
-#### Scenario: Sidecar write failure does not break the turn
-- **IF** writing the sidecar fails (I/O error, permissions)
-- **THEN** the bridge SHALL log the failure and complete the turn normally, leaving the next resume to cold-start
+#### Scenario: Sidecar write failure does not break turn
+- **IF** sidecar write fails
+- **THEN** bridge logs failure, completes turn normally, and later resume cold-starts
+
+#### Scenario: Abort before direct prompt submission
+- **WHEN** caller aborts while direct invocation still waits for MCP readiness
+- **THEN** no new session hint is cached or persisted and current history fingerprint is not marked as seen
+- **AND** any prior validated hint remains unchanged
+
+#### Scenario: Abort after write but before direct turn acceptance
+- **WHEN** user frame write completes but caller aborts before first top-level model `message_start`
+- **THEN** any prior/fresh direct session hint and active sidecar are invalidated and current history fingerprint is not marked as seen
+- **AND** next turn uses full canonical cold start
 
 ### Requirement: Sidecar Stores No Conversation Content
 
@@ -29,19 +39,19 @@ THE resume sidecar SHALL contain only fingerprints and identifiers and SHALL NOT
 
 ### Requirement: Validated Warm Resume On Pi Resume
 
-WHEN the first post-resume turn runs (the first turn after a `session_start:resume` or a bare bridge restart whose in-memory cache is empty but a sidecar is present) AND a sidecar exists for the current literal cwd + full pi `sessionId` AND pi's loaded history is a prefix-extension of the sidecar's fingerprint chain AND the messages appended beyond that chain are ONLY the new turn's message(s) — i.e. no intervening messages were added that the recorded `claude` session never saw (a provider switch or parallel path between persist and resume) — AND the sidecar's `claude` version equals the current `claude` version, THE bridge SHALL warm-resume the recorded driver session (`--resume <persisted-id>`) for that turn instead of cold-starting. The keyed validation is performed at turn-start (where the literal spawn cwd is known), NOT in the `session_start` handler (which carries no cwd).
+WHEN first post-resume turn after `session_start:resume` or bare bridge restart with empty in-memory cache has a sidecar for literal cwd + full pi session id whose history chain is a safe prefix-extension, appended material contains only new turn messages, Claude version matches, and sidecar driver matches selected driver, THE bridge SHALL warm-resume that selected driver with recorded session id; validation occurs at turn start, not session-start handler.
 
-#### Scenario: Valid sidecar drives a warm first turn
-- **WHEN** the first post-resume turn runs and the sidecar validates (prefix-match, version match) and the only new message beyond the chain is the new user prompt
-- **THEN** that turn spawns `claude-p` with `--resume <persisted-id>` and types only the new user message (not the full history)
+#### Scenario: Valid same-driver sidecar
+- **WHEN** sidecar validates and driver identity matches current selection
+- **THEN** selected driver resumes recorded id and receives only new user material
 
-#### Scenario: Unseen intervening messages force cold (not warm)
-- **WHEN** pi's loaded history extends the sidecar chain by messages the recorded `claude` session never saw (e.g. a turn ran on a different provider between persist and resume, so `claude` was not sent those messages)
-- **THEN** the bridge cold-starts (re-packs the full history) rather than warm-resuming — because a warm `--resume` would type only the new prompt and silently drop the unseen messages (the cross-provider "missed messages" failure mode). Prefix-match alone is NOT sufficient for warm-safety; `claude` must have seen every message in the prefix.
+#### Scenario: Unseen intervening messages
+- **IF** loaded history contains messages recorded driver never saw
+- **THEN** bridge cold-starts rather than silently omitting them
 
-#### Scenario: A deleted/cleaned transcript surfaces as an error then cold (no existence pre-check)
-- **WHEN** the sidecar validates but the recorded `claude` transcript was deleted/cleaned out-of-band
-- **THEN** the `--resume` spawn errors (spike T0.1: `claude` reports "No conversation found", a non-error-free exit), the bridge invalidates the cache + sidecar on that error, and the next turn cold-starts (no `~/.claude` existence pre-check is performed)
+#### Scenario: Missing external transcript
+- **IF** driver reports recorded session absent
+- **THEN** error surfaces, hint/sidecar invalidate, and next turn cold-starts without bridge pre-reading `~/.claude/`
 
 ### Requirement: Cold Start When Validation Does Not Pass
 
@@ -65,15 +75,15 @@ IF the sidecar is unreadable or malformed, THEN THE bridge SHALL cold-start the 
 
 ### Requirement: Driver Guarantees A Live-Resume Result (no bridge-side stale guard)
 
-THE warm-resume path SHALL rely on the `claude-p` driver's guarantee that a `--resume` turn's result reflects the LIVE turn — the driver's transcript-growth gate emits a result only once the transcript shows a new assistant turn appended past the pre-submit baseline (see the `claude-p-driver` capability). THE bridge SHALL NOT implement its own stale-result detection, `staleSuspected` heuristic, or discard/retry: it treats a driver `result` as authoritative, and a driver error (the gate's refusal) as an ordinary turn error — the error SURFACES (Principle VII) and the sidecar/cache is invalidated so the next turn cold-starts.
+THE warm-resume path SHALL rely on selected driver's live-result guarantee: `claude-p` uses transcript-growth gate and `claude-print` uses the fresh terminal result for the submitted stream-json user turn. THE bridge SHALL not add stale-result heuristic or discard/retry; driver refusal surfaces and invalidates hints.
 
-#### Scenario: Warm turn returns the live answer
-- **WHEN** a warm-resume turn completes with a `result`
-- **THEN** the bridge delivers that result as-is — it is guaranteed by the driver to be the live turn's — with no staleness re-check
+#### Scenario: Warm turn returns live answer
+- **WHEN** selected driver completes resumed turn with authoritative result
+- **THEN** bridge delivers it without bridge-side staleness re-check
 
-#### Scenario: Driver refuses a stale turn → error surfaces, next turn cold-starts
-- **IF** the driver cannot confirm the live turn ran (its transcript-growth gate fails and it returns an error rather than a replayed result)
-- **THEN** the bridge treats it as an ordinary turn error: the error surfaces to pi (Principle VII), the cache + sidecar are invalidated, and the next turn cold-starts — with no special staleness logic and no in-turn cold-retry
+#### Scenario: Driver refuses live turn
+- **IF** selected driver cannot produce authoritative live result
+- **THEN** error surfaces, cache/sidecar invalidate, and next turn cold-starts
 
 ### Requirement: Sidecar Invalidated On Turn Error
 
@@ -97,19 +107,46 @@ WHEN the bridge warm-resumes from a sidecar, THE bridge SHALL set its in-memory 
 
 ### Requirement: Aborted-Mid-Tool Sessions Remain Resumable
 
-WHERE the recorded driver transcript ends with an unclosed tool call from a turn that was aborted mid-tool, THE bridge SHALL still warm-resume it and SHALL NOT cold-start solely because of the unclosed tool call, relying on the driver's request-construction repair of the dangling tool call. CONFIRMED by spike T0.2 (2026-06-06) through the full `claude-p` + `suppressResumeReplay` path: a crafted dangling tool_use resumed with exit 0, a terminal result, the live prompt answered, and `staleSuspected:false` (no misfire). Separately, the bridge's own abort/kill path does NOT even produce a dangling transcript — killing claude-p closes the MCP shim, and `claude` writes a synthetic `is_error` tool_result ("MCP error -32000: Connection closed") for the pending call before exiting — so this requirement covers only the rarer crash-mid-write case, which is also proven safe.
+WHERE selected-driver session ends with an unclosed tool call after abort or crash and sidecar otherwise validates, THE bridge SHALL warm-resume the same driver and SHALL not cold-start solely because of dangling call; selected driver SHALL repair or close the dangling call and return the new live turn.
 
-#### Scenario: Dangling tool call does not block warm resume
-- **WHEN** the prior turn left a dangling tool call in the driver transcript and the sidecar otherwise validates
-- **THEN** the bridge warm-resumes and the driver proceeds with the new turn without error
+#### Scenario: Interactive dangling call
+- **WHEN** interactive session has dangling tool call and sidecar validates
+- **THEN** `claude-p` resume proceeds under existing proven repair behavior
+
+#### Scenario: Direct dangling call
+- **WHEN** direct session is aborted mid-held-tool and sidecar validates
+- **THEN** retained live integration evidence proves direct resume repairs/closes dangling call and produces new live answer
 
 ### Requirement: Warm Path Performs No New Claude Config Access
 
-THE warm-resume path SHALL NOT write any path under `~/.claude/` and SHALL NOT introduce any new read of `~/.claude/` (no content read, no existence `stat`); Principle III is unchanged. Reattachment is effected by passing `--resume` to the driver, which performs any transcript read itself.
+THE warm-resume path SHALL only access bridge-owned sidecar outside `~/.claude/`, pass resume id to selected driver, and SHALL not read, stat, or write Claude config/transcript paths itself.
 
-#### Scenario: Warm resume touches only the bridge's own state
-- **WHEN** a warm resume runs
-- **THEN** the only files the bridge reads or writes are its own sidecar (outside `~/.claude/`); it passes `--resume` to `claude-p` for the driver-side transcript read, and never opens any `~/.claude/` path itself
+#### Scenario: Warm resume touches bridge state only
+- **WHEN** either driver warm-resumes
+- **THEN** bridge accesses only its sidecar and process protocol, never `~/.claude/`
+
+### Requirement: Resume Sidecar Records Driver Identity
+
+WHEN resumable main-provider turn persists a sidecar, THE bridge SHALL record driver identity alongside opaque session id, history fingerprint chain, and Claude version without conversation content.
+
+#### Scenario: Direct turn writes typed sidecar
+- **WHEN** resumable direct main turn completes non-error
+- **THEN** sidecar records `claude-print` and direct session id
+
+#### Scenario: Legacy sidecar has no driver
+- **WHEN** existing sidecar lacks driver field
+- **THEN** bridge interprets it as `claude-p`
+
+### Requirement: Cross-Driver Warm Resume Is Forbidden
+
+IF persisted or in-memory hint driver differs from selected driver, THEN THE bridge SHALL invalidate hint and cold-start selected driver normally.
+
+#### Scenario: Interactive to direct
+- **IF** `claude-p` hint exists and current selection is `claude-print`
+- **THEN** direct does not receive interactive id and cold-starts with pi history
+
+#### Scenario: Direct to interactive
+- **IF** direct hint exists and current selection is `claude-p`
+- **THEN** interactive does not receive direct id and cold-starts normally
 
 ---
-

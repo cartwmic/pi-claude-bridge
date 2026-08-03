@@ -1,7 +1,7 @@
 # pi-claude-bridge Domain
 
-**Version:** 1.1.0
-**Last updated:** 2026-06-06 (invariant 3 amended: a pi restart/resume is no longer an unconditional cold-start trigger — a validated content-free resume sidecar warm-resumes the prior driver session; see `enable-warm-pi-resume`)
+**Version:** 1.2.0
+**Last updated:** 2026-08-01 (two first-class subprocess drivers; typed resume hints and driver-neutral diagnostics)
 
 ## Entities
 
@@ -11,22 +11,21 @@
   contain many tool rounds before the model emits end_turn.
 - **pi-bridged tool** — a tool registered with pi's tool executor and
   exposed to the inference driver via the bridge's MCP surface.
-- **inference driver** — the external process the bridge invokes to
-  produce model output. Today: Anthropic Agent SDK. After refactor:
-  the `claude` interactive TUI binary driven via PTY.
-- **driver session** — the inference driver's own conversation
-  artifact (id + on-disk transcript). The bridge caches the id in
-  memory; the on-disk transcript is read-only to the bridge.
-- **transcript JSONL** — append-only event log the inference driver
-  writes during a turn. Public hook contract surfaces its path.
+- **inference driver** — selected process adapter pinned for an invocation:
+  `claude-p` drives Claude Code's interactive PTY; `claude-print` drives the
+  installed CLI directly with bidirectional stream-json. Default is `claude-p`.
+- **driver session** — Claude Code session id used only as a cache/resume hint.
+  Every in-memory and persisted hint records its owning driver; cross-driver
+  resume is forbidden. Claude's filesystem transcript is opaque to the bridge.
+- **driver event stream** — adapter-normalized text/thinking/tool/usage/terminal
+  events consumed by shared orchestration, independent of source protocol.
 - **main-provider path** — bridge code path for normal pi-user turns.
   Streams to pi UI, supports tool rounds, honors aborts.
 - **capture path** — bridge code path for structured-output requests.
   No pi UI, no tool execution, single forced tool-call as result.
-- **bridge frame** — in-memory state for one in-flight turn (the SDK
-  query handle today; the PTY handle + transcript tailer after the
-  refactor). Owns the pending-tool-result queue.
-- **MCP shim (post-refactor)** — subprocess that speaks MCP on
+- **bridge frame** — in-memory state for one in-flight turn. Owns selected
+  adapter/handle, attempt phase, pending tool results, partial output, and abort.
+- **MCP shim** — subprocess that speaks MCP on
   stdin/stdout to the inference driver and forwards calls to the
   bridge's in-process router.
 
@@ -37,7 +36,9 @@
    peers of the main turn.
 2. Tool results reach the bridge only via pi's next `streamSimple()`
    call. The bridge never synthesizes a "real" tool result.
-3. A driver session id is treated as a cache hint only; on any
+3. A driver session id is a driver-typed cache hint only; a missing legacy
+   driver field migrates to `claude-p`, while malformed or mismatched hints are
+   invalidated. On any
    pi-side divergence event (history hash mismatch, `/fork`,
    `/compact`, cwd change) the cached id is dropped and the next turn
    cold-starts. A pi restart/resume is NOT an unconditional cold-start
@@ -59,10 +60,17 @@
    v1.2.0; the prior "enforced at emission" wording was aspirational and
    did not match observed behavior — built-in tool_use blocks are emitted
    regardless of config and must be dropped, not prevented.)
-5. Pi message-history-shape changes (image content, multi-block
-   assistant messages, partial tool results post-abort) MUST be
-   handled without re-architecting; the conversion layer normalizes
-   them into the driver's expected input shape.
+5. Pi message-history-shape changes (image content, multi-block assistant
+   messages, partial tool results post-abort) are normalized by shared
+   conversion; both current drivers are text-only and warn/drop image blocks.
+6. Driver selection is fixed before spawn. Failure/retry may cold-repack on the
+   same driver only; automatic cross-driver fallback is forbidden.
+7. Direct prompt submission occurs only after an exact, private MCP readiness
+   sentinel. Both drivers have unlimited MCP held-tool idle policy; liveness is
+   caller abort or real process exit, not an inference watchdog.
+8. Main and capture calls use the owning selected driver. Capture is isolated
+   from main frame/cache state and requires both validated stash and successful
+   terminal result.
 
 ## Units and conventions
 
@@ -73,9 +81,13 @@
 - **Tool names**: lowercase in pi (`read`, `bash`), PascalCase in the
   inference driver (`Read`, `Bash`). The bridge owns the mapping.
 - **Logging**: JSON-per-line via pino, rotated by `rotating-file-stream`,
-  bounded at ~3× `CLAUDE_BRIDGE_DEBUG_MAX_BYTES` total disk.
-- **Configuration**: project `.pi/claude-bridge.json` overrides global
-  `~/.pi/agent/claude-bridge.json`.
+  bounded at ~3× `CLAUDE_BRIDGE_DEBUG_MAX_BYTES`. Stable lifecycle event names
+  carry explicit driver identity; stderr/debug artifacts include driver names.
+- **Configuration**: `CLAUDE_BRIDGE_DRIVER` overrides project
+  `.pi/claude-bridge.json`, which overrides global
+  `~/.pi/agent/claude-bridge.json`; default is `claude-p`. Every present file is
+  parsed fail-loud. `claude-print` also enforces its independent Claude CLI
+  version floor before spawn and supports a bounded readiness-timeout override.
 
 ## Out-of-scope domains
 

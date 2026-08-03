@@ -2,19 +2,14 @@
 
 ## Purpose
 
-Stdio MCP server subprocess that exposes pi-bridged tools to the `claude`
-process (spawned by claude-p, configured via `--mcp-config`) and proxies calls
-back to the bridge's in-process router. The shim is the only bridge-controlled
-interface the inference driver sees. It implements the **held-open promise-park**
-that the Phase-0 spike validated: a `tools/call` is forwarded to the in-process
-router, which parks a Promise and resolves it only when pi delivers the tool
-result via the next `streamSimple()` — and `claude` (driven by claude-p) blocks
-inline on that response.
+Stdio MCP server subprocess exposing Pi-bridged tools to Claude Code under
+either selected driver and proxying calls to the bridge's in-process router.
+Shim owns exact readiness/tool roster and held-open promise parking: a
+`tools/call` remains pending until Pi delivers its matching tool result.
 
-**Note (replan):** the hook-relay role from the prior in-house-PTY plan is
-REMOVED. claude-p owns `SessionStart`/`Stop` hook registration, so the shim is an
-MCP server only. The shim is still a separate process invoked by `claude` via
-`--mcp-config` (claude-p forwards `--mcp-config` to `claude`).
+Shim is an MCP server only. It runs as a separate process invoked by Claude
+Code via per-spawn `--mcp-config`; both drivers bind its lifecycle to their
+owning spawn.
 
 ## Requirements
 
@@ -39,12 +34,19 @@ WHEN the shim receives an MCP `tools/call` request from the driver, THE shim SHA
 
 ### Requirement: Tool-call correlation across the split channels (D32)
 
-The held-open round-trip is split: the shim receives an MCP `tools/call` (its own JSON-RPC request id + tool name + arguments), while the model's `toolu_…` id appears only on claude-p's stdout, and pi delivers `toolResult.id` = the model's `toolu_…` id. THE router SHALL reconcile {shim request} ↔ {model `toolu_…` id} ↔ {pi `toolResult.id`} per design D32: park each shim call, recover the model's `toolu_…` id by matching tool name + canonicalized arguments against the stdout `tool_use` event, and key the parked resolver by that `toolu_…` id so pi's `toolResult.id` resolves it. For multiple identical-name+args calls in one assistant line (S11), fall back to positional pairing within that line and assert the counts match. IF claude-p's `tools/call` is found (gate G8) to carry the model's `toolu_…` id directly, that id is authoritative and the heuristic is unnecessary. This correlation is verified by gate G8 on a 2-parallel-tool fixture BEFORE the router is implemented.
+THE router SHALL reconcile shim MCP requests, selected-driver observational `tool_use` ids, and pi `toolResult.id` without making stdout a second execution path: each shim call receives one bridge/pi id that remains the resolver key shown to and returned by pi; model tool id is correlation metadata aliased to that pi id when recovered by name + canonicalized arguments. Identical calls pair positionally inside one completed assistant tool-use batch while counts are asserted. IF request carries model id directly, THEN the alias is established immediately without replacing resolver key. IF counts or canonical pairing cannot reconcile, THEN owning invocation SHALL surface structured correlation error, safely drain pending resolvers, and invalidate resume hint rather than guess or hang.
 
-#### Scenario: Parallel held calls resolve to the correct pi tool_result
-- **WHEN** one assistant line emits two `tool_use` blocks (distinct names or args) and the shim receives two `tools/call` requests
-- **THEN** each parked call is keyed to its model `toolu_…` id (recovered per D32)
-- **AND** pi's two `toolResult`s — keyed by those `toolu_…` ids — each resolve the matching parked call (no cross-wiring)
+#### Scenario: Interactive correlation
+- **WHEN** interactive stdout and shim request describe same bridged call
+- **THEN** router pairs them and matching pi result resolves only that call
+
+#### Scenario: Direct correlation
+- **WHEN** direct stream observational tool record and shim request describe same bridged call
+- **THEN** router pairs them without routing or executing from stream record
+
+#### Scenario: Parallel identical calls
+- **WHEN** selected driver emits multiple identical-name+args calls in one assistant turn
+- **THEN** positional pairing preserves model ids and pi results do not cross-wire
 
 ### Requirement: Shim rejects non-bridged tool names
 
@@ -58,13 +60,17 @@ IF the shim receives a `tools/call` request whose tool name is not in the set ad
 
 ### Requirement: Shim lifecycle is bound to its spawn
 
-THE shim SHALL be spawned per claude-p invocation, SHALL be reachable only by its owning `claude` process (via the inline `--mcp-config` pointer), and SHALL terminate when the IPC channel to the bridge closes or when its stdin is closed.
+THE shim SHALL be spawned once per selected-driver invocation, SHALL be reachable only by its owning Claude process through explicit MCP configuration, and SHALL terminate when its bridge IPC channel or its own MCP stdin closes; closure of the direct driver's user-input stream alone SHALL NOT tear down a shim that still owns held MCP rounds.
 
-#### Scenario: Driver exit teardown
-- **WHEN** the owning claude-p subprocess (and its `claude` child) exits (any reason: normal stop, abort, crash)
-- **THEN** the shim's stdin closes
-- **AND** the shim exits within an implementation-defined grace window
-- **AND** no shim process remains attached to a dead driver
+#### Scenario: Selected driver exits
+- **WHEN** an owning `claude-p` or `claude-print` process exits for normal completion, abort, or failure
+- **THEN** its dedicated shim exits within teardown grace
+- **AND** no shim remains attached to completed invocation
+
+#### Scenario: Direct user-input stream does not own shim lifetime
+- **WHEN** direct user frame has been written and a held MCP round remains active
+- **THEN** ending or idling user-input stream alone does not terminate shim
+- **AND** shim remains until its MCP stdin or bridge IPC closes
 
 ### Requirement: Shim is a separate process
 
@@ -104,3 +110,18 @@ IF the shim receives a stdin message that is not valid JSON-RPC over MCP, THEN t
 - **IF** the driver writes a malformed JSON-RPC frame to the shim's stdin
 - **THEN** the shim responds with an MCP `parse error` on stdout
 - **AND** the shim continues processing subsequent valid messages
+
+### Requirement: Shim readiness proves exact tool availability
+
+WHEN the shim accepts its first MCP `tools/list` request and constructs a response equal to the router-declared tool set, THE shim SHALL publish its per-spawn readiness signal; retained integration evidence SHALL prove no model-generation output precedes connected MCP initialization after bridge submits user frame.
+
+#### Scenario: Readiness signal follows exact tools list
+- **WHEN** shim handles first `tools/list`
+- **THEN** response equals router-declared set
+- **AND** readiness is published only for that successful handler path
+
+#### Scenario: List never succeeds
+- **IF** shim startup or `tools/list` fails
+- **THEN** readiness is not published and owning driver cannot treat MCP surface as ready
+
+---

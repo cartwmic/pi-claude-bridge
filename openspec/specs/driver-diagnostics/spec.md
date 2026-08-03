@@ -2,80 +2,67 @@
 
 ## Purpose
 
-Observability surface for a `claude-p` spawn. With liveness timeouts removed,
-a real hang is handled reactively, so the bridge makes hangs and abnormal
-termination self-diagnosing: capture the child's stderr, dump in-flight turn
-state on abnormal termination, and forward `claude --debug-file` to a
-bridge-owned path. Constitution VII (failures surface; degradation is explicit)
-is the governing principle; constitution III (no writes under `~/.claude/`)
-bounds where diagnostics may be written.
+Driver-neutral observability for `claude-p` and `claude-print` spawns. With
+inference liveness timeouts removed, bridge captures child stderr, writes
+bridge-owned debug files, emits selected-driver identity, and dumps in-flight
+state on abnormal termination without writing under `~/.claude/`.
 
 ## Requirements
 
 ### Requirement: Child stderr is captured to a per-spawn debug file
 
-THE driver SHALL capture the `claude-p` child process's stderr stream and
-persist it to a dedicated per-spawn debug file under the bridge's own debug
-directory (the directory of the rotating `claude-bridge.log`, NOT under
-`~/.claude/`). THE driver SHALL NOT route the child's stderr onto the child's
-stdout, which is parsed as NDJSON (domain: events arrive on claude-p stdout).
-THE per-spawn debug file SHALL be identifiable by the spawn (e.g. by session id
-and pid).
+THE selected driver SHALL capture child stderr to dedicated per-spawn file under bridge diagnostics, not `~/.claude/`, SHALL keep stderr separate from parsed NDJSON stdout, and SHALL identify file by driver and spawn. Diagnostic-write failure SHALL not crash turn and SHALL be logged.
 
-#### Scenario: Upstream stderr is persisted for a spawn
-- **WHEN** the child claude-p process writes to stderr during a turn
-- **THEN** the bytes are appended to a per-spawn debug file under the bridge debug directory
-- **AND** the bytes are NOT written to the child's stdout NDJSON stream
+#### Scenario: Selected-driver stderr persisted
+- **WHEN** either driver writes stderr
+- **THEN** bytes append to its bridge-owned per-spawn file and never stdout parser
 
-#### Scenario: stderr capture never crashes the turn
-- **IF** the per-spawn debug file cannot be opened or written (e.g. permission or disk error)
-- **THEN** the driver SHALL continue the turn without throwing
-- **AND** SHALL emit a structured log entry noting the diagnostics-write failure
+#### Scenario: stderr capture write fails
+- **IF** file cannot open or write
+- **THEN** turn continues and diagnostics failure is logged
 
 ### Requirement: Premature-exit error surfaces the last stderr lines
 
-THE driver SHALL surface upstream stderr on a premature exit: WHEN a claude-p spawn exits without a terminal `result` line and the turn was not aborted, THE driver SHALL include the last N lines of the child's captured stderr in the `error` event's `errorMessage` (bounded to a fixed maximum), so an
-upstream cause (e.g. `PromptNotAccepted`, `StopTimeout`, an Anthropic stream
-error) is visible to pi without reading the debug file. WHERE no stderr was
-captured, THE driver SHALL emit the existing premature-termination message
-unchanged.
+IF selected-driver spawn exits without terminal result and was not aborted, THEN THE bridge SHALL append bounded last N stderr lines to surfaced error; with no captured stderr it SHALL preserve base premature-termination message.
 
 #### Scenario: Premature exit with stderr
-- **WHEN** the spawn closes with no terminal `result` and the turn was not aborted, and stderr lines were captured
-- **THEN** the `error` event `errorMessage` contains the premature-termination summary AND the last N captured stderr lines
+- **IF** either driver closes without result and stderr exists
+- **THEN** error names driver/cause and contains bounded tail
 
 #### Scenario: Premature exit without stderr
-- **IF** the spawn closes prematurely and no stderr was captured
-- **THEN** the `error` event `errorMessage` is the premature-termination summary with no stderr section appended
+- **IF** selected driver closes prematurely with no stderr
+- **THEN** error has base summary without stderr section
 
 ### Requirement: In-flight state dump on abnormal termination
 
-THE driver or bridge SHALL emit an in-flight state dump on abnormal termination: WHEN a turn terminates abnormally — a caller-driven abort, a forced termination, or a premature exit — it SHALL emit a structured log entry capturing the in-flight state: the age of the last observed stream
-delta, whether a tool round was held at termination, and the length of any
-buffered partial output. This makes a future hang self-diagnosing from the
-bridge log.
+WHEN either driver aborts, is forced down, or exits prematurely, THE bridge SHALL log driver identity, last-delta age, held-round state, and buffered-partial length before teardown completes.
 
-#### Scenario: Abort emits a state dump
-- **WHEN** pi aborts an in-flight turn
-- **THEN** a structured log entry records the last-delta age, the held-round flag, and the partial-buffer length before teardown completes
+#### Scenario: Abort emits selected-driver state dump
+- **WHEN** pi aborts either driver
+- **THEN** structured dump contains required state and driver
 
-#### Scenario: Premature exit emits a state dump
-- **WHEN** a spawn exits prematurely (classified `error`)
-- **THEN** a structured log entry records the same in-flight state fields
+#### Scenario: Premature exit emits selected-driver state dump
+- **IF** either driver exits prematurely
+- **THEN** same fields are logged
 
 ### Requirement: claude debug logging is forwarded to a bridge-owned file
 
-THE driver SHALL forward `--debug-file <path>` to the child `claude` process via
-claude-p's verbatim unknown-flag passthrough, pointing it at a per-spawn
-bridge-owned path (NOT under `~/.claude/`), so the child claude's own debug log
-is always captured alongside the spawn. THE driver SHALL keep this behavior
-always-on by default and SHALL provide an environment escape hatch to disable
-it. THE forwarded path SHALL NOT be under `~/.claude/` (constitution III).
+WHERE debug forwarding is enabled, THE selected driver SHALL pass `--debug-file <bridge-owned-path>` to Claude directly or through interactive passthrough, SHALL keep it outside `~/.claude/`, and SHALL omit flag when documented disable env is set.
 
-#### Scenario: debug-file flag is emitted on a spawn
-- **WHEN** the driver assembles the claude-p argument vector for a spawn and debug forwarding is enabled
-- **THEN** the argv includes `--debug-file <bridge-owned-path>` and that path is not under `~/.claude/`
+#### Scenario: Debug flag emitted
+- **WHEN** either driver starts with forwarding enabled
+- **THEN** argv reaches Claude with bridge-owned debug path
 
-#### Scenario: debug-file forwarding can be disabled
-- **WHERE** the operator sets the documented disable env var
-- **THEN** the driver omits `--debug-file` from the argv
+#### Scenario: Debug forwarding disabled
+- **WHERE** disable env is set
+- **THEN** selected driver omits debug-file flag
+
+### Requirement: Diagnostics Identify Selected Driver
+
+WHEN either inference driver starts or terminates, THE bridge SHALL include driver identity in structured lifecycle logs and associate diagnostic artifacts with that invocation.
+
+#### Scenario: Concurrent driver diagnostics
+- **WHEN** interactive and direct invocations overlap
+- **THEN** files and lifecycle records remain distinct by driver/spawn
+
+---

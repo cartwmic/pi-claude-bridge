@@ -2,62 +2,50 @@
 
 ## Purpose
 
-Subprocess invocation of the `smithersai/claude-p` interactive-TUI driver. Owns
-process lifecycle (spawn, abort, kill), claude-p flag assembly, and the
-externally-observable contract between pi turns and `claude-p` invocations. The
-bridge NEVER invokes the nominal `claude -p` (`--print`) surface itself —
-claude-p emulates it by driving the interactive TUI in its own PTY. The bridge
-delegates PTY management, ANSI terminal-probe responses, the workspace-trust
-dialog, hook registration, and prompt-typing to claude-p, and reads nothing
-under `~/.claude/` (events arrive on claude-p's stdout; see `transcript-stream`).
+Subprocess invocation of the `smithersai/claude-p` interactive-TUI driver.
+Owns process lifecycle, flag assembly, PTY-backed prompt delivery, held-tool
+rounds, abort behavior, and normalized stream events when `claude-p` is
+selected. This remains default driver; direct print-mode behavior belongs to
+`claude-print-driver`. Bridge reads nothing under `~/.claude/`.
 ## Requirements
 ### Requirement: claude-p spawn with model selection
 
-WHEN the bridge starts a fresh turn for a model registered under provider `claude-bridge`, THE driver SHALL spawn the `claude-p` binary as a subprocess whose arguments include the resolved model id via `--model`, the system prompt for this path via `--system-prompt <text>` (or `--input-file <path>` when the assembled prompt is large or multiline; verbatim on the capture path, pi-combined on the main-provider path), `--mcp-config <inline-json-or-path>` pointing at the bridge's stdio MCP shim, `--disallowedTools <native-tool-list>` enforcing constitution principle IV, isolation flags `--strict-mcp-config` and `--setting-sources ""` (forwarded to `claude`), `--permission-mode bypassPermissions`, `--session-id <pre-generated-uuid>` (fresh turns) or `--resume <cached-id>` (warm resume), `--output-format stream-json`, and `--verbose`. THE driver SHALL NOT pass `--settings` (claude-p reserves it), `-p`/`--print`, or `--timeout`.
+WHERE `claude-p` is selected, WHEN the bridge starts a fresh turn for a `claude-bridge` model, THE driver SHALL spawn maintained `claude-p` with resolved model via `--model`, path-appropriate system prompt via `--system-prompt` or large/multiline `--system-prompt-file`, explicit shim `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, `--session-id <uuid>` or `--resume <cached-id>`, `--output-format stream-json`, `--verbose`, and bridge-owned `--debug-file`; it SHALL NOT pass `--settings`, `-p`, `--print`, or `--timeout`.
 
 #### Scenario: Fresh turn spawns one claude-p subprocess with bridged tool surface
-- **WHEN** `streamSimple` enters a fresh-turn path for model `claude-sonnet-4-6`
-- **THEN** the driver spawns the `claude-p` executable as a subprocess
-- **AND** the arguments include `--mcp-config` pointing at the bridge's stdio MCP shim
-- **AND** the arguments include `--disallowedTools` carrying the native built-in disallow set
-- **AND** the arguments include `--strict-mcp-config` and `--setting-sources ""` (preventing user-global MCP servers and settings from contributing tools)
-- **AND** the arguments include `--permission-mode bypassPermissions`
-- **AND** the arguments include `--system-prompt <text>` (or `--input-file <path>`) with the path-appropriate system prompt content
-- **AND** the arguments include `--output-format stream-json` and `--verbose`
-- **AND** the arguments do NOT include `--settings`, `-p`, `--print`, or `--timeout`
-- **AND** the pi user prompt is delivered via claude-p's positional argument or `--input-file` (text content only; image content per the "Image content handling in v1" requirement)
+- **WHEN** selected driver is `claude-p` and fresh turn starts
+- **THEN** one `claude-p` process starts with `--mcp-config`, `--disallowedTools`, `--strict-mcp-config`, `--setting-sources ""`, `--permission-mode bypassPermissions`, model, path-appropriate prompt, session id, stream-json output, verbose, and default-on bridge-owned debug file unless documented disable env is set
+- **AND** args omit `--settings`, `-p`, `--print`, and `--timeout`
+- **AND** user prompt is delivered by positional argument or input file under existing text/image contract
 
-#### Scenario: User-global MCP server isolated from the spawned driver
-- **WHEN** the user has a globally-configured MCP server in `~/.claude/settings.json` (e.g. `mcp__user-tool__*`)
-- **AND** the driver spawns claude-p for a pi turn
-- **THEN** the spawned `claude` does not expose any `mcp__user-tool__*` tool to the model (verified by deterministic `tools/list` MCP introspection against the shim's advertised set)
+#### Scenario: User-global MCP server isolated from interactive driver
+- **WHEN** user has globally configured MCP server and selected driver is `claude-p`
+- **THEN** spawned Claude exposes only bridge shim tools and no user-global MCP tools
 
-#### Scenario: User-global `permissions.allow` cannot re-enable a disallowed tool
-- **WHEN** the user has `~/.claude/settings.json` containing `permissions.allow: ["Bash(*)"]`
-- **AND** the driver spawns claude-p for a pi turn
-- **THEN** the spawned `claude` still blocks `Bash` (because `--disallowedTools` denies it AND `--setting-sources ""` excludes user settings)
+#### Scenario: User permissions cannot re-enable disallowed native tool
+- **WHEN** user settings allow a native tool and selected driver is `claude-p`
+- **THEN** `--disallowedTools` plus `--setting-sources ""` keep that tool unavailable
+
+#### Scenario: Direct selection does not spawn interactive driver
+- **WHEN** selected driver is `claude-print`
+- **THEN** this requirement causes no `claude-p` process to spawn
 
 ### Requirement: Native tool emission is blocked via `--disallowedTools`
 
-THE driver SHALL configure every claude-p spawn with `--disallowedTools` enumerating the bridge's native-tool disallow list, such that the bridged MCP namespace (`mcp__custom-tools__*`) is the only callable tool surface. Because claude-p reserves `--settings`, the disallow set is expressed via the `--disallowedTools` flag (forwarded to `claude`) rather than inline settings `permissions.deny`. Per constitution IV (reconciled 2026-05-31), the binding guarantee is **non-routing/non-execution**, NOT "the model never emits a native `tool_use`": the model may emit a built-in tool_use on instinct, and claude-p may emit housekeeping built-ins (`WaitForMcpServers`) — these MUST be dropped (never routed to a handler, executed, or surfaced to pi), and the advertised surface MUST be exactly the closed `mcp__custom-tools__*` set. Verified by gate G2 and surfaced at the pi-TUI level by scenario S27.
+THE interactive driver SHALL configure every `claude-p` spawn with `--disallowedTools` including at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `NotebookEdit`, `Agent`, `Task`, `Skill`, `ToolSearch`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `TodoWrite`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TaskOutput`, `TaskStop`, `BashOutput`, `Monitor`, `Workflow`, `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `PushNotification`, `RemoteTrigger`, `ReportFindings`, and `SendMessage`, re-audited for each supported Claude version, such that `mcp__custom-tools__*` is the only callable surface. Any native or housekeeping emission MUST be dropped and never routed, executed, or surfaced to pi, while no disallow token may suppress the bridged namespace.
 
-#### Scenario: Disallow list is non-empty and includes documented set
-- **WHEN** the driver builds claude-p arguments for a spawn
-- **THEN** the `--disallowedTools` value forbids at least `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `NotebookEdit`, `Agent`, `Task`, `Skill`, `ToolSearch`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `TodoWrite`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TaskOutput`, `TaskStop`, `BashOutput`, `Monitor`, `Workflow`, `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `PushNotification`, and `RemoteTrigger` (the set that empirically closes the claude 2.1.159 `system/init` roster; G2 verified — must be re-audited per claude version, task T4.7)
-- **AND** the disallow set MUST NOT include any token that matches the bridge's own `mcp__custom-tools__*` namespace under `claude`'s tool-name matching (notably a bare `Mcp`/`mcp__*` entry that could suppress the bridged surface and deadlock every tool round) — the held-open MCP surface MUST survive the disallow set
-- **AND** the model's only callable tool surface is EXACTLY `mcp__custom-tools__*` (closed-set; G2/T1.12 assert both that natives are refused AND that the bridged surface survives)
+#### Scenario: Current native set is closed
+- **WHEN** interactive arguments are built
+- **THEN** disallow list contains the enumerated minimum including `ReportFindings` and `SendMessage`
+- **AND** advertised callable roster is exactly declared bridged MCP tools
 
-#### Scenario: Built-in `WaitForMcpServers` is not surfaced to pi
-- **WHEN** the model emits a built-in `WaitForMcpServers` tool_use during MCP-server startup (observed in claude-p's stream)
-- **THEN** the driver/stream layer does NOT surface it to pi as a tool call
-- **AND** no pi tool execution is triggered for it
+#### Scenario: Built-in housekeeping is not surfaced
+- **WHEN** Claude emits any native housekeeping call, including `WaitForMcpServers`
+- **THEN** no pi tool call or execution is produced
 
-#### Scenario: Native-tool block is verified by emission refusal, not just `tools/list` (hard gate G2)
-- **GIVEN** a user-global `~/.claude/settings.json` with `permissions.allow: ["Bash(*)"]` AND a user-global MCP server configured
-- **WHEN** a turn is spawned through claude-p with the bridge's `--disallowedTools` + `--strict-mcp-config` + `--setting-sources ""`, and the model is explicitly asked to run a `Bash` command
-- **THEN** deterministic `tools/list` introspection shows ONLY `mcp__custom-tools__*` (no `Bash`, no user MCP tools)
-- **AND** the model's attempt to emit a `Bash` tool_use is refused (no native execution occurs)
-- **AND** IF either assertion fails, constitution IV is violated and the claude-p fork (task 4.10) is required before cut-over
+#### Scenario: Native refusal is verified beyond roster introspection
+- **WHEN** user settings attempt to allow a native tool and model is asked to call it
+- **THEN** native operation does not execute and foreign user MCP tools remain absent
 
 ### Requirement: Driver runs the patched claude-p binary
 
@@ -176,19 +164,15 @@ THE driver SHALL classify an unexpected claude-p exit as a retriable error: IF t
 
 ### Requirement: Image content handling in v1
 
-IF a pi turn's `Context.messages` contains image content blocks intended for the main-provider path, THEN the driver SHALL strip the image blocks from the delivered prompt, SHALL emit a `warn`-level log entry naming the dropped block count, AND SHALL proceed with text-only content. IF a capture-shape `complete()` call's prompt contains image content blocks, THEN the driver SHALL reject the call pre-spawn with `stopReason: "error"` and an `errorMessage` naming the v1 limitation (interactive `claude` driven via claude-p has no documented programmatic mechanism for inline image injection).
+IF a main-provider turn contains image blocks, THEN THE bridge SHALL strip them, warn with dropped count, and proceed text-only. IF a capture call contains image blocks, THEN THE bridge SHALL warn, drop them, and proceed under output-capture's documented lossy text-only replay contract.
 
-#### Scenario: Main-provider turn with image content
-- **WHEN** `complete()` is invoked on the main-provider path with `context.messages` containing an image block
-- **THEN** the bridge strips the image block from the delivered prompt before spawning claude-p
-- **AND** a warn-level log entry records the dropped block count
-- **AND** the turn proceeds with text-only content
+#### Scenario: Main interactive turn with image
+- **WHEN** main-provider history contains an image block
+- **THEN** image is stripped, warning records count, and text-only turn proceeds
 
-#### Scenario: Capture call with image content
-- **WHEN** `complete()` is invoked on the capture path with `context.messages` containing an image block
-- **THEN** the bridge does not spawn claude-p
-- **AND** the pi-ai stream emits `start` then `error` whose `errorMessage` references the v1 no-image-on-capture limitation
-- **AND** `complete()` resolves with `stopReason === "error"`
+#### Scenario: Interactive capture with image
+- **WHEN** capture history contains image blocks
+- **THEN** capture warns, drops images, and proceeds text-only
 
 ### Requirement: Abort lifecycle is decoupled from claude-p completion
 
@@ -290,3 +274,12 @@ The bridge dependency graph SHALL resolve `claude-p` to fork commit `f47f71dfa34
 
 ---
 
+### Requirement: Interactive Held Calls Have No Upstream Idle Cutoff
+
+WHILE an interactive invocation waits on a held bridge MCP call, THE bridge SHALL set `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` in the Claude child environment so the default stdio-MCP idle interval cannot terminate the call.
+
+#### Scenario: Tool exceeds upstream idle default
+- **WHEN** a healthy pi tool remains held longer than Claude Code's default stdio-MCP idle interval
+- **THEN** `claude-p` continues waiting until pi returns result or caller aborts
+
+---

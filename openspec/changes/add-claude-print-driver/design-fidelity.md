@@ -7,7 +7,13 @@
 **Attested Path:** /Volumes/Workshop/git/pi-claude-bridge
 
 **Digest sha256 (intent.md):** 49ea499f343b9a31915687cf67c31acd80d4251da6bf9b49e4c1bf7399735f16
-**Digest sha256 (design.md):** 2e4aa7a5f98b1017d33454391e27c2f10f5cf24e264c69955ef7c312a2210dd1
+**Original sealed digest sha256 (design.md):** 2e4aa7a5f98b1017d33454391e27c2f10f5cf24e264c69955ef7c312a2210dd1
+**Current digest sha256 (design.md):** c3b20ff7a5b83d82f75b81df552a7a55ffb8ecfaf2ca156c152863a2a907fa08
+
+Post-implementation D5 clarification records validated `claude-p` terminal
+multi-batch publication: overflow is judged at terminal correlation finalization,
+not while an earlier published batch seals. Requirement meaning remains
+fail-closed exact correlation; original seal digest is retained as provenance.
 **Digest sha256 (specs/bridge-driver-selection/spec.md):** e12b1d1dd29e629145449fdfdf80c9dcd714dd57b29df95ccff4f5fea66d77b4
 **Digest sha256 (specs/claude-p-driver/spec.md):** b025f6294e3273a3568f3c4a500ac836feedadf12a6be9eaf2ad6385f933e075
 **Digest sha256 (specs/claude-peek-overlay/spec.md):** 3553bd2cbce88f76fb2ee6a4381210e281a4cf01a84c89d7a4f32ddf54bb124d

@@ -223,7 +223,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 3.2 Add driver-neutral diagnostics identity/tails/state dumps/default-on debug files, set unlimited MCP idle policy on both drivers, add `ReportFindings`/`SendMessage` to interactive denylist, and make `/claude-peek` preserve interactive behavior while explicitly unavailable/no-tail under direct selection. ACs: all delta requirements under `driver-diagnostics`, `claude-peek-overlay`, plus `claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools` and `claude-p-driver.interactive-held-calls-have-no-upstream-idle-cutoff`.
+- [x] 3.2 Add driver-neutral diagnostics identity/tails/state dumps/default-on debug files, set unlimited MCP idle policy on both drivers, add `ReportFindings`/`SendMessage` to interactive denylist, and make `/claude-peek` preserve interactive behavior while explicitly unavailable/no-tail under direct selection. ACs: all delta requirements under `driver-diagnostics`, `claude-peek-overlay`, plus `claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools` and `claude-p-driver.interactive-held-calls-have-no-upstream-idle-cutoff`.
   - intent: feature
   - files_allowed:
       - README.md
@@ -251,7 +251,7 @@
 
 ## 4. Deterministic and live validation
 
-- [ ] 4.1 Complete deterministic unit/fixture coverage for both stream schemas, config/version edges, prompt temp security/cleanup, router ordering, capture validation, sidecar phase/rollback behavior, retry history safety, diagnostics, native filtering, and selected-driver peek behavior; run typecheck and complete unit bundle green.
+- [x] 4.1 Complete deterministic unit/fixture coverage for both stream schemas, config/version edges, prompt temp security/cleanup, router ordering, capture validation, sidecar phase/rollback behavior, retry history safety, diagnostics, native filtering, and selected-driver peek behavior; run typecheck and complete unit bundle green.
   - intent: feature
   - files_allowed:
       - README.md
@@ -279,7 +279,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 4.2 Add authenticated `test:integration:drivers` command and retained evidence for readiness ordering, exact native roster/non-execution, sequential and parallel held tools, capture success/failure/fidelity, warm/cache/dangling resume, abort/orphan cleanup, mixed concurrency, S28 upstream idle behavior, and S29 held-round process failure; fail rather than skip when Claude/auth/version preconditions are absent.
+- [x] 4.2 Add authenticated `test:integration:drivers` command and retained evidence for readiness ordering, exact native roster/non-execution, sequential and parallel held tools, capture success/failure/fidelity, warm/cache/dangling resume, abort/orphan cleanup, mixed concurrency, S28 upstream idle behavior, and S29 held-round process failure; fail rather than skip when Claude/auth/version preconditions are absent.
   - intent: infra
   - files_allowed:
       - README.md
@@ -308,7 +308,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 4.3 Harden scenario harness and add `test:scenarios:drivers`: explicit script-backed required inventory, deterministic S21 assertions, nonzero required skips including S22, requested-driver spawn assertions, forced failure/skip propagation fixtures, S0–S27 matrix, dual-driver S31 large cold start, and driver-specific S32 peek expectation; require conversation coherence rather than exit alone.
+- [x] 4.3 Harden scenario harness and add `test:scenarios:drivers`: explicit script-backed required inventory, deterministic S21 assertions, nonzero required skips including S22, requested-driver spawn assertions, forced failure/skip propagation fixtures, S0–S27 matrix, dual-driver S31 large cold start, and driver-specific S32 peek expectation; require conversation coherence rather than exit alone.
   - intent: infra
   - files_allowed:
       - README.md
@@ -340,7 +340,7 @@
 
 ## 5. Documentation and required gate wiring
 
-- [ ] 5.1 Update README, `openspec/domain.md`, current capability context, and operator docs for two first-class drivers, config precedence/schema, direct version floor, peek exception, diagnostics/env knobs, rollback quarantine, and no-fallback policy while keeping `claude-p` default.
+- [x] 5.1 Update README, `openspec/domain.md`, current capability context, and operator docs for two first-class drivers, config precedence/schema, direct version floor, peek exception, diagnostics/env knobs, rollback quarantine, and no-fallback policy while keeping `claude-p` default.
   - intent: feature
   - files_allowed:
       - README.md
@@ -372,7 +372,7 @@
       - "**/secrets/**"
   - allow_new_files: true
 
-- [ ] 5.2 Extend `openspec/opsx-gates.yaml` with required typecheck, complete unit, strict current-change OpenSpec, authenticated driver integration, and dual-driver scenario commands; prove deterministic tier fails closed before costly live tiers and retain final validation evidence.
+- [x] 5.2 Extend `openspec/opsx-gates.yaml` with required typecheck, complete unit, strict current-change OpenSpec, authenticated driver integration, and dual-driver scenario commands; prove deterministic tier fails closed before costly live tiers and retain final validation evidence.
   - intent: infra
   - files_allowed:
       - README.md

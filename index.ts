@@ -1,12 +1,10 @@
-// pi-claude-bridge: claude-p driver, pi-canonical, inference-only.
+// pi-claude-bridge: dual Claude subprocess drivers, pi-canonical, inference-only.
 //
 // Architecture (see SCENARIOS.md for the full charter):
-//   - pi owns conversation history. `claude-p` (an interactive-TUI driver for
-//     the `claude` CLI) is the sole inference provider. The bridge NEVER shells
-//     out to a nominal `claude -p`; it drives the interactive TUI so the model
-//     behaves identically to a human-driven session.
-//   - One claude-p spawn spans one pi user-turn (which may include many tool
-//     rounds).
+//   - pi owns conversation history. Extension-load configuration pins either
+//     the interactive `claude-p` driver or direct `claude -p` driver.
+//   - One selected-driver spawn spans one pi user-turn (which may include many
+//     tool rounds).
 //   - Tool execution happens IN PI. Tools are declared to `claude` via a stdio
 //     MCP server (the shim) that the bridge spawns; the in-process router holds
 //     each `tools/call` open (parks it) until pi delivers the tool result via
@@ -77,6 +75,7 @@ import {
 } from "./src/resume-store.js";
 import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
+import { driverDiagnosticFileName } from "./src/driver/diagnostics.js";
 import type { DriverStreamEvent, DriverToolUseBatch } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef, type CorrelationFailure } from "./src/mcp/router.js";
 import {
@@ -600,7 +599,7 @@ let cachedClaudePrintVersion: string | null | undefined;
 
 function defaultClaudeVersionProbe(): string | null {
 	try {
-		return execFileSync("claude", ["--version"], {
+		return execFileSync(resolveClaudePrintBin(), ["--version"], {
 			encoding: "utf8",
 			timeout: 15_000,
 			stdio: ["ignore", "pipe", "ignore"],
@@ -737,7 +736,7 @@ export interface InferenceDriverResiliencePolicy {
 	onRetry?: (attempt: number, result: InferenceDriverDoneResult) => void;
 	freshSessionId?: () => string;
 	remintMirrorFile?: (sessionId: string) => string | undefined;
-	/** Direct-only: abandon any submitted attempt and rebuild exact canonical cold input. */
+	/** Abandon failed warm input and rebuild exact canonical cold replay. */
 	coldRetryConfig?: (sessionId: string) => InferenceDriverAttemptConfig;
 }
 
@@ -919,6 +918,7 @@ export const CLAUDE_PRINT_DRIVER: InferenceDriverAdapter = {
 				logger: options.logger as any,
 				binPath: options.executable,
 				diagnosticsDir: options.diagnosticsDir,
+				isHeldRound: options.isHeldRound,
 			});
 			current = inner;
 			options.onLifecycleEvent?.({ kind: "spawned", driverKind: "claude-print", sessionId, pid: inner.pid });
@@ -1068,9 +1068,9 @@ const DIAGNOSTICS_DIR = dirname(DEBUG_LOG_PATH);
 // CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE === "0" (mirrors CLAUDE_BRIDGE_DEBUG). Returns
 // a per-spawn bridge-owned path, or undefined when disabled (no flag emitted).
 const CLAUDE_DEBUG_FILE_ENABLED = process.env.CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE !== "0";
-function resolveClaudeDebugFile(sessionId: string): string | undefined {
+function resolveClaudeDebugFile(sessionId: string, driver: DriverKind = "claude-p"): string | undefined {
 	if (!CLAUDE_DEBUG_FILE_ENABLED) return undefined;
-	return join(DIAGNOSTICS_DIR, `claude-debug-${sessionId.slice(0, 8)}-${Date.now()}.log`);
+	return join(DIAGNOSTICS_DIR, driverDiagnosticFileName(driver, "debug", sessionId, process.pid));
 }
 
 // rotating-file-stream maintains the live file at DEBUG_LOG_PATH and moves
@@ -1154,6 +1154,32 @@ function getFullPiSessionId(): string | null {
  * and the next turn cold-starts.
  */
 let cachedSessionHint: DriverSessionHint | null = null;
+
+/** Process-scoped selection resolved and preflighted when extension loads. */
+let extensionDriverOwner: { driverKind: DriverKind; driver: InferenceDriverAdapter } | null = null;
+
+function pinExtensionDriver(projectCwd: string): { driverKind: DriverKind; driver: InferenceDriverAdapter } {
+	const driverKind = loadBridgeDriverConfig({ projectCwd });
+	const driver = getInferenceDriverAdapter(driverKind);
+	driver.preflight();
+	const owner = { driverKind, driver };
+	extensionDriverOwner = owner;
+	return owner;
+}
+
+/** Test-only: model one extension load and return a restorer for module state. */
+export function __pinExtensionDriverForTests(projectCwd: string): () => void {
+	const previous = extensionDriverOwner;
+	pinExtensionDriver(projectCwd);
+	return () => { extensionDriverOwner = previous; };
+}
+
+/** Test-only: release process activation ownership and pinned module state. */
+export function __resetExtensionActivationForTests(): void {
+	delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
+	extensionDriverOwner = null;
+	piApiRef = null;
+}
 
 // Context-window total (totalTokens) last reported to pi for the MAIN turn. Used
 // to SEED the in-progress assistant message's usage so pi's context bar holds at
@@ -1896,7 +1922,10 @@ export function streamClaudeAgentSdk(
 			try {
 				if (active) {
 					captureDriver = active.driver;
+				} else if (extensionDriverOwner) {
+					captureDriver = extensionDriverOwner.driver;
 				} else {
+					// Direct unit callers do not execute the Pi extension entry point.
 					const projectCwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 					captureDriver = getInferenceDriverAdapter(loadBridgeDriverConfig({ projectCwd }));
 				}
@@ -2591,13 +2620,15 @@ async function startFreshQuery(
 		return;
 	}
 
-	// Resolve and pin driver before consulting any cache or persisted hint. Nested
-	// invocations inherit owner; fresh main turns resolve configuration once.
+	// Resolve owner before consulting any cache or persisted hint. Nested
+	// invocations inherit their frame; normal fresh turns use extension-load pin.
+	// Direct unit callers fall back to local resolution because they never invoke
+	// the Pi extension entry point.
 	let driverKind: DriverKind;
 	let driver: InferenceDriverAdapter;
 	try {
 		const ownerFrame = stack.length > 0 ? stack[stack.length - 1] : undefined;
-		const owner = pinnedOwner ?? ownerFrame;
+		const owner = pinnedOwner ?? ownerFrame ?? extensionDriverOwner;
 		if (owner) {
 			driverKind = owner.driverKind;
 			driver = owner.driver;
@@ -2854,7 +2885,7 @@ async function startFreshQuery(
 		prompt: promptSrc,
 		mcpConfig,
 		session,
-		debugFile: resolveClaudeDebugFile(session.sessionId),
+		debugFile: resolveClaudeDebugFile(session.sessionId, driverKind),
 		mcpReadyFile,
 		mirrorFile,
 	};
@@ -2870,7 +2901,7 @@ async function startFreshQuery(
 	// pi stream when pi is awaiting a tool result (currentPiStream null). Does
 	// NOT drop cachedSessionId here (finalizeClaudePFrame handles caching).
 	const onAbort = () => {
-		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort[claude-p]: pendingResolvers=${frame.pendingResolvers.size} (deferred drain)`);
+		frame.log.info({ pendingResolvers: frame.pendingResolvers.size, driver: frame.driverKind }, `onAbort[${frame.driverKind}]: pendingResolvers=${frame.pendingResolvers.size} (deferred drain)`);
 		frame.wasAborted = true;
 		abortFrame(frame);
 		if (!frame.currentPiStream) {
@@ -2880,9 +2911,9 @@ async function startFreshQuery(
 				out.errorMessage = out.errorMessage ?? "Operation aborted by user";
 				stream.push({ type: "error", reason: "aborted", error: out });
 				stream.end();
-				frame.log.info({ where: "tool-execution-window" }, "pushAbortedError[claude-p]: pi was awaiting tool result, surfacing aborted");
+				frame.log.info({ where: "tool-execution-window", driver: frame.driverKind }, `pushAbortedError[${frame.driverKind}]: pi was awaiting tool result, surfacing aborted`);
 			} catch (err) {
-				frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "pushAbortedError[claude-p]: stream may already be ended");
+				frame.log.warn({ err: err instanceof Error ? err.message : String(err), driver: frame.driverKind }, `pushAbortedError[${frame.driverKind}]: stream may already be ended`);
 			}
 		}
 	};
@@ -2956,15 +2987,13 @@ async function startFreshQuery(
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,
 			freshSessionId: () => randomUUID(),
-			coldRetryConfig: driverKind === "claude-print"
-				? (sessionId) => ({
-						...cfg,
-						prompt: { kind: "positional", text: buildColdStartPrompt(context.messages) },
-						session: { kind: "fresh", sessionId },
-						debugFile: resolveClaudeDebugFile(sessionId),
-						mirrorFile: undefined,
-					})
-				: undefined,
+			coldRetryConfig: (sessionId) => ({
+				...cfg,
+				prompt: { kind: "positional", text: buildColdStartPrompt(context.messages) },
+				session: { kind: "fresh", sessionId },
+				debugFile: resolveClaudeDebugFile(sessionId, driverKind),
+				mirrorFile: undefined,
+			}),
 			// Per-spawn mirror naming across retries: each retry attempt gets its
 			// own mirror file, published as current so an open overlay retargets
 			// (claude-peek-overlay.peek-follows-latest-main-turn-spawn-only;
@@ -3002,14 +3031,43 @@ async function startFreshQuery(
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	const activeKey = Symbol.for("claude-bridge:active");
+	const globals = globalThis as Record<symbol, any>;
+	if (globals[activeKey]) {
+		log.info("provider: skipping duplicate extension activation (already active)");
+		return;
+	}
+
+	// Claim ownership before registering commands, events, or providers. Duplicate
+	// module activations must not mutate the process-scoped driver owner. A real
+	// /reload is admitted only after session_shutdown releases this marker.
+	extensionDriverOwner = null;
+	const selectedOwner = pinExtensionDriver(process.cwd());
+	globals[activeKey] = streamClaudeAgentSdk;
+	try {
+		activateOwnedExtension(pi, selectedOwner);
+	} catch (error) {
+		delete globals[activeKey];
+		extensionDriverOwner = null;
+		throw error;
+	}
+}
+
+function activateOwnedExtension(
+	pi: ExtensionAPI,
+	selectedOwner: { driverKind: DriverKind; driver: InferenceDriverAdapter },
+): void {
 	piApiRef = pi;
 
 	// Disable non-essential CC traffic.
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+	log.info({ driver: selectedOwner.driverKind }, "provider: selected driver at extension load");
 
-	// /claude-peek: live read-only PiP of the underlying claude TUI
+	// /claude-peek: live read-only PiP of the pinned underlying driver.
 	// (claude-peek-overlay.overlay-toggle-command).
-	registerClaudePeekCommand(pi, log);
+	registerClaudePeekCommand(pi, log, {
+		getDriverKind: () => selectedOwner.driverKind,
+	});
 
 	// Reset session cache on pi lifecycle events that diverge history.
 	const clearSession = (event: string) => {
@@ -3077,25 +3135,25 @@ export default function (pi: ExtensionAPI) {
 		delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
 	});
 
-	// Provider registration. Subagent-loaded module instances don't re-register
-	// because pi-ai's ModelRegistry is shared — first writer wins for the
-	// claude-bridge provider. Subsequent calls for claude-bridge models go
-	// through the parent's streamSimple via the stack (which we own).
-	const ACTIVE_KEY = Symbol.for("claude-bridge:active");
-	const g = globalThis as Record<symbol, any>;
-	if (!g[ACTIVE_KEY]) {
-		g[ACTIVE_KEY] = streamClaudeAgentSdk;
-		pi.registerProvider(PROVIDER_ID, {
-			baseUrl: "claude-bridge",
-			apiKey: "not-used",
-			api: "claude-bridge" as any,
-			models: MODELS as any,
-			streamSimple: streamClaudeAgentSdk as any,
-		});
-		log.info({ models: MODELS.length }, `provider: registered (models=${MODELS.length})`);
-	} else {
-		log.info(`provider: skipping re-registration (already active)`);
-	}
+	// Provider registration. Top-level activation ownership ensures subagent-loaded
+	// module instances cannot re-register commands/events or replace pinned state.
+	pi.registerProvider(PROVIDER_ID, {
+		baseUrl: "claude-bridge",
+		apiKey: "not-used",
+		api: "claude-bridge" as any,
+		models: MODELS as any,
+		streamSimple: streamClaudeAgentSdk as any,
+	});
+	// Pi may load this extension with a host-bundled pi-ai while sibling
+	// extensions resolve the bridge package's pi-ai copy. registerProvider()
+	// populates only the host registry; register the same stream locally so
+	// direct piAi.complete() calls resolve the custom API in either graph.
+	piAi.registerApiProvider({
+		api: "claude-bridge" as any,
+		stream: streamClaudeAgentSdk as any,
+		streamSimple: streamClaudeAgentSdk as any,
+	}, `provider:${PROVIDER_ID}:local`);
+	log.info({ models: MODELS.length }, `provider: registered (models=${MODELS.length})`);
 }
 
 // Suppress unused-import lints in TS strict mode

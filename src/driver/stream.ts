@@ -284,7 +284,7 @@ export class ClaudePStreamParser {
 	 */
 	private liveTurnBuffer: DriverStreamEvent[] = [];
 	private liveToolBatchBuffer: DriverToolUseBatch[] = [];
-	private readonly emittedToolBatchIds = new Set<string>();
+	private readonly pendingToolBatches = new Map<string, Map<string, DriverToolUseObservation>>();
 	private toolBatchSeq = 0;
 
 	// Per-call usage of the LAST assistant message that carried real input-side
@@ -367,6 +367,7 @@ export class ClaudePStreamParser {
 		// (premature exit OR abort), flush whatever live-turn content was buffered
 		// so the aborted partial is the LIVE turn's text — NOT lost, and NOT the
 		// replayed prefix. (On a clean turn the result handler already flushed.)
+		if (!this.resultSeen) this.flushPendingToolBatches();
 		if (this.suppressResumeReplay && !this.resultSeen && (this.liveTurnBuffer.length > 0 || this.liveToolBatchBuffer.length > 0)) {
 			const buffered = this.liveTurnBuffer;
 			this.liveTurnBuffer = [];
@@ -542,8 +543,8 @@ export class ClaudePStreamParser {
 	 * duplicate the shim's authoritative view.
 	 */
 	private handleUser(rec: Record<string, unknown>): void {
-		if (!this.suppressResumeReplay) return; // fresh/default: nothing to track
-		if (!this.isUserPromptLine(rec)) return; // tool_result line — not a boundary
+		if (!this.isUserPromptLine(rec)) return; // tool_result line — not a prompt boundary
+		if (!this.suppressResumeReplay) return; // fresh/default prompt: nothing to track
 		// Stale-turn diagnostic (detection-only): count real prompts, mark that a
 		// prompt followed the most recent replay boundary, and cross-check against the
 		// prompt the bridge sent. None of this affects delivery.
@@ -556,6 +557,7 @@ export class ClaudePStreamParser {
 		// AND its billing rounds, so only the live turn's usage survives to `result`.
 		this.liveTurnBuffer = [];
 		this.liveToolBatchBuffer = [];
+		this.pendingToolBatches.clear();
 		this.liveBillingById.clear();
 		this.liveBillingNoIdSeq = 0;
 	}
@@ -658,11 +660,20 @@ export class ClaudePStreamParser {
 		if (observations.length > 0) {
 			const rawId = (message as Record<string, unknown>).id;
 			const batchId = typeof rawId === "string" && rawId.length > 0 ? rawId : `assistant-${++this.toolBatchSeq}`;
-			if (!this.emittedToolBatchIds.has(batchId)) {
-				this.emittedToolBatchIds.add(batchId);
-				this.emitToolBatch({ batchId, observations });
+			let pending = this.pendingToolBatches.get(batchId);
+			if (!pending) {
+				pending = new Map();
+				this.pendingToolBatches.set(batchId, pending);
 			}
+			for (const observation of observations) pending.set(observation.modelId, observation);
 		}
+	}
+
+	private flushPendingToolBatches(): void {
+		for (const [batchId, observations] of this.pendingToolBatches) {
+			this.emitToolBatch({ batchId, observations: Array.from(observations.values()) });
+		}
+		this.pendingToolBatches.clear();
 	}
 
 	private handleResult(rec: Record<string, unknown>): void {
@@ -672,6 +683,7 @@ export class ClaudePStreamParser {
 		// now (everything accumulated since the last user-prompt line — i.e. the live
 		// turn's text/thinking/tool_use in order), then emit usage + done directly so
 		// the terminal pair is NEVER buffered/suppressed.
+		this.flushPendingToolBatches();
 		if (this.suppressResumeReplay && (this.liveTurnBuffer.length > 0 || this.liveToolBatchBuffer.length > 0)) {
 			const buffered = this.liveTurnBuffer;
 			this.liveTurnBuffer = [];

@@ -157,17 +157,23 @@ describe("router — D32 observation join", () => {
 		});
 	});
 
-	it("ignores native, housekeeping, and foreign observations without count failure", async () => {
+	it("ignores native, housekeeping, foreign, and unadvertised custom observations without count failure", async () => {
 		const router = createRouter({ mintPiId: seqMinter() });
+		router.declareTools([{ name: "read" }]);
 		assert.equal(router.observeToolUse({ batchId: "ignored", modelId: "native", name: "Read", arguments: {} }), "ignored");
 		assert.equal(router.observeToolUse({ batchId: "ignored", modelId: "wait", name: "WaitForMcpServers", arguments: {} }), "ignored");
 		assert.equal(router.observeToolUse({ batchId: "ignored", modelId: "foreign", name: "mcp__foreign__read", arguments: {} }), "ignored");
+		assert.equal(
+			router.observeToolUse({ batchId: "ignored", modelId: "hallucinated", name: "mcp__custom-tools__retain", arguments: { text: "remember" } }),
+			"ignored",
+			"model-authored custom namespace names absent from tools/list are Claude-owned unknown-tool observations",
+		);
 		router.sealToolUseBatch("ignored");
 		assert.equal(router.finalizeToolUseCorrelation(), undefined);
 		await router.stop();
 	});
 
-	it("fails, drains, and signals invalidation on sealed canonical mismatch", async () => {
+	it("fails, drains, and signals invalidation on terminal canonical mismatch", async () => {
 		const failures = [];
 		const router = createRouter({ mintPiId: seqMinter(), onCorrelationFailure: (failure) => failures.push(failure) });
 		await router.start();
@@ -177,7 +183,8 @@ describe("router — D32 observation join", () => {
 			await new Promise((r) => setTimeout(r, 20));
 			router.observeToolUse({ batchId: "msg-bad", modelId: "toolu_bad", name: "mcp__custom-tools__read", arguments: { path: "/x" } });
 			router.sealToolUseBatch("msg-bad");
-			const failure = router.getCorrelationFailure();
+			assert.equal(router.getCorrelationFailure(), undefined, "seal defers while later batches may still arrive");
+			const failure = router.finalizeToolUseCorrelation();
 			assert.equal(failure?.code, "tool-call-correlation-mismatch");
 			assert.equal(failure?.invalidateResumeHint, true);
 			assert.equal(failures.length, 1);
@@ -190,6 +197,24 @@ describe("router — D32 observation join", () => {
 			await router.stop();
 			await router.stop();
 		}
+	});
+
+	it("does not assign a later-round shim call to the first terminal-published batch", async () => {
+		await withRouter(async (router, client) => {
+			const first = client.request({ kind: "tools/call", id: "shim-round-1", name: "read", arguments: { path: "/a" } });
+			const second = client.request({ kind: "tools/call", id: "shim-round-2", name: "write", arguments: { path: "/b" } });
+			await new Promise((r) => setTimeout(r, 20));
+			router.deliver("pi-1", { content: [{ type: "text", text: "first" }] });
+			router.deliver("pi-2", { content: [{ type: "text", text: "second" }] });
+			await Promise.all([first, second]);
+
+			router.observeToolUse({ batchId: "msg-round-1", modelId: "toolu_round_1", name: "mcp__custom-tools__read", arguments: { path: "/a" } });
+			router.sealToolUseBatch("msg-round-1");
+			assert.equal(router.getCorrelationFailure(), undefined, "second shim call may belong to unpublished next batch");
+			router.observeToolUse({ batchId: "msg-round-2", modelId: "toolu_round_2", name: "mcp__custom-tools__write", arguments: { path: "/b" } });
+			router.sealToolUseBatch("msg-round-2");
+			assert.equal(router.finalizeToolUseCorrelation(), undefined);
+		});
 	});
 
 	it("fails terminal under-count but permits delayed shim after batch seal", async () => {

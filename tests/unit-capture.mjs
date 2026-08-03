@@ -46,6 +46,7 @@ const {
 	__setCaptureSpawnForTests,
 	__setSpawnClaudePrintForTests,
 	__setClaudePrintPreflightForTests,
+	__pinExtensionDriverForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
 import { connectIpcClient } from "../src/mcp/ipc.js";
@@ -145,11 +146,13 @@ let restoreApi = null;
 let restoreSpawn = null;
 let restorePrintSpawn = null;
 let restorePrintPreflight = null;
+let restoreDriverPin = null;
 
 afterEach(() => {
 	restoreApi?.(); restoreApi = null;
 	restoreSpawn?.(); restoreSpawn = null;
 	restorePrintSpawn?.(); restorePrintSpawn = null;
+	restoreDriverPin?.(); restoreDriverPin = null;
 	restorePrintPreflight?.(); restorePrintPreflight = null;
 	delete process.env.CLAUDE_BRIDGE_DRIVER;
 	__resetCachedSessionForTests();
@@ -286,8 +289,11 @@ describe("capture success (claude-p)", () => {
 		assert.equal(seenCfg.systemPrompt.text, "Summarize.");
 		assert.equal(seenCfg.prompt.kind, "positional");
 		assert.match(seenCfg.prompt.text, /structured capture mode/);
-		assert.match(seenCfg.prompt.text, /mcp__custom-tools__submit_digest/);
+		assert.match(seenCfg.prompt.text, /`submit_digest` tool exactly once/);
+		assert.match(seenCfg.prompt.text, /connected `custom-tools` MCP server/);
 		assert.match(seenCfg.prompt.text, /WaitForMcpServers/);
+		assert.match(seenCfg.prompt.text, /CAPTURE_COMPLETE/);
+		assert.match(seenCfg.prompt.text, /even if the tool was not called or failed/);
 		assert.ok(seenCfg.mcpReadyFile, "interactive capture passes claude-p Enter-gate sentinel");
 		assert.equal(existsSync(seenCfg.mcpReadyFile), false, "readiness sentinel cleaned before terminal event");
 		assert.equal(existsSync(socketFromCfg(seenCfg)), false, "capture router socket cleaned before terminal event");
@@ -373,6 +379,8 @@ describe("selected-driver capture parity", () => {
 		restoreApi = __setPiApiRefForTests(makeApiStub([]));
 		process.env.CLAUDE_BRIDGE_DRIVER = "claude-print";
 		restorePrintPreflight = __setClaudePrintPreflightForTests(() => {});
+		restoreDriverPin = __pinExtensionDriverForTests(process.cwd());
+		process.env.CLAUDE_BRIDGE_DRIVER = "claude-p"; // later mutation must not switch capture
 		let seenCfg = null;
 		let seenSpawnOpts = null;
 		restorePrintSpawn = __setSpawnClaudePrintForTests(makeMockSpawn({
@@ -403,7 +411,7 @@ describe("selected-driver capture parity", () => {
 		assert.equal(seenCfg.systemPrompt.text, staticPrompt);
 		assert.match(seenCfg.prompt.text, /structured capture mode/);
 		assert.match(seenCfg.prompt.text, /readiness gate/i);
-		assert.doesNotMatch(seenCfg.prompt.text, /WaitForMcpServers/);
+		assert.doesNotMatch(seenCfg.prompt.text, /WaitForMcpServers|CAPTURE_COMPLETE/);
 		assert.equal(seenSpawnOpts.cwd, tmpdir(), "direct capture process uses isolated tmpdir cwd");
 		assert.deepEqual(
 			{ input: result.usage.input, output: result.usage.output, cacheRead: result.usage.cacheRead, cacheWrite: result.usage.cacheWrite },

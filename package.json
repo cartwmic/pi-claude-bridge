@@ -34,6 +34,9 @@
   "scripts": {
     "test:unit": "node --import tsx --test --test-concurrency=4 tests/unit-*.mjs",
     "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test --test-concurrency=1 tests/int-*.mjs",
+    "test:integration:drivers": "scripts/run-driver-integration.sh",
+    "test:scenarios": "scripts/run-all-scenarios.sh",
+    "test:scenarios:drivers": "SCENARIO_DRIVERS='claude-p claude-print' scripts/run-all-scenarios.sh",
     "test:usage": "tests/usage-test.sh",
     "test:gecho": "node .spike-notes/claude-p-gate/stoptimeout-proof.mjs --concurrency 10 --waves 6 --timeout 60 --load 16 --targetFails 999",
     "resume:quarantine-direct": "tsx index.ts --resume-quarantine-direct",

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // Context continuity test for pi-claude-bridge provider.
-// Verifies that switching away from the provider and back correctly
-// preserves conversation context (all messages are flattened into
-// each query, so "missed" messages are automatically included).
+// Verifies that switching away and back delivers missed messages through the
+// warm delta, and that caller abort preserves the same resumable driver session.
 //
-// Requires: pi CLI, Claude Code (for Agent SDK subprocess).
+// Requires: pi CLI and selected Claude subprocess driver.
 // Requires: CLAUDE_BRIDGE_TESTING_ALT_PROVIDER (e.g. "minimax")
 // Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
 
@@ -53,10 +52,11 @@ async function promptAndWait(message) {
 	return collector.stop();
 }
 
-function finish(code, msg) {
+async function finish(code, msg) {
 	console.log(msg);
 	if (code !== 0) console.log(`  Log: ${RPC_LOG}`);
-	stop().then(() => process.exit(code));
+	await stop();
+	process.exitCode = code;
 }
 
 // Start pi
@@ -67,7 +67,7 @@ try {
   // Turn 1: Non-provider prompt — establishes context before our provider is used
   console.log("Turn 1: Non-provider prompt (establish context)...");
   const text1 = await promptAndWait(`The secret word is '${WORD_A}'. Acknowledge and be very brief.`);
-  if (!text1) finish(1, "FAIL: Turn 1 produced no text");
+  if (!text1) throw new Error("Turn 1 produced no text");
   console.log(`  Response: ${text1.slice(0, 80)}`);
 
   // Switch to provider — first provider turn with prior history (Case 2)
@@ -83,8 +83,8 @@ try {
   );
   console.log(`  Response: ${text2.slice(0, 80)}`);
   const lower2 = text2.toLowerCase();
-  if (!lower2.includes(WORD_A)) finish(1, `FAIL: Turn 2 response missing '${WORD_A}': ${text2}`);
-  if (!lower2.includes(WORD_B)) finish(1, `FAIL: Turn 2 response missing '${WORD_B}': ${text2}`);
+  if (!lower2.includes(WORD_A)) throw new Error(`Turn 2 response missing '${WORD_A}': ${text2}`);
+  if (!lower2.includes(WORD_B)) throw new Error(`Turn 2 response missing '${WORD_B}': ${text2}`);
 
   // Switch to other model — creates missed messages
   console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
@@ -93,7 +93,7 @@ try {
   // Turn 3: Non-provider prompt — adds context that provider must see on switch-back
   console.log("Turn 3: Non-provider prompt (creates missed messages)...");
   const text3 = await promptAndWait(`The third word is '${WORD_C}'. Acknowledge briefly.`);
-  if (!text3) finish(1, "FAIL: Turn 3 produced no text");
+  if (!text3) throw new Error("Turn 3 produced no text");
   console.log(`  Response: ${text3.slice(0, 80)}`);
 
   // Switch back to provider — context includes all prior turns (Case 4)
@@ -108,9 +108,9 @@ try {
   );
   console.log(`  Response: ${text4.slice(0, 80)}`);
   const lower4 = text4.toLowerCase();
-  if (!lower4.includes(WORD_A)) finish(1, `FAIL: Turn 4 response missing '${WORD_A}': ${text4}`);
-  if (!lower4.includes(WORD_B)) finish(1, `FAIL: Turn 4 response missing '${WORD_B}': ${text4}`);
-  if (!lower4.includes(WORD_C)) finish(1, `FAIL: Turn 4 response missing '${WORD_C}': ${text4}`);
+  if (!lower4.includes(WORD_A)) throw new Error(`Turn 4 response missing '${WORD_A}': ${text4}`);
+  if (!lower4.includes(WORD_B)) throw new Error(`Turn 4 response missing '${WORD_B}': ${text4}`);
+  if (!lower4.includes(WORD_C)) throw new Error(`Turn 4 response missing '${WORD_C}': ${text4}`);
 
   // Turn 5: Abort mid-stream — session should be invalidated, next turn should recover
   console.log("Turn 5: Abort mid-stream (session recovery)...");
@@ -129,33 +129,28 @@ try {
   );
   console.log(`  Response: ${text6.slice(0, 80)}`);
   const lower6 = text6.toLowerCase();
-  if (!lower6.includes(WORD_A)) finish(1, `FAIL: Turn 6 response missing '${WORD_A}': ${text6}`);
-  if (!lower6.includes(WORD_B)) finish(1, `FAIL: Turn 6 response missing '${WORD_B}': ${text6}`);
-  if (!lower6.includes(WORD_C)) finish(1, `FAIL: Turn 6 response missing '${WORD_C}': ${text6}`);
+  if (!lower6.includes(WORD_A)) throw new Error(`Turn 6 response missing '${WORD_A}': ${text6}`);
+  if (!lower6.includes(WORD_B)) throw new Error(`Turn 6 response missing '${WORD_B}': ${text6}`);
+  if (!lower6.includes(WORD_C)) throw new Error(`Turn 6 response missing '${WORD_C}': ${text6}`);
 
-  // sessionId stability: sessionId should stay stable across normal
-  // rebuilds (Case 2 → Case 4 → Case 3). It's allowed to rotate exactly
-  // once per abort: the post-abort rebuild takes a fresh UUID on purpose,
-  // to avoid a race with the killed CC subprocess's late interrupt-cleanup
-  // writes (which would otherwise append an orphan record at the same
-  // path and break the parent-uuid chain for the next resume).
-  //
-  // This test exercises one abort (Turn 5), so we expect exactly 2 unique
-  // sessionIds: pre-abort and post-abort.
+  // Current subprocess architecture keeps one selected-driver session through
+  // provider switches and caller abort. Missed messages ride the warm delta;
+  // abort finalization retains the typed session hint instead of rotating it.
   const debugLog = readFileSync(DEBUG_LOG, "utf8");
-  const sessionIds = new Set();
-  const rotatedPostAbort = [];
-  for (const match of debugLog.matchAll(/syncResult: path=(reuse|rebuild) sessionId=([a-f0-9-]+)(?: priors=\d+ (\S+))?/g)) {
-    sessionIds.add(match[2]);
-    if (match[3] === "rotated-post-abort") rotatedPostAbort.push(match[2]);
+  const spawns = [...debugLog.matchAll(/streamSimple\[(claude-p|claude-print)\]: fresh spawn[^\n]*resume=(no|[a-f0-9-]+)/g)];
+  const coldSpawns = spawns.filter((match) => match[2] === "no");
+  const resumedIds = spawns.filter((match) => match[2] !== "no").map((match) => match[2]);
+  const uniqueResumedIds = new Set(resumedIds);
+  if (coldSpawns.length !== 1) throw new Error(`expected exactly one cold selected-driver spawn, got ${coldSpawns.length}`);
+  if (resumedIds.length < 3) throw new Error(`expected at least three warm selected-driver spawns, got ${resumedIds.length}`);
+  if (uniqueResumedIds.size !== 1) throw new Error(`expected one stable resumed session id, got: ${[...uniqueResumedIds].join(", ")}`);
+  if (!/finalizeClaudePFrame: caching session=[a-f0-9-]+ \(aborted\)/.test(debugLog)) {
+    throw new Error("aborted turn did not preserve its selected-driver session hint");
   }
-  if (sessionIds.size === 0) finish(1, "FAIL: no syncResult markers found in debug log");
-  if (sessionIds.size > 2) finish(1, `FAIL: expected ≤2 distinct sessionIds (one pre-abort, one post-abort rotation), got ${sessionIds.size}: ${[...sessionIds].join(", ")}`);
-  if (rotatedPostAbort.length !== 1) finish(1, `FAIL: expected exactly 1 post-abort rotation, got ${rotatedPostAbort.length}`);
-  console.log(`  sessionIds observed: ${sessionIds.size} (expected 2 due to 1 post-abort rotation)`);
+  console.log(`  selected-driver session remained stable across switch + abort: ${[...uniqueResumedIds][0]}`);
 
-  finish(0, "PASS");
+  await finish(0, "PASS");
 } catch (e) {
-  finish(1, `FAIL: ${e.message}`);
+  await finish(1, `FAIL: ${e.message}`);
 }
 

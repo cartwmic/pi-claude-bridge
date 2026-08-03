@@ -13,8 +13,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import {
+import activateBridge, {
+	__pinExtensionDriverForTests,
 	__resetCachedSessionForTests,
+	__resetExtensionActivationForTests,
 	__setClaudePrintPreflightForTests,
 	__setPiApiRefForTests,
 	__setSpawnClaudePForTests,
@@ -42,6 +44,7 @@ afterEach(() => {
 	if (priorDriver === undefined) delete process.env.CLAUDE_BRIDGE_DRIVER;
 	else process.env.CLAUDE_BRIDGE_DRIVER = priorDriver;
 	__resetCachedSessionForTests();
+	__resetExtensionActivationForTests();
 });
 
 function cwd() {
@@ -76,6 +79,70 @@ function installDirect() {
 	restorers.push(__setClaudePrintPreflightForTests(() => {}));
 	restorers.push(__setPiApiRefForTests({ getActiveTools: () => [] }));
 }
+
+describe("process-scoped driver selection", () => {
+	it("pins main turns at extension load despite later environment changes", async () => {
+		installDirect();
+		const project = cwd();
+		restorers.push(__pinExtensionDriverForTests(project));
+		process.env.CLAUDE_BRIDGE_DRIVER = "claude-p";
+
+		let directSpawns = 0;
+		let interactiveSpawns = 0;
+		restorers.push(__setSpawnClaudePForTests(() => {
+			interactiveSpawns++;
+			throw new Error("extension-load pin must prevent driver switch");
+		}));
+		restorers.push(__setSpawnClaudePrintForTests((cfg, options) => {
+			directSpawns++;
+			const done = new Promise((resolve) => queueMicrotask(() => resolve(emitAcceptedResult(cfg, options))));
+			return { pid: 99, abort() {}, done };
+		}));
+
+		await drain(streamClaudeAgentSdk(MODEL, context([
+			{ role: "user", content: "stay on pinned driver", timestamp: Date.now() },
+		]), { cwd: project }));
+		assert.equal(directSpawns, 1);
+		assert.equal(interactiveSpawns, 0);
+	});
+
+	it("fails extension-load selection when selected-driver preflight fails", () => {
+		process.env.CLAUDE_BRIDGE_DRIVER = "claude-print";
+		restorers.push(__setClaudePrintPreflightForTests(() => { throw new Error("direct unavailable"); }));
+		assert.throws(() => __pinExtensionDriverForTests(cwd()), /direct unavailable/);
+	});
+
+	it("duplicate activation cannot repin owner or re-register commands/providers", async () => {
+		installDirect();
+		const registrations = { commands: 0, providers: 0 };
+		const api = {
+			on() {},
+			registerCommand() { registrations.commands++; },
+			registerProvider() { registrations.providers++; },
+		};
+		activateBridge(api);
+		process.env.CLAUDE_BRIDGE_DRIVER = "claude-p";
+		activateBridge(api);
+		assert.deepEqual(registrations, { commands: 1, providers: 1 });
+
+		let directSpawns = 0;
+		let interactiveSpawns = 0;
+		restorers.push(__setSpawnClaudePForTests(() => {
+			interactiveSpawns++;
+			throw new Error("duplicate activation replaced pinned owner");
+		}));
+		restorers.push(__setSpawnClaudePrintForTests((cfg, options) => {
+			directSpawns++;
+			const done = new Promise((resolve) => queueMicrotask(() => resolve(emitAcceptedResult(cfg, options))));
+			return { pid: 98, abort() {}, done };
+		}));
+		await drain(streamClaudeAgentSdk(MODEL, context([
+			{ role: "user", content: "retain activation owner", timestamp: Date.now() },
+		]), { cwd: cwd() }));
+		assert.equal(directSpawns, 1);
+		assert.equal(interactiveSpawns, 0);
+	});
+});
 
 describe("shared main-turn orchestration — canonical cold/warm/image frames", () => {
 	it("sends exact full cold history, then warm delta, while dropping image bytes", async () => {

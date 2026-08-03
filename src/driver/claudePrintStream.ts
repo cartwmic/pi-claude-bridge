@@ -14,7 +14,7 @@ export const CLAUDE_PRINT_MAX_NDJSON_LINE_BYTES = 8 * 1024 * 1024;
 export const CLAUDE_PRINT_MAX_DIAGNOSTIC_BYTES = 16 * 1024;
 
 const BRIDGED_TOOL_PREFIX = "mcp__custom-tools__";
-const OBSERVATIONAL_SYSTEM_SUBTYPES = new Set(["status", "api_retry"]);
+const OBSERVATIONAL_SYSTEM_SUBTYPES = new Set(["status", "api_retry", "thinking_tokens"]);
 const STREAM_EVENT_TYPES = new Set([
 	"message_start",
 	"content_block_start",
@@ -85,6 +85,8 @@ type PartialBlock = {
 	type: "text" | "thinking" | "tool_use";
 	name?: string;
 	id?: string;
+	initialInput?: Record<string, unknown>;
+	inputJson?: string;
 };
 
 type ParsedTerminal = {
@@ -175,7 +177,7 @@ export class ClaudePrintStreamParser {
 	private blocks = new Map<number, PartialBlock>();
 	private sawPartialMessage = false;
 	private lastAssistantUsage: DriverStreamUsage | null = null;
-	private observedToolIds = new Set<string>();
+	private currentToolObservations: DriverToolUseObservation[] = [];
 	private _turnAccepted = false;
 
 	constructor(options: ClaudePrintStreamParserOptions) {
@@ -256,7 +258,7 @@ export class ClaudePrintStreamParser {
 			this.ended = true;
 			return this.outcome;
 		}
-		if (this.messageOpen || this.blocks.size > 0) {
+		if (this.messageOpen || this.blocks.size > 0 || this.currentToolObservations.length > 0) {
 			this.fail("claude-print stdout ended with an incomplete top-level partial block lifecycle");
 		} else if (this.terminalCount !== 1 || this.terminal === null) {
 			this.fail(`claude-print stdout closed before exactly one terminal result${exitDescription(args.exitInfo, args.stderrTail)}`);
@@ -345,11 +347,17 @@ export class ClaudePrintStreamParser {
 			case "rate_limit_event":
 				this.logObservation(type);
 				return;
+			case "tool_progress":
+				this.handleToolProgress(record);
+				return;
 			case "stream_event":
 				this.handleStreamEvent(record);
 				return;
 			case "assistant":
 				this.handleAssistant(record);
+				return;
+			case "user":
+				this.handleUser(record);
 				return;
 			case "result":
 				this.handleResult(record);
@@ -380,6 +388,31 @@ export class ClaudePrintStreamParser {
 			return;
 		}
 		this.fail(`claude-print unknown system subtype "${String(subtype)}"`);
+	}
+
+	private handleToolProgress(record: Record<string, unknown>): void {
+		if (!this.requireSession(record)) return;
+		if (typeof record.tool_use_id !== "string" || record.tool_use_id.length === 0) {
+			this.fail("claude-print tool_progress requires tool_use_id");
+			return;
+		}
+		if (typeof record.tool_name !== "string" || record.tool_name.length === 0) {
+			this.fail("claude-print tool_progress requires tool_name");
+			return;
+		}
+		if (record.parent_tool_use_id !== null && typeof record.parent_tool_use_id !== "string") {
+			this.fail("claude-print tool_progress parent_tool_use_id must be null or string");
+			return;
+		}
+		if (typeof record.elapsed_time_seconds !== "number" || !Number.isFinite(record.elapsed_time_seconds) || record.elapsed_time_seconds < 0) {
+			this.fail("claude-print tool_progress requires non-negative elapsed_time_seconds");
+			return;
+		}
+		if (typeof record.heartbeat !== "boolean") {
+			this.fail("claude-print tool_progress requires boolean heartbeat");
+			return;
+		}
+		this.logObservation("tool_progress");
 	}
 
 	private handleStreamEvent(record: Record<string, unknown>): void {
@@ -423,7 +456,7 @@ export class ClaudePrintStreamParser {
 	}
 
 	private handleMessageStart(event: Record<string, unknown>): void {
-		if (this.messageOpen || this.blocks.size > 0) {
+		if (this.messageOpen || this.blocks.size > 0 || this.currentToolObservations.length > 0) {
 			this.fail("claude-print message_start arrived before prior message_stop");
 			return;
 		}
@@ -471,6 +504,8 @@ export class ClaudePrintStreamParser {
 			}
 			block.id = content.id;
 			block.name = content.name;
+			block.initialInput = content.input;
+			block.inputJson = "";
 		} else {
 			const field = type === "text" ? "text" : "thinking";
 			if (typeof content[field] !== "string") {
@@ -516,6 +551,7 @@ export class ClaudePrintStreamParser {
 		}
 		if (delta.type === "input_json_delta") {
 			if (block.type !== "tool_use" || typeof delta.partial_json !== "string") return this.deltaMismatch(block.type, delta.type);
+			block.inputJson = `${block.inputJson ?? ""}${delta.partial_json}`;
 			return;
 		}
 		this.fail(`claude-print unknown content_block_delta subtype "${delta.type}"`);
@@ -534,7 +570,31 @@ export class ClaudePrintStreamParser {
 			return;
 		}
 		this.blocks.delete(index);
-		if (block.type !== "tool_use") this.onEvent({ kind: "content-block-end", blockType: block.type });
+		if (block.type !== "tool_use") {
+			this.onEvent({ kind: "content-block-end", blockType: block.type });
+			return;
+		}
+		let argumentsValue = block.initialInput ?? {};
+		if ((block.inputJson ?? "").length > 0) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(block.inputJson!);
+			} catch {
+				this.fail(`claude-print tool_use ${String(block.id)} carried malformed input_json_delta`);
+				return;
+			}
+			if (!isRecord(parsed)) {
+				this.fail(`claude-print tool_use ${String(block.id)} input must decode to an object`);
+				return;
+			}
+			argumentsValue = parsed;
+		}
+		if (block.name!.startsWith(BRIDGED_TOOL_PREFIX)) {
+			this.onEvent({ kind: "tool-use", toolUseId: block.id!, name: block.name!, arguments: argumentsValue });
+			this.currentToolObservations.push({ modelId: block.id!, name: block.name!, arguments: argumentsValue });
+		} else {
+			this.logObservation(`dropped tool_use ${block.name}`);
+		}
 	}
 
 	private handleMessageDelta(event: Record<string, unknown>): void {
@@ -558,6 +618,50 @@ export class ClaudePrintStreamParser {
 		this.messageDeltaSeen = false;
 		this.sealedMessageId = this.currentMessageId;
 		this.currentMessageId = null;
+		if (this.currentToolObservations.length > 0) {
+			this.onToolUseBatch?.({ batchId: this.sealedMessageId!, observations: this.currentToolObservations });
+			this.currentToolObservations = [];
+		}
+	}
+
+	private handleUser(record: Record<string, unknown>): void {
+		if (record.parent_tool_use_id !== null) {
+			this.fail("claude-print user parent_tool_use_id must be null");
+			return;
+		}
+		if (!this.requireSession(record)) return;
+		const message = record.message;
+		if (!isRecord(message) || message.role !== "user" || !Array.isArray(message.content) || message.content.length === 0) {
+			this.fail("claude-print user observation requires non-empty user message content array");
+			return;
+		}
+		const observedTypes = new Set<string>();
+		for (const value of message.content) {
+			if (!isRecord(value) || typeof value.type !== "string") {
+				this.fail("claude-print user observation content requires string type");
+				return;
+			}
+			if (value.type === "tool_result") {
+				if (typeof value.tool_use_id !== "string" || value.tool_use_id.length === 0) {
+					this.fail("claude-print user tool_result requires non-empty tool_use_id");
+					return;
+				}
+				if (value.is_error !== undefined && typeof value.is_error !== "boolean") {
+					this.fail("claude-print user tool_result is_error must be boolean when present");
+					return;
+				}
+			} else if (value.type === "text") {
+				if (typeof value.text !== "string") {
+					this.fail("claude-print user text observation requires string text");
+					return;
+				}
+			} else {
+				this.fail(`claude-print unknown user observation content type "${value.type}"`);
+				return;
+			}
+			observedTypes.add(value.type);
+		}
+		this.logObservation(`user/${[...observedTypes].sort().join("+")}`);
 	}
 
 	private handleAssistant(record: Record<string, unknown>): void {
@@ -585,8 +689,6 @@ export class ClaudePrintStreamParser {
 			this.fail(`claude-print assistant has unknown stop_reason "${String(message.stop_reason)}"`);
 			return;
 		}
-		const batchId = typeof message.id === "string" && message.id.length > 0 ? message.id : this.sealedMessageId;
-		const observations: DriverToolUseObservation[] = [];
 		for (const value of message.content) {
 			if (!isRecord(value) || !["text", "thinking", "tool_use"].includes(String(value.type))) {
 				this.fail(`claude-print unknown assistant content type "${String(isRecord(value) ? value.type : undefined)}"`);
@@ -604,23 +706,10 @@ export class ClaudePrintStreamParser {
 				this.fail("claude-print complete tool_use requires id, name, and object input");
 				return;
 			}
-			if (!value.name.startsWith(BRIDGED_TOOL_PREFIX)) {
-				this.logObservation(`dropped tool_use ${value.name}`);
-				continue;
-			}
-			if (this.observedToolIds.has(value.id)) continue;
-			this.observedToolIds.add(value.id);
-			this.onEvent({ kind: "tool-use", toolUseId: value.id, name: value.name, arguments: value.input });
-			observations.push({ modelId: value.id, name: value.name, arguments: value.input });
+			// Complete assistant records are observational snapshots. Claude Code may
+			// repeat and grow them after message_stop, so correlation authority comes
+			// only from partial tool blocks sealed by matching message_stop.
 		}
-		if (observations.length > 0) {
-			if (!batchId || batchId !== this.sealedMessageId) {
-				this.fail("claude-print bridged tool observations lack matching message_stop seal");
-				return;
-			}
-			this.onToolUseBatch?.({ batchId, observations });
-		}
-		if (batchId === this.sealedMessageId) this.sealedMessageId = null;
 	}
 
 	private handleResult(record: Record<string, unknown>): void {

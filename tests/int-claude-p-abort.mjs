@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// T1.13 — abort mid-turn (mechanics) through real pi + real claude-p.
+// Authenticated abort-mid-turn contract through real pi and selected driver.
 //
-// Drives pi (RPC mode, CLAUDE_BRIDGE_DRIVER=claude-p, model
+// Drives pi (RPC mode, CLAUDE_BRIDGE_DRIVER=claude-p|claude-print, model
 // claude-bridge/claude-haiku-4-5), parks a turn on a HELD TOOL, then aborts
 // mid-turn via the RPC `abort` command (pi's app.interrupt → AbortSignal →
 // bridge onAbort[claude-p] → claudeHandle.abort() → SIGINT to the claude-p
@@ -28,6 +28,8 @@
 //      bound the resolve latency well under the 600s claude-p timeout.
 //   3. No orphan claude-p / claude process survives: after the turn ends, no
 //      claude-p (or its child `claude`) process spawned by THIS pi remains.
+//   4. A following turn warm-resumes the pre-abort session, repairs/closes the
+//      dangling held call, and returns a live answer.
 //
 // Concurrency 1. Does NOT override CLAUDE_CONFIG_DIR/HOME. Retries flaky turns.
 
@@ -40,6 +42,9 @@ import { fileURLToPath } from "node:url";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 120_000;
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+const MODEL = process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6";
+assert.match(DRIVER, /^(claude-p|claude-print)$/);
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BIN = `${REPO}/node_modules/.bin`;
@@ -47,31 +52,48 @@ const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_mo
 const PATH_WITH_CLAUDE_P = `${BIN}:${cleanPath}`;
 
 const harness = createRpcHarness({
-	name: "claude-p-abort",
+	name: `${DRIVER}-abort`,
 	// Load the slow-tool extension so we can park a turn on a held tool — the
 	// deterministic mid-turn abort window on claude-p (see header note).
-	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
-	env: { CLAUDE_BRIDGE_DRIVER: "claude-p", PATH: PATH_WITH_CLAUDE_P },
+	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", `claude-bridge/${MODEL}`],
+	env: { CLAUDE_BRIDGE_DRIVER: DRIVER, PATH: PATH_WITH_CLAUDE_P },
 	defaultTimeout: TEST_TIMEOUT,
 });
 
-// Count live claude-p / claude processes. Best-effort: any matching process is
-// a candidate orphan once our turn has ended (we run concurrency 1, so there
-// should be none between turns).
-function liveClaudeProcs() {
+function processTable() {
 	try {
-		const out = execSync("ps -axo pid,command", { encoding: "utf8" });
-		return out
+		return execSync("ps -axo pid=,ppid=,command=", { encoding: "utf8" })
 			.split("\n")
-			.filter((l) => /\b(claude-p\b|node .*\bclaude-p\b|\/claude\b|\bclaude\s+(-p|--print|--output-format))/.test(l))
-			.filter((l) => !/int-claude-p-abort|node --test|rpc-harness|grep|ps -axo/.test(l))
-			.map((l) => l.trim());
+			.map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/))
+			.filter(Boolean)
+			.map((match) => ({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] }));
 	} catch {
 		return [];
 	}
 }
 
-describe("claude-p abort mid-turn mechanics (T1.13)", () => {
+// Snapshot only driver descendants owned by this harness. A global process-name
+// diff is unsafe: another live pi session may start Claude while this test runs.
+function ownedClaudeDescendants(rootPid) {
+	const rows = processTable();
+	const descendants = new Set([rootPid]);
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const row of rows) {
+			if (descendants.has(row.ppid) && !descendants.has(row.pid)) {
+				descendants.add(row.pid);
+				changed = true;
+			}
+		}
+	}
+	return rows.filter((row) =>
+		descendants.has(row.pid)
+		&& /\b(claude-p\b|node .*\bclaude-p\b|\/claude\b|\bclaude\s+(-p|--print|--output-format))/.test(row.command)
+	);
+}
+
+describe(`${DRIVER} abort mid-turn mechanics`, () => {
 	const { RPC_LOG, DEBUG_LOG } = harness;
 
 	before(async () => {
@@ -88,7 +110,7 @@ describe("claude-p abort mid-turn mechanics (T1.13)", () => {
 	it("aborts mid-turn (held tool): SIGINT, prompt resolves aborted promptly, no orphan", { timeout: TEST_TIMEOUT }, async () => {
 		const { send, waitForEvent, collectText, addListener } = harness;
 
-		const baseline = liveClaudeProcs();
+		const ownedDriverPids = new Set();
 
 		// Warm-up text turn to clear cold-start MCP latency (so SlowTool is
 		// registered/surfaced before the held-abort attempt).
@@ -127,6 +149,11 @@ describe("claude-p abort mid-turn mechanics (T1.13)", () => {
 				// Wait for the tool to actually start executing (the deterministic
 				// signal the turn is mid-flight and the tool is held) before aborting.
 				await waitForEvent("tool_execution_start", 40_000);
+				const piPid = harness.pi()?.pid;
+				assert.ok(piPid, "RPC harness pi process has no pid");
+				const owned = ownedClaudeDescendants(piPid);
+				assert.ok(owned.length > 0, `no ${DRIVER} process found below harness pi pid ${piPid}`);
+				for (const row of owned) ownedDriverPids.add(row.pid);
 				// Let the tool sit held for a beat, then abort while it is parked.
 				await new Promise((r) => setTimeout(r, 700));
 
@@ -161,27 +188,42 @@ describe("claude-p abort mid-turn mechanics (T1.13)", () => {
 		}
 		assert.ok(ok, `abort mid-turn did not complete cleanly after 3 attempts: ${lastErr?.message}`);
 
-		// (1) driver SIGINTed the claude-p subprocess.
+		// (1) selected driver interrupted its subprocess group.
 		const dbg = readFileSync(DEBUG_LOG, "utf8");
-		assert.match(
-			dbg,
-			/claudeP\.lifecycle\.abort|aborting claude-p \(SIGINT to group\)/,
-			"bridge debug log must show claude-p SIGINT-on-abort",
-		);
+		const abortPattern = DRIVER === "claude-print"
+			? /claudePrint\.lifecycle\.abort|aborting claude-print/
+			: /claudeP\.lifecycle\.abort|aborting claude-p \(SIGINT to group\)/;
+		assert.match(dbg, abortPattern, `bridge debug log must show ${DRIVER} abort`);
 
 		// (3) No orphan claude-p / claude process. Allow a grace window for the
 		// SIGINT → exit → reapGroup cleanup to complete.
 		let orphans = [];
 		for (let i = 0; i < 20; i++) {
-			orphans = liveClaudeProcs().filter((l) => !baseline.includes(l));
+			orphans = processTable().filter((row) => ownedDriverPids.has(row.pid));
 			if (orphans.length === 0) break;
 			await new Promise((r) => setTimeout(r, 500));
 		}
 		assert.equal(
 			orphans.length,
 			0,
-			`orphan claude-p/claude process(es) survived abort:\n${orphans.join("\n")}`,
+			`owned driver process(es) survived abort:\n${orphans.map((row) => `${row.pid} ${row.command}`).join("\n")}`,
 		);
 		console.log(`  no orphan claude-p/claude processes after abort`);
+
+		// (4) The warm-up established a resumable driver session before the held
+		// call. Recovery must use that same-driver hint rather than silently cold
+		// replaying after the dangling call left by abort.
+		const debugBeforeRecovery = readFileSync(DEBUG_LOG, "utf8").length;
+		const recovery = collectText();
+		await send({ type: "prompt", message: "The prior SlowTool was interrupted. Do not call any tool. Reply with exactly RECOVERED." });
+		await waitForEvent("agent_end", 90_000);
+		const recoveryText = recovery.stop();
+		assert.match(recoveryText, /\bRECOVERED\b/, `post-abort recovery turn failed: ${JSON.stringify(recoveryText)}`);
+		const recoveryDebug = readFileSync(DEBUG_LOG, "utf8").slice(debugBeforeRecovery);
+		assert.match(
+			recoveryDebug,
+			new RegExp(`streamSimple\\[${DRIVER}\\]: fresh spawn.*resume=[a-f0-9-]+`),
+			"post-abort turn did not warm-resume the dangling selected-driver session",
+		);
 	});
 });

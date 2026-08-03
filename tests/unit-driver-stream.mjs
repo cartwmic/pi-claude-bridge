@@ -420,11 +420,39 @@ describe("parallel tool_use", () => {
 			toolUseBlock("toolu_p1", "mcp__custom-tools__read", { path: "/x" }),
 			toolUseBlock("toolu_p2", "mcp__custom-tools__read", { path: "/x" }),
 		)) + "\n");
+		assert.deepEqual(batches, [], "assistant snapshots remain unsealed");
+		parser.write(line(userToolResult("toolu_p1", "done")) + "\n");
+		assert.deepEqual(batches, [], "tool-result records do not seal growing snapshots");
+		parser.write(line(resultLine()) + "\n");
 		assert.deepEqual(batches, [{
 			batchId: "msg-parallel",
 			observations: [
 				{ modelId: "toolu_p1", name: "mcp__custom-tools__read", arguments: { path: "/x" } },
 				{ modelId: "toolu_p2", name: "mcp__custom-tools__read", arguments: { path: "/x" } },
+			],
+		}]);
+	});
+
+	it("accumulates growing snapshots before sealing a parallel batch", () => {
+		const batches = [];
+		const { parser } = newParser(makeLogger(), { onToolUseBatch: (batch) => batches.push(batch) });
+		const u = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+		parser.write(line(assistantMsg("msg-growing", u,
+			toolUseBlock("toolu_p1", "mcp__custom-tools__read", { path: "/x" }),
+		)) + "\n");
+		parser.write(line(assistantMsg("msg-growing", u,
+			toolUseBlock("toolu_p1", "mcp__custom-tools__read", { path: "/x" }),
+			toolUseBlock("toolu_p2", "mcp__custom-tools__read", { path: "/y" }),
+		)) + "\n");
+		assert.deepEqual(batches, []);
+		parser.write(line(userToolResult("toolu_p1", "done")) + "\n");
+		assert.deepEqual(batches, []);
+		parser.write(line(resultLine()) + "\n");
+		assert.deepEqual(batches, [{
+			batchId: "msg-growing",
+			observations: [
+				{ modelId: "toolu_p1", name: "mcp__custom-tools__read", arguments: { path: "/x" } },
+				{ modelId: "toolu_p2", name: "mcp__custom-tools__read", arguments: { path: "/y" } },
 			],
 		}]);
 	});

@@ -37,6 +37,7 @@ const CHILD_CJS = [
 	'process.stderr.write("PromptNotAccepted: line one\\n");',
 	'process.stderr.write("StopTimeout: line two\\n");',
 	'process.stderr.write("UPSTREAM_MARKER_LAST: line three\\n");',
+	'process.stderr.write(`MCP_IDLE:${process.env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT}\\n`);',
 	'setTimeout(() => process.exit(2), 50);',
 ].join("\n");
 
@@ -72,6 +73,7 @@ describe("spawnClaudeP — child stderr surfaces in the premature error event", 
 		assert.match(err.errorMessage, /premature termination/, "keeps the premature-termination summary");
 		assert.match(err.errorMessage, /last stderr:/, "appends a last-stderr section");
 		assert.match(err.errorMessage, /UPSTREAM_MARKER_LAST: line three/, "includes the captured upstream stderr");
+		assert.match(err.errorMessage, /MCP_IDLE:0/, "interactive driver disables upstream MCP idle cutoff");
 	});
 
 	// driver-diagnostics.child-stderr-is-captured-to-a-per-spawn-debug-file
@@ -84,7 +86,7 @@ describe("spawnClaudeP — child stderr surfaces in the premature error event", 
 			diagnosticsDir: dir,
 		});
 		await h.done;
-		const stderrFiles = readdirSync(dir).filter((f) => f.startsWith("claude-p-stderr-"));
+		const stderrFiles = readdirSync(dir).filter((f) => f.startsWith("driver-claude-p-stderr-"));
 		assert.equal(stderrFiles.length, 1, "exactly one per-spawn stderr file is written");
 		const contents = readFileSync(join(dir, stderrFiles[0]), "utf8");
 		assert.match(contents, /PromptNotAccepted: line one/, "the full stderr is persisted to the file");

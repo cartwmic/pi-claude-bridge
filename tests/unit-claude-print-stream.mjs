@@ -133,7 +133,7 @@ function validSuccessRecords() {
 			name: "mcp__custom-tools__read",
 			input: {},
 		}),
-		blockDelta(1, { type: "input_json_delta", partial_json: "{}" }),
+		blockDelta(1, { type: "input_json_delta", partial_json: "{\"path\":\"x\"}" }),
 		blockStop(1),
 		messageDelta("tool_use"),
 		messageStop(),
@@ -178,15 +178,31 @@ describe("claude-print partial stream normalization", () => {
 		]);
 		assert.deepEqual(batches, [], "partial tool blocks cannot seal correlation count");
 		feedRecords(parser, [messageStop()]);
-		assert.deepEqual(batches, [], "message_stop seals but complete assistant supplies canonical args");
-		feedRecords(parser, [assistant("msg_batch", [
-			{ type: "tool_use", id: "toolu_native", name: "Read", input: {} },
-			{ type: "tool_use", id: "toolu_foreign", name: "mcp__foreign__read", input: {} },
-			{ type: "tool_use", id: "toolu_batch", name: "mcp__custom-tools__read", input: { path: "x" } },
-		], usage(5, 5))]);
 		assert.deepEqual(batches, [{
 			batchId: "msg_batch",
 			observations: [{ modelId: "toolu_batch", name: "mcp__custom-tools__read", arguments: { path: "x" } }],
+		}]);
+	});
+
+	it("defers a complete tool assistant emitted before message_stop until the matching seal", () => {
+		const batches = [];
+		const { parser } = createParser({ onToolUseBatch: (batch) => batches.push(batch) });
+		feedRecords(parser, [
+			init(),
+			messageStart("msg_early_complete"),
+			blockStart(0, { type: "tool_use", id: "toolu_early", name: "mcp__custom-tools__read", input: {} }),
+			blockDelta(0, { type: "input_json_delta", partial_json: "{\"path\":\"x\"}" }),
+			blockStop(0),
+			messageDelta("tool_use"),
+			assistant("msg_early_complete", [
+				{ type: "tool_use", id: "toolu_early", name: "mcp__custom-tools__read", input: { path: "x" } },
+			], usage(5, 5)),
+		]);
+		assert.deepEqual(batches, [], "complete assistant cannot publish before message_stop");
+		feedRecords(parser, [messageStop()]);
+		assert.deepEqual(batches, [{
+			batchId: "msg_early_complete",
+			observations: [{ modelId: "toolu_early", name: "mcp__custom-tools__read", arguments: { path: "x" } }],
 		}]);
 	});
 
@@ -231,7 +247,29 @@ describe("claude-print partial stream normalization", () => {
 			init(),
 			{ type: "system", subtype: "status", status: "compacting", session_id: SESSION },
 			{ type: "system", subtype: "api_retry", attempt: 1, session_id: SESSION },
+			{ type: "system", subtype: "thinking_tokens", estimated_tokens: 68, estimated_tokens_delta: 22, session_id: SESSION },
 			{ type: "rate_limit_event", rate_limit_info: { status: "allowed" }, session_id: SESSION },
+			{
+				type: "tool_progress",
+				tool_use_id: "toolu_prior-heartbeat-0",
+				tool_name: "mcp__custom-tools__bash",
+				parent_tool_use_id: "toolu_prior",
+				elapsed_time_seconds: 30,
+				heartbeat: true,
+				session_id: SESSION,
+			},
+			{
+				type: "user",
+				message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_prior", content: "ok" }] },
+				parent_tool_use_id: null,
+				session_id: SESSION,
+			},
+			{
+				type: "user",
+				message: { role: "user", content: [{ type: "text", text: "hook or control observation" }] },
+				parent_tool_use_id: null,
+				session_id: SESSION,
+			},
 			...validSuccessRecords().slice(1),
 		]);
 		assert.equal(outcome.kind, "result");
@@ -239,8 +277,12 @@ describe("claude-print partial stream normalization", () => {
 		const allowlisted = debug.filter(([fields]) =>
 			fields?.type === "system/status" ||
 			fields?.type === "system/api_retry" ||
-			fields?.type === "rate_limit_event");
-		assert.equal(allowlisted.length, 3);
+			fields?.type === "system/thinking_tokens" ||
+			fields?.type === "rate_limit_event" ||
+			fields?.type === "tool_progress" ||
+			fields?.type === "user/tool_result" ||
+			fields?.type === "user/text");
+		assert.equal(allowlisted.length, 7);
 	});
 });
 
@@ -270,6 +312,7 @@ describe("claude-print raw-byte bounded NDJSON and protocol drift", () => {
 		["delta before block start", [line(init()), line(messageStart("m")), line(blockDelta(0, { type: "text_delta", text: "x" }))], /without active block/],
 		["mismatched delta", [line(init()), line(messageStart("m")), line(blockStart(0, { type: "thinking", thinking: "" })), line(blockDelta(0, { type: "text_delta", text: "x" }))], /does not match/],
 		["session mismatch", [line(init()), line(stream({ type: "message_start", message: { id: "m" } }, null, "other"))], /session_id mismatch/],
+		["unknown user content", [line(init()), line({ type: "user", message: { role: "user", content: [{ type: "image", source: {} }] }, parent_tool_use_id: null, session_id: SESSION })], /unknown user observation content type/],
 		["unknown result subtype", validSuccessRecords().slice(0, -1).map(line).concat(line(result({ subtype: "future_error", is_error: true }))), /unknown result subtype/],
 		["incompatible success stop", validSuccessRecords().slice(0, -1).map(line).concat(line(result({ stop_reason: "tool_use" }))), /success result requires stop_reason/],
 	];

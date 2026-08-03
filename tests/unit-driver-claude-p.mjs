@@ -134,6 +134,28 @@ describe("buildClaudePArgs — required flags", () => {
 		assert.equal(next.mirrorFile, "/peek/first.raw");
 	});
 
+	it("buildRetryConfig repacks failed warm resume as canonical cold input", () => {
+		const cfg = baseCfg({
+			prompt: { kind: "positional", text: "latest delta" },
+			session: { kind: "resume", sessionId: "warm-broken" },
+			mirrorFile: "/peek/warm.raw",
+		});
+		const next = buildRetryConfig(cfg, {
+			shouldRetry: () => true,
+			freshSessionId: () => "cold-retry",
+			coldRetryConfig: (sessionId) => ({
+				...cfg,
+				prompt: { kind: "positional", text: "canonical full history" },
+				session: { kind: "fresh", sessionId },
+				mirrorFile: undefined,
+			}),
+			remintMirrorFile: (sessionId) => `/peek/${sessionId}.raw`,
+		});
+		assert.deepEqual(next.session, { kind: "fresh", sessionId: "cold-retry" });
+		assert.deepEqual(next.prompt, { kind: "positional", text: "canonical full history" });
+		assert.equal(next.mirrorFile, "/peek/cold-retry.raw");
+	});
+
 	// claude-p-fork.write-only-pty-output-mirror (bridge argv side)
 	it("emits --mirror-file when mirrorFile is set", () => {
 		const args = buildClaudePArgs(baseCfg({ mirrorFile: "/tmp/peek/abc.raw" }));

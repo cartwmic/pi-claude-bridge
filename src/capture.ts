@@ -60,7 +60,7 @@ export interface CaptureDeps {
 	mcpServerName: string;
 	promptFileThresholdBytes: number;
 	diagnosticsDir?: string;
-	resolveDebugFile?: (sessionId: string) => string | undefined;
+	resolveDebugFile?: (sessionId: string, driver: CaptureDriverKind) => string | undefined;
 }
 
 export interface CaptureLogger {
@@ -220,7 +220,7 @@ export async function runCapture(
 			prompt,
 			mcpConfig,
 			session: { kind: "fresh", sessionId: captureSessionId },
-			debugFile: deps.resolveDebugFile?.(captureSessionId),
+			debugFile: deps.resolveDebugFile?.(captureSessionId, driver.kind),
 			// claude-p fork consumes this as --mcp-ready-file Enter gate. Direct
 			// adapter replaces it with its private pre-NDJSON readiness sentinel.
 			mcpReadyFile,
@@ -272,6 +272,7 @@ export async function runCapture(
 				name: captureTool.name,
 				arguments: stash,
 			}];
+			log.debug({ captureTool: captureTool.name, driver: driver.kind }, "capture: completed");
 			await cleanup();
 			terminalSent = true;
 			safePush(stream, { type: "done", reason: "toolUse", message: out });
@@ -333,16 +334,21 @@ function buildCaptureControlSuffix(
 	captureTool: Tool,
 	cleanedSchema: Record<string, unknown>,
 ): string {
-	const qualifiedName = `mcp__${mcpServerName}__${captureTool.name}`;
 	const readiness = driver === "claude-p"
 		? "If the required tool is not visible yet, call `WaitForMcpServers`, wait for connection, then call it."
 		: "Bridge readiness gate has completed before this user frame; the required tool is available for direct use.";
+	const completion = driver === "claude-p"
+		// claude-p needs visible post-tool assistant text to detect TUI completion;
+		// a tool-only final response can end in its StopTimeout despite a valid stash.
+		? "Always finish with exact standalone text `CAPTURE_COMPLETE` and end the turn, even if the tool was not called or failed. This completion marker does not replace the required tool call."
+		: "After the tool succeeds, end the turn without prose.";
 	return [
 		"<bridge_capture_control>",
 		"You are in structured capture mode.",
-		`You MUST call exactly one tool: \`${qualifiedName}\` (bare MCP tool name \`${captureTool.name}\`).`,
-		"Do not answer in prose. Do not summarize in plain text. Do not end the turn until the capture tool has been called successfully.",
+		`You MUST call the \`${captureTool.name}\` tool exactly once through the connected \`${mcpServerName}\` MCP server.`,
+		"Do not summarize in plain text. Do not end the turn until the capture tool has been called successfully.",
 		readiness,
+		completion,
 		`Tool arguments MUST satisfy this JSON schema: ${JSON.stringify(cleanedSchema)}`,
 		"</bridge_capture_control>",
 	].join("\n");

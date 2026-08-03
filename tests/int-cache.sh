@@ -100,10 +100,13 @@ while IFS= read -r line; do
 
   # Assertions
   if [ "$TURN" -ge 3 ]; then
-    # Turn 3+: cache read should be >= the last real turn's (system prompt + history
-    # cached). It can stay flat when the prior turn's response was short.
-    if [ "$CACHE_READ" -lt "$PREV_CACHE_READ" ]; then
-      echo "  FAIL: Turn $TURN cacheRead ($CACHE_READ) decreased from prior real turn ($PREV_CACHE_READ)"
+    # Result usage describes the terminal model call, not a cumulative total for
+    # every API call in a held-tool spawn. Tool-bearing turns can therefore move
+    # the cached prefix boundary slightly backward even while the same session
+    # remains warm (the debug log's billCacheRead covers all calls). Fail only on
+    # a material >10% collapse; exact resume-id checks below catch cold rebuilds.
+    if [ "$CACHE_READ" -lt $((PREV_CACHE_READ * 90 / 100)) ]; then
+      echo "  FAIL: Turn $TURN cacheRead ($CACHE_READ) collapsed >10% from prior real turn ($PREV_CACHE_READ)"
       FAIL=$((FAIL + 1))
     fi
     # The meaningful "warm caching works" signal: cacheRead must DOMINATE fresh input

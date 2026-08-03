@@ -3,6 +3,7 @@ dist/
 .claude/
 .test-output/
 .agent/
+.pi-subagents/
 eli/.DS_Store
 .DS_Store
 eli/

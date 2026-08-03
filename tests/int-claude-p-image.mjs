@@ -5,26 +5,27 @@
 //   - MAIN-provider path with image content → the bridge STRIPS the image blocks,
 //     WARN-logs the drop, and proceeds TEXT-ONLY (claude-p cannot inject images).
 //     The turn still spawns and runs.
-//   - CAPTURE path with image content → the bridge REJECTS the call PRE-SPAWN with
-//     a stopReason "error" (silently dropping images on a capture call would
-//     mislead the caller, so it is surfaced as an error instead).
+//   - CAPTURE path with image content → the bridge WARN-logs and strips image
+//     blocks, then proceeds under the documented lossy text-only replay contract.
 //
 // Tested via the driver/capture seams with a MOCKED spawn (no real claude-p):
 //   - main path  → __setSpawnClaudePForTests (resilience-wrapper factory). We
 //     assert the spawn WAS called, the cfg it received carries NO image data
 //     (text-only prompt/systemPrompt), and the drop is warn-logged.
-//   - capture path → __setCaptureSpawnForTests. We assert the spawn was NEVER
-//     called and the stream terminates with stopReason "error" naming images.
+//   - capture path → __setCaptureSpawnForTests. We assert the text-only spawn
+//     runs, receives no image bytes, stashes valid arguments, and completes.
 //
 // Deterministic, no subprocess. Concurrency 1 (single test file). Does NOT
 // override CLAUDE_CONFIG_DIR / HOME.
 
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Type } from "@sinclair/typebox";
+import { connectIpcClient } from "../src/mcp/ipc.js";
 
 // ── Route the bridge debug log to a temp file BEFORE importing index ──────────
 // (lets us assert the image-strip WARN was emitted on the main path).
@@ -163,7 +164,7 @@ describe("T1.16b — main-provider path with image content (claude-p)", () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// CAPTURE PATH — rejects pre-spawn with stopReason error
+// CAPTURE PATH — warns, strips images, and proceeds text-only
 // ────────────────────────────────────────────────────────────────────────────
 
 describe("T1.16b — capture path with image content (claude-p)", () => {
@@ -173,44 +174,47 @@ describe("T1.16b — capture path with image content (claude-p)", () => {
 		parameters: Type.Object({ summary: Type.String() }),
 	};
 
-	it("rejects PRE-SPAWN with stopReason error; the capture spawn is NEVER called", async () => {
+	it("warns, strips image bytes, and completes through the text-only capture spawn", async () => {
 		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] })); // tool is unregistered → capture
 
-		let captureSpawned = false;
-		restore.push(
-			__setCaptureSpawnForTests(() => {
-				captureSpawned = true;
-				throw new Error("capture spawn must NOT be called when image content is present");
-			}),
-		);
-
-		const result = await streamClaudeAgentSdk(MODEL, {
-			systemPrompt: "Summarize.",
-			messages: [imageUserMessage("summarize this screenshot")],
-			tools: [captureTool],
-		}).result();
-
-		assert.equal(result.stopReason, "error", "capture path must surface images as a stopReason error");
-		assert.match(result.errorMessage ?? "", /image/i, "error message should name image content");
-		assert.match(result.errorMessage ?? "", /text-only|cannot inject/i, "error should explain capture is text-only");
-		assert.equal(captureSpawned, false, "capture spawn must not run when image content is rejected pre-spawn");
-	});
-
-	it("emits exactly [start, error] (no done, no intermediate events)", async () => {
-		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] }));
-		restore.push(__setCaptureSpawnForTests(() => { throw new Error("must not spawn"); }));
+		let seenCfg = null;
+		restore.push(__setCaptureSpawnForTests((cfg, spawnOpts) => {
+			seenCfg = cfg;
+			let resolveDone;
+			const done = new Promise((resolve) => { resolveDone = resolve; });
+			queueMicrotask(async () => {
+				const parsed = JSON.parse(cfg.mcpConfig);
+				const server = Object.values(parsed.mcpServers)[0];
+				const socketPath = server.args[server.args.indexOf("--socket") + 1];
+				const client = await connectIpcClient(socketPath);
+				await client.request({
+					kind: "capture-stash",
+					id: randomUUID(),
+					arguments: { summary: "text-only image summary" },
+				});
+				client.close();
+				spawnOpts.onEvent({ kind: "usage", usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 10 } });
+				spawnOpts.onEvent({ kind: "done", reason: "result" });
+				resolveDone({ stopReason: "result", sessionId: cfg.session.sessionId, exitCode: 0, signal: null });
+			});
+			return { pid: 4322, abort() {}, done };
+		}));
 
 		const stream = streamClaudeAgentSdk(MODEL, {
 			systemPrompt: "Summarize.",
-			messages: [imageUserMessage("summarize")],
+			messages: [imageUserMessage("summarize this screenshot")],
 			tools: [captureTool],
 		});
 		const kinds = [];
 		for await (const ev of stream) kinds.push(ev.type);
-		await stream.result();
+		const result = await stream.result();
 
-		assert.equal(kinds.filter((k) => k === "start").length, 1, "exactly one start");
-		assert.equal(kinds.filter((k) => k === "error").length, 1, "exactly one error");
-		assert.equal(kinds.filter((k) => k === "done").length, 0, "no done on a rejected capture");
+		assert.equal(result.stopReason, "toolUse");
+		assert.deepEqual(kinds, ["start", "done"]);
+		assert.ok(seenCfg, "capture path must spawn after stripping images");
+		assert.ok(!carriesImageData(JSON.stringify(seenCfg)), "capture spawn config must not carry image bytes");
+		const log = await waitForLog(/capture: dropping 1 image block/);
+		assert.match(log, /capture: dropping 1 image block/i);
+		assert.match(log, /text-only/i);
 	});
 });

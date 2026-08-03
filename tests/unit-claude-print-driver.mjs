@@ -6,7 +6,7 @@
 
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -307,6 +307,47 @@ describe("spawnClaudePrint — readiness, artifacts, stdin, cleanup", () => {
 			assert.match(events.find((event) => event.kind === "error")?.errorMessage ?? "", /before MCP readiness and prompt submission/);
 			assert.deepEqual(signals, ["SIGKILL"], "early leader exit must reap shim descendants");
 			assert.deepEqual(readdirSync(root), []);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("uses driver-neutral stderr identity and emits direct abnormal state dump", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pcb-print-diagnostics-"));
+		const harness = fakeSpawnHarness();
+		const records = [];
+		const logger = {
+			debug() {},
+			info: (record) => records.push(record),
+			warn: (record) => records.push(record),
+			error: (record) => records.push(record),
+		};
+		try {
+			const handle = spawnClaudePrint(baseConfig(), {
+				onEvent() {},
+				logger,
+				tmpDir: root,
+				diagnosticsDir: root,
+				spawnImpl: harness.spawn.bind(harness),
+				env: { CLAUDE_BRIDGE_MCP_READY_TIMEOUT_MS: "1000" },
+				killProcessGroup() {},
+				isHeldRound: () => true,
+			});
+			harness.child.stderr.write("DIRECT_STDERR_MARKER\n");
+			harness.child.close(9, null);
+			assert.equal((await handle.done).stopReason, "error");
+
+			const stderrRecord = records.find((record) => record?.event === "driver.lifecycle.stderrFile");
+			assert.equal(stderrRecord?.driver, "claude-print");
+			assert.match(stderrRecord?.file ?? "", /driver-claude-print-stderr-/);
+			assert.match(readFileSync(stderrRecord.file, "utf8"), /DIRECT_STDERR_MARKER/);
+
+			const dump = records.find((record) => record?.event === "driver.lifecycle.stateDump");
+			assert.equal(dump?.driver, "claude-print");
+			assert.equal(dump?.heldRound, true);
+			assert.equal(dump?.submitted, false);
+			assert.deepEqual(dump?.stderrTail, ["DIRECT_STDERR_MARKER"]);
+			assert.equal(typeof dump?.pendingBufferBytes, "number");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

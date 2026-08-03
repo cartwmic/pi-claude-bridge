@@ -103,6 +103,31 @@ describe("registerClaudePeekCommand (claude-peek-overlay.overlay-toggle-command)
 		await assert.doesNotReject(cmds["claude-peek"].handler("", {}));
 	});
 
+	it("reports explicit no-tail unavailability under claude-print without opening overlay", async () => {
+		const cmds = {};
+		const notices = [];
+		let customCalls = 0;
+		const fakePi = { registerCommand: (name, opts) => (cmds[name] = opts) };
+		registerClaudePeekCommand(fakePi, { warn: () => {} }, {
+			getDriverKind: (cwd) => {
+				assert.equal(cwd, "/project");
+				return "claude-print";
+			},
+		});
+		await cmds["claude-peek"].handler("", {
+			cwd: "/project",
+			ui: {
+				notify: (message, type) => notices.push({ message, type }),
+				custom: () => { customCalls++; },
+			},
+		});
+		assert.equal(customCalls, 0);
+		assert.deepEqual(notices, [{
+			message: "/claude-peek unavailable: claude-print has no interactive PTY tail",
+			type: "info",
+		}]);
+	});
+
 	it("toggle lifecycle: open shows component, second invoke resolves done()", async () => {
 		const cmds = {};
 		const fakePi = { registerCommand: (name, opts) => (cmds[name] = opts) };

@@ -24,6 +24,7 @@ import {
 	type ClaudePSpawnConfig,
 	type SystemPromptSource,
 } from "./claudeP.js";
+import { DRIVER_DIAGNOSTIC_EVENTS, driverDiagnosticFileName } from "./diagnostics.js";
 import { ClaudePrintStreamParser } from "./claudePrintStream.js";
 import type { DriverStreamEvent, DriverToolUseBatch } from "./stream.js";
 
@@ -56,6 +57,8 @@ export interface SpawnClaudePrintOptions {
 	spawnImpl?: typeof spawn;
 	/** Test seam: production signals detached process groups with process.kill(-pid). */
 	killProcessGroup?: (pid: number, signal: NodeJS.Signals) => void;
+	/** Driver-neutral abnormal-state diagnostic context. */
+	isHeldRound?: () => boolean;
 }
 
 export interface ClaudePrintHandle {
@@ -292,7 +295,10 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 		if (!debugFile && env.CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE !== "0") {
 			const diagnosticsDir = opts.diagnosticsDir ?? dirname(invocationDir);
 			mkdirSync(diagnosticsDir, { recursive: true, mode: 0o700 });
-			debugFile = join(diagnosticsDir, `claude-print-debug-${sessionId.slice(0, 8)}-${Date.now()}-${randomUUID()}.log`);
+			debugFile = join(
+				diagnosticsDir,
+				driverDiagnosticFileName("claude-print", "debug", sessionId, randomUUID()),
+			);
 		}
 		if (debugFile) assertBridgeOwnedPath(debugFile, "debug file");
 		args = buildClaudePrintArgs(cfg, { systemPrompt, mcpConfig, debugFile });
@@ -329,6 +335,8 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 	const stderrTail: string[] = [];
 	let stderrFile: string | undefined;
 	let stderrFileFailed = false;
+	let sawTerminalRecord = false;
+	let lastDeltaAt = spawnedAt;
 
 	const clearTimers = () => {
 		if (pollTimer) clearTimeout(pollTimer);
@@ -370,6 +378,9 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 
 	const parser = new ClaudePrintStreamParser({
 		onEvent: (event) => {
+			if (event.kind === "text-delta" || event.kind === "thinking-delta" || event.kind === "tool-use") {
+				lastDeltaAt = Date.now();
+			}
 			if (event.kind === "error" && !aborted) {
 				streamError = true;
 				queueMicrotask(terminate);
@@ -380,6 +391,7 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 		onToolUseBatch: opts.onToolUseBatch,
 		onTurnAccepted: () => opts.onPhase?.("turnAccepted"),
 		onTerminalRecord: () => {
+			sawTerminalRecord = true;
 			(child.stdin as Writable | null)?.end();
 		},
 	});
@@ -394,11 +406,23 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 		if (opts.diagnosticsDir && !stderrFileFailed) {
 			try {
 				mkdirSync(opts.diagnosticsDir, { recursive: true, mode: 0o700 });
-				stderrFile ??= join(opts.diagnosticsDir, `claude-print-stderr-${sessionId.slice(0, 8)}-${child.pid ?? "x"}-${Date.now()}.log`);
+				if (!stderrFile) {
+					stderrFile = join(
+						opts.diagnosticsDir,
+						driverDiagnosticFileName("claude-print", "stderr", sessionId, child.pid),
+					);
+					logger.info?.(
+						{ event: DRIVER_DIAGNOSTIC_EVENTS.stderrFile, driver: "claude-print", file: stderrFile },
+						`claude-print stderr captured to ${stderrFile}`,
+					);
+				}
 				appendFileSync(stderrFile, chunk);
 			} catch (error) {
 				stderrFileFailed = true;
-				logger.warn?.({ event: "claudePrint.lifecycle.stderrFileFailed", error: errorMessage(error) }, "claude-print stderr diagnostics write failed");
+				logger.warn?.(
+					{ event: DRIVER_DIAGNOSTIC_EVENTS.stderrFileFailed, driver: "claude-print", error: errorMessage(error) },
+					"claude-print stderr diagnostics write failed",
+				);
 			}
 		}
 	});
@@ -423,6 +447,31 @@ export function spawnClaudePrint(cfg: ClaudePSpawnConfig, opts: SpawnClaudePrint
 				stderrTail: stderrTail.length > 0 ? stderrTail.join("\n") : undefined,
 			});
 			stopReason = outcome.kind === "result" && !streamError ? "result" : "error";
+		}
+		if (stopReason !== "result") {
+			const now = Date.now();
+			logger.warn?.(
+				{
+					event: DRIVER_DIAGNOSTIC_EVENTS.stateDump,
+					driver: "claude-print",
+					sessionId: sessionId.slice(0, 8),
+					pid: child.pid,
+					aborted,
+					submitted,
+					sawTerminalRecord,
+					startupError,
+					streamError,
+					exitCode: code,
+					signal,
+					pendingBufferBytes: parser.pendingBufferBytes,
+					lastDeltaAgeMs: now - lastDeltaAt,
+					elapsedMs: now - spawnedAt,
+					heldRound: opts.isHeldRound?.() ?? false,
+					stderrTail,
+					stderrFile,
+				},
+				`claude-print abnormal state dump: stopReason=${stopReason} lastDeltaAge=${now - lastDeltaAt}ms heldRound=${opts.isHeldRound?.() ?? false}`,
+			);
 		}
 		// Process leader may exit before its MCP shim descendants. Final group reap
 		// closes that orphan window on success, startup failure, and caller abort.

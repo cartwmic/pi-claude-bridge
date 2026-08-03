@@ -189,7 +189,7 @@ describe("T4.3(d) — the closed set includes the documented natives", () => {
 		// Core file/shell/search/web natives.
 		"Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit",
 		// Subagent / planning / skills / tool-search / interaction natives.
-		"Agent", "Task", "Skill", "ToolSearch", "AskUserQuestion",
+		"Agent", "Task", "Skill", "ToolSearch", "AskUserQuestion", "ReportFindings", "SendMessage",
 		"EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
 		// Background-task / scheduling / workflow / cron / notification natives.
 		"TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop",

@@ -114,13 +114,11 @@ type ObservationBatch = {
 	id: string;
 	observations: Observation[];
 	sealed: boolean;
-	sealRequestSeq: number;
 };
 
 type PendingCall = {
 	info: ParkedCallInfo;
 	key: string;
-	seq: number;
 	declaredModelId?: string;
 	settled: boolean;
 };
@@ -187,7 +185,6 @@ export function createRouter(opts: RouterOptions = {}): Router {
 	const observationsByModelId = new Map<string, Observation>();
 	const aliases = new Map<string, string>();
 	const unmatchedCalls: PendingCall[] = [];
-	let requestSeq = 0;
 	let captureStash: Record<string, unknown> | undefined;
 	let captureValidationFailure: CaptureValidationFailure | undefined;
 	let everRoutedToolCall = false;
@@ -255,29 +252,13 @@ export function createRouter(opts: RouterOptions = {}): Router {
 
 	const reconcileSealed = (batch: ObservationBatch): CorrelationFailure | undefined => {
 		if (!batch.sealed || correlationFailure) return correlationFailure;
-		const remaining = batch.observations.filter((observation) => !observation.piId);
-		const callsPresentAtSeal = unmatchedCalls.filter((call) => call.seq <= batch.sealRequestSeq);
-		if (remaining.length === 0) {
-			if (callsPresentAtSeal.length > 0) {
-				return fail(`tool-call correlation count mismatch in sealed batch ${batch.id}: shim calls exceed ${batch.observations.length} bridged observations`);
-			}
-			return undefined;
-		}
-		if (callsPresentAtSeal.length > remaining.length) {
-			return fail(`tool-call correlation count mismatch in sealed batch ${batch.id}: shim calls exceed bridged observations`);
-		}
-		if (callsPresentAtSeal.length > 0) {
-			return fail(`tool-call correlation canonical mismatch in sealed batch ${batch.id}`);
-		}
-		// Under-count remains open without a liveness timer; delayed shim may join.
-		return undefined;
-	};
-
-	const reconcileAllSealed = (): CorrelationFailure | undefined => {
-		for (const batch of batchOrder) {
-			const failure = reconcileSealed(batch);
-			if (failure) return failure;
-		}
+		// Do not treat unmatched calls as overflow for this batch yet. claude-p
+		// publishes every assistant batch together at terminal result, so a shim
+		// call already present when batch N seals may belong to batch N+1, whose
+		// observations have not reached the router callback yet. Exact canonical
+		// pairing continues as observations arrive; finalizeToolUseCorrelation()
+		// fails closed once every driver batch has been published.
+		tryPair();
 		return undefined;
 	};
 
@@ -301,7 +282,7 @@ export function createRouter(opts: RouterOptions = {}): Router {
 			? req.modelToolUseId
 			: undefined;
 		const info: ParkedCallInfo = { piId, shimRequestId: req.id, name, arguments: req.arguments, argsKey, modelId: declaredModelId };
-		const call: PendingCall = { info, key: `${name}\u0000${argsKey}`, seq: ++requestSeq, declaredModelId, settled: false };
+		const call: PendingCall = { info, key: `${name}\u0000${argsKey}`, declaredModelId, settled: false };
 		parked.set(piId, info);
 		unmatchedCalls.push(call);
 		if (declaredModelId) aliases.set(declaredModelId, piId);
@@ -324,14 +305,6 @@ export function createRouter(opts: RouterOptions = {}): Router {
 		}
 
 		tryPair();
-		// A request arriving while an older sealed batch is under-counted belongs to
-		// that batch. If it cannot match, fail now rather than guess a later batch.
-		const oldestIncomplete = batchOrder.find((batch) => batch.sealed && batch.observations.some((observation) => !observation.piId));
-		if (oldestIncomplete && unmatchedCalls.includes(call)) {
-			fail(`tool-call correlation canonical mismatch in sealed batch ${oldestIncomplete.id}`);
-		} else {
-			reconcileAllSealed();
-		}
 
 		const result = await resultPromise;
 		call.settled = true;
@@ -406,6 +379,14 @@ export function createRouter(opts: RouterOptions = {}): Router {
 			if (stopped || correlationFailure) return "failed";
 			if (!input.name.startsWith(BRIDGED_PREFIX)) return "ignored";
 			const name = normalizeToolName(input.name);
+			// Claude Code may emit a model-authored mcp__custom-tools__* call for
+			// a name absent from tools/list, then resolve it internally as "Unknown
+			// tool" without ever calling the shim. Such records are not bridge-call
+			// observations and must not inflate D32's expected-call count.
+			if (name && toolDefs.length > 0 && !toolDefs.some((definition) => normalizeToolName(definition.name) === name)) {
+				log.debug({ batchId: input.batchId, modelId: input.modelId, name }, "router: ignored unadvertised custom tool observation");
+				return "ignored";
+			}
 			if (!name || typeof input.modelId !== "string" || input.modelId.length === 0 || !isRecord(input.arguments)) {
 				fail("invalid bridged driver tool observation");
 				return "failed";
@@ -419,7 +400,7 @@ export function createRouter(opts: RouterOptions = {}): Router {
 			}
 			let batch = batches.get(input.batchId);
 			if (!batch) {
-				batch = { id: input.batchId, observations: [], sealed: false, sealRequestSeq: 0 };
+				batch = { id: input.batchId, observations: [], sealed: false };
 				batches.set(input.batchId, batch);
 				batchOrder.push(batch);
 			}
@@ -439,7 +420,6 @@ export function createRouter(opts: RouterOptions = {}): Router {
 			if (!batch) return undefined; // batch contained only ignored observations
 			if (batch.sealed) return reconcileSealed(batch);
 			batch.sealed = true;
-			batch.sealRequestSeq = requestSeq;
 			tryPair();
 			return reconcileSealed(batch);
 		},

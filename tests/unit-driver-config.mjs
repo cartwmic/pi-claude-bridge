@@ -6,6 +6,7 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+	chmodSync,
 	closeSync,
 	fstatSync,
 	lstatSync,
@@ -230,6 +231,21 @@ describe("direct-driver runtime preflight", () => {
 
 	it("fails explicitly when installed Claude version cannot be read", () => {
 		assert.throws(() => preflightBridgeDriver("claude-print", () => null), /claude-print.*2\.1\.208.*version/is);
+	});
+
+	it("default probe uses the same CLAUDE_BIN executable as direct spawn", () => {
+		const f = fixture();
+		const bin = join(f.root, "claude-direct");
+		writeFileSync(bin, "#!/bin/sh\necho '2.1.220 (Claude Code)'\n");
+		chmodSync(bin, 0o755);
+		const previous = process.env.CLAUDE_BIN;
+		process.env.CLAUDE_BIN = bin;
+		try {
+			assert.equal(preflightBridgeDriver("claude-print"), "2.1.220");
+		} finally {
+			if (previous === undefined) delete process.env.CLAUDE_BIN;
+			else process.env.CLAUDE_BIN = previous;
+		}
 	});
 
 	it("memoizes the direct Claude version probe process-wide", () => {

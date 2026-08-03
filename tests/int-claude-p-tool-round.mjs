@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Authenticated held-open tool round-trip through pi and the selected driver.
-// Set CLAUDE_BRIDGE_DRIVER=claude-p|claude-print; defaults to claude-p. Uses a
+// Set CLAUDE_BRIDGE_DRIVER=claude-p|claude-print; defaults to claude-print. Uses a
 // test extension that registers a
 // bridged pi tool (SlowTool, returns a known string). Asserts the FULL round-trip:
 //
@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 120_000;
-const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-print";
 const MODEL = process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6";
 assert.match(DRIVER, /^(claude-p|claude-print)$/);
 

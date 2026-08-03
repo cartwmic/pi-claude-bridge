@@ -85,7 +85,7 @@
   carry explicit driver identity; stderr/debug artifacts include driver names.
 - **Configuration**: `CLAUDE_BRIDGE_DRIVER` overrides project
   `.pi/claude-bridge.json`, which overrides global
-  `~/.pi/agent/claude-bridge.json`; default is `claude-p`. Every present file is
+  `~/.pi/agent/claude-bridge.json`; default is `claude-print`. Every present file is
   parsed fail-loud. `claude-print` also enforces its independent Claude CLI
   version floor before spawn and supports a bounded readiness-timeout override.
 

@@ -29,6 +29,8 @@ const LOG_DIR = mkdtempSync(join(tmpdir(), "bridge-shape-test-"));
 const LOG_FILE = join(LOG_DIR, "bridge.log");
 process.env.CLAUDE_BRIDGE_DEBUG_PATH = LOG_FILE;
 process.env.CLAUDE_BRIDGE_DEBUG = "1";
+// This suite exercises the explicit interactive rollback path.
+process.env.CLAUDE_BRIDGE_DRIVER = "claude-p";
 
 // ── Dynamic import so the logger uses our temp file ─────────────────────────
 const {

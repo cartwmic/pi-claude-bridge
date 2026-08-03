@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Authenticated end-to-end main-provider and warm-resume contract. Select driver
-// with CLAUDE_BRIDGE_DRIVER=claude-p|claude-print; defaults to claude-p.
+// with CLAUDE_BRIDGE_DRIVER=claude-p|claude-print; defaults to claude-print.
 //
 // Concurrency 1. Does NOT override CLAUDE_CONFIG_DIR/HOME. A semantically
 // wrong model response is retried only after a full harness restart so a failed
@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 120_000;
-const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-print";
 const MODEL = process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6";
 assert.match(DRIVER, /^(claude-p|claude-print)$/);
 

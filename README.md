@@ -15,13 +15,14 @@ owned by pi.
 
 Inference supports two subprocess drivers selected by `CLAUDE_BRIDGE_DRIVER`:
 
-- **`claude-p` (default)** drives the interactive Claude Code TUI through the
-  maintained [`claude-p`](https://www.npmjs.com/package/claude-p) fork. One
-  `claude-p` spawn spans one pi user turn, including all held tool rounds.
-- **`claude-print`** spawns the installed `claude` binary directly with
-  `-p --input-format stream-json --output-format stream-json`. The bridge
+- **`claude-print` (default)** spawns the installed `claude` binary directly
+  with `-p --input-format stream-json --output-format stream-json`. The bridge
   waits for its invocation-owned MCP readiness sentinel before writing the user
-  frame to stdin. One direct process likewise owns one complete pi user turn.
+  frame to stdin. One direct process owns one complete pi user turn. This path
+  requires Claude Code 2.1.208 or newer.
+- **`claude-p`** drives the interactive Claude Code TUI through the maintained
+  [`claude-p`](https://www.npmjs.com/package/claude-p) fork. One `claude-p`
+  spawn likewise spans one pi user turn, including all held tool rounds.
 
 Both drivers use the same stdio **MCP shim** and in-process router. The router
 holds each `tools/call` open ("parks" it), ends pi's stream so pi executes the
@@ -30,10 +31,10 @@ support multi-round tools, capture, abort, typed resume hints, cache accounting,
 and process-group cleanup. The bridge never reads or writes
 `~/.claude/sessions/`; there is no transcript surgery.
 
-`claude-p` remains the safe rollback default. To try direct mode, launch pi with
-`CLAUDE_BRIDGE_DRIVER=claude-print`; remove that setting or set it back to
-`claude-p` to roll back. Driver selection is process-wide and fixed when the
-extension loads. The removed `sdk` value and all unknown values fail fast.
+Direct `claude-print` mode is the default. To use the interactive rollback path,
+launch pi with `CLAUDE_BRIDGE_DRIVER=claude-p`; remove that setting to return to
+`claude-print`. Driver selection is process-wide and fixed when the extension
+loads. The removed `sdk` value and all unknown values fail fast.
 
 Uses your Claude Max/Pro subscription. I believe this is compliant with Anthropic's terms because only the real Claude Code is touching the API and it's to enable [local development](https://x.com/trq212/status/2024212380142752025) not to steal API calls for some other commerical purpose. That said, obviously this extension is not endorsed or supported by Anthropic.
 <p>
@@ -113,9 +114,13 @@ Two path-specific behaviors worth noting: `ctx.systemPrompt` is forwarded verbat
 
 ## Configuration
 
-`CLAUDE_BRIDGE_DRIVER` accepts `claude-p` (default) or `claude-print`. Selection
-applies uniformly to main turns and isolated capture calls. Invalid values fail
-while the extension loads; there is no silent fallback.
+Driver selection precedence is `CLAUDE_BRIDGE_DRIVER`, project
+`<project>/.pi/claude-bridge.json`, global `~/.pi/agent/claude-bridge.json`, then
+`claude-print` by default. Config files use `{ "driver": "claude-print" }` or
+`{ "driver": "claude-p" }`. Selection applies uniformly to main turns and
+isolated capture calls. Invalid values fail while the extension loads; there is
+no silent fallback. Selecting `claude-print` requires Claude Code 2.1.208 or
+newer; explicitly selected `claude-p` retains its independent version support.
 
 Direct mode also accepts `CLAUDE_BRIDGE_MCP_READY_TIMEOUT_MS`, a positive
 integer startup-readiness deadline in milliseconds (default `30000`). This is a
@@ -153,7 +158,7 @@ driver-parity exception; inference remains usable after the command.
 
 - `npm run test:unit` — offline unit suite for both adapters, parsers, routing,
   resume policy, diagnostics, capture, and peek behavior.
-- `npm test` — legacy/full repository suite using the default `claude-p` driver.
+- `npm test` — full repository suite using the default `claude-print` driver.
 - `npm run test:integration:drivers` — authenticated contract against both
   `claude-p` and `claude-print`: readiness-gated main/resume turns, sequential
   and parallel held tools, D32 tool-id correlation, capture, abort cleanup,

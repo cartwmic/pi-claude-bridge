@@ -9,14 +9,14 @@ Bridge currently has one inference path: maintained `claude-p` fork drives Claud
 - Add `claude-print` driver using `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages`.
 - Gate user NDJSON submission on existing MCP shim readiness sentinel; retain one subprocess across held sequential/parallel tool rounds.
 - Normalize direct partial events, usage, session metadata, abort result semantics, stderr/debug diagnostics, and process-group cleanup behind driver-neutral orchestration.
-- Add global/project `claude-bridge.json` driver selection with project precedence, `claude-p` default, compatibility env override, invalid-value errors, and no cross-driver fallback.
+- Add global/project `claude-bridge.json` driver selection with project precedence, `claude-print` default, compatibility env override, invalid-value errors, and no cross-driver fallback.
 - Scope in-memory resume state and persisted sidecars by driver; missing legacy driver field means `claude-p`.
 - Run output capture through selected driver while retaining forced-MCP capture and isolated tmpdir execution.
 - Close direct native tools with `--tools ""`; re-audit interactive denylist for `ReportFindings` and `SendMessage`; disable upstream MCP held-call idle cutoff on both paths.
 - Require Claude Code >=2.1.208 only for `claude-print` and fail before billing on older versions.
 - Make `/claude-peek` explicitly unavailable under `claude-print`; this is sole accepted feature-parity exception.
 - Add dual-driver unit/integration/TUI validation and driver-aware diagnostics/documentation.
-- No public default or provider/model identifier changes; no automatic failover; no `claude-p` removal.
+- Change the public default to `claude-print` without changing provider/model identifiers; retain explicit `claude-p` rollback, no automatic failover, and no `claude-p` removal.
 
 ## Capabilities
 
@@ -41,6 +41,6 @@ Bridge currently has one inference path: maintained `claude-p` fork drives Claud
 - **Runtime:** new direct subprocess driver/parser; shared orchestration and existing router/shim/capture/resume modules become driver-neutral.
 - **Persistence:** content-free warm-resume sidecar gains driver field with legacy migration behavior.
 - **Dependencies:** no new runtime package required; direct path resolves authenticated `claude` from PATH.
-- **Compatibility:** `claude-p` remains default and keeps its independent version support; direct mode requires Claude Code 2.1.208+.
+- **Compatibility:** `claude-print` is the default and requires Claude Code 2.1.208+; explicit `claude-p` rollback keeps its independent version support.
 - **Affected files:** `index.ts`, `src/driver/**`, `src/capture.ts`, `src/mcp/**`, `src/resume.ts`, `src/peek/**`, tests, scenario scripts, README, domain/spec artifacts, and project validation manifest.
 - **Affects which projects:** this repository only; maintained `claude-p` fork needs no new feature for direct path.

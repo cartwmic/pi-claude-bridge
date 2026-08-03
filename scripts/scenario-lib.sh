@@ -21,7 +21,7 @@ mkdir -p "$OUT_DIR"
 
 : "${SCENARIO_MODEL:=claude-bridge/claude-haiku-4-5}"
 : "${SCENARIO_CWD:=$REPO_DIR}"
-: "${SCENARIO_DRIVER:=${CLAUDE_BRIDGE_DRIVER:-claude-p}}"
+: "${SCENARIO_DRIVER:=${CLAUDE_BRIDGE_DRIVER:-claude-print}}"
 case "$SCENARIO_DRIVER" in
 	claude-p|claude-print) ;;
 	*) echo "ERROR: unsupported SCENARIO_DRIVER=$SCENARIO_DRIVER" >&2; exit 2 ;;

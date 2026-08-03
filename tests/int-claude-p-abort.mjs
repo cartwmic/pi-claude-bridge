@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 120_000;
-const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-print";
 const MODEL = process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6";
 assert.match(DRIVER, /^(claude-p|claude-print)$/);
 
@@ -59,6 +59,17 @@ const harness = createRpcHarness({
 	env: { CLAUDE_BRIDGE_DRIVER: DRIVER, PATH: PATH_WITH_CLAUDE_P },
 	defaultTimeout: TEST_TIMEOUT,
 });
+
+async function waitForDebugLog(pattern, timeoutMs = 3000) {
+	const deadline = Date.now() + timeoutMs;
+	let contents = "";
+	while (Date.now() < deadline) {
+		contents = readFileSync(harness.DEBUG_LOG, "utf8");
+		if (pattern.test(contents)) return contents;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	return contents;
+}
 
 function processTable() {
 	try {
@@ -189,10 +200,12 @@ describe(`${DRIVER} abort mid-turn mechanics`, () => {
 		assert.ok(ok, `abort mid-turn did not complete cleanly after 3 attempts: ${lastErr?.message}`);
 
 		// (1) selected driver interrupted its subprocess group.
-		const dbg = readFileSync(DEBUG_LOG, "utf8");
 		const abortPattern = DRIVER === "claude-print"
 			? /claudePrint\.lifecycle\.abort|aborting claude-print/
 			: /claudeP\.lifecycle\.abort|aborting claude-p \(SIGINT to group\)/;
+		// Driver lifecycle logging is asynchronous; agent_end can arrive before
+		// rotating-file-stream flushes the same-millisecond abort record.
+		const dbg = await waitForDebugLog(abortPattern);
 		assert.match(dbg, abortPattern, `bridge debug log must show ${DRIVER} abort`);
 
 		// (3) No orphan claude-p / claude process. Allow a grace window for the

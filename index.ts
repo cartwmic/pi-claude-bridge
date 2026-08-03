@@ -591,7 +591,7 @@ export function loadBridgeDriverConfig(options: BridgeDriverConfigOptions = {}):
 	if (errors.length > 0) {
 		throw new Error(`Bridge driver configuration failed:\n${errors.map((error) => `- ${error.message}`).join("\n")}`);
 	}
-	return envDriver ?? projectDriver ?? globalDriver ?? "claude-p";
+	return envDriver ?? projectDriver ?? globalDriver ?? "claude-print";
 }
 
 export type ClaudeVersionProbe = () => string | null;

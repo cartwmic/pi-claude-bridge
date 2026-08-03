@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Breaking: `claude-print` is now the default inference driver.** With no
+  environment, project, or global driver setting, the bridge invokes the
+  installed Claude Code binary through `claude -p` stream-JSON mode. This path
+  requires Claude Code 2.1.208 or newer. Set
+  `CLAUDE_BRIDGE_DRIVER=claude-p` to use the maintained interactive-TUI
+  rollback path; there is still no automatic cross-driver fallback.
 - **Fix: `/claude-peek` overlay clamped to half the terminal height** — the
   popup previously rendered up to the full 40-row session grid, consuming the
   whole vertical space on short terminals. It now caps total height at 50% of

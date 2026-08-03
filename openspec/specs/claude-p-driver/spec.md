@@ -5,8 +5,9 @@
 Subprocess invocation of the `smithersai/claude-p` interactive-TUI driver.
 Owns process lifecycle, flag assembly, PTY-backed prompt delivery, held-tool
 rounds, abort behavior, and normalized stream events when `claude-p` is
-selected. This remains default driver; direct print-mode behavior belongs to
-`claude-print-driver`. Bridge reads nothing under `~/.claude/`.
+selected. This remains first-class as explicit interactive rollback; direct
+print-mode behavior and implicit default belong to `claude-print-driver`. Bridge
+reads nothing under `~/.claude/`.
 ## Requirements
 ### Requirement: claude-p spawn with model selection
 

@@ -46,7 +46,7 @@ review_budget_mode: quiet-round
 ## Manual Adjustments
 
 - Owner's autonomous drive-to-green instruction preauthorizes continuing past the original five-round review budget without an interactive checkpoint; `review_max_rounds` extended to 8 after round 5 exposed objective remaining blockers.
-- Existing `claude-p` remains default while both paths are equally supported.
+- Owner follow-up decision makes `claude-print` the default after dual-driver validation; `claude-p` remains an equally supported explicit rollback with no automatic fallback.
 - `/claude-peek` unavailability under `claude-print` is the only accepted parity exception.
 - Claude Code 2.1.208 is the direct-driver minimum because earlier versions can omit terminal `result` on large streamed output.
 - Existing integration-checkout edits outside this change are user-owned and excluded from every loop commit.
@@ -54,6 +54,7 @@ review_budget_mode: quiet-round
 ## Execution Notes
 
 - 2026-07-18 — Frozen baseline: `intent.md`; semantic edits require explicit owner authorization.
+- 2026-08-03 — Owner explicitly authorized the default switch to `claude-print` after the direct driver passed the dual-driver matrix and authenticated gates; intent, proposal, design, specs, tests, and operator docs were updated without invoking workflow tooling.
 - 2026-07-18 — Assumption: adding the inert `<!-- authored: in-session -->` marker required by the configured author-role gate is metadata only and does not alter frozen intent meaning.
 - 2026-07-18 — Feasibility evidence proved readiness-gated stream-json input, held multi-round MCP, capture stash, partial streaming, warm cache read, abort partials, and `--tools ""` MCP preservation.
 - 2026-07-18 — Worktree locator pending apply lifecycle.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the explicit bridge scenario inventory for one or both inference drivers.
 #
-#   CLAUDE_BRIDGE_DRIVER=claude-print ./scripts/run-all-scenarios.sh
+#   CLAUDE_BRIDGE_DRIVER=claude-p ./scripts/run-all-scenarios.sh
 #   SCENARIO_DRIVERS="claude-p claude-print" ./scripts/run-all-scenarios.sh
 #
 # SCENARIO_PARALLEL controls concurrency (default 1). SCENARIO_FILTER is an
@@ -20,7 +20,7 @@ SUMMARY="$RESULTS_DIR/SUMMARY.md"
 PER_SCRIPT_TIMEOUT="${SCENARIO_TIMEOUT:-300}"
 MAX_CONCURRENCY="${SCENARIO_PARALLEL:-1}"
 OVERRIDES_FILE="$SCRIPT_DIR/scenario-overrides.conf"
-DRIVER_WORDS="${SCENARIO_DRIVERS:-${CLAUDE_BRIDGE_DRIVER:-claude-p}}"
+DRIVER_WORDS="${SCENARIO_DRIVERS:-${CLAUDE_BRIDGE_DRIVER:-claude-print}}"
 DRIVER_WORDS="${DRIVER_WORDS//,/ }"
 
 # Binding inventory for parity work. S10b/S16a/S16b are named sub-scenarios;

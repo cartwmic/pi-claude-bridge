@@ -2,6 +2,8 @@
 
 <!-- authored: in-session -->
 
+> Follow-up: after this original additive rollout completed its dual-driver gates, the owner authorized promoting `claude-print` to the implicit default. Historical step ordering below still records the initial safe bring-up.
+
 ## Plan step 1: Layered configuration and direct preflight
 
 - **Covers:** T1.1
@@ -18,7 +20,7 @@
 ## Plan step 2: Driver-neutral adapter seam
 
 - **Covers:** T1.2
-- **Pre-conditions:** step 1 committed; default config resolves `claude-p`.
+- **Pre-conditions:** step 1 committed; initial bring-up default config resolves `claude-p`.
 - **Action (5-step micro-tasks):**
   1. Add failing adapter contract/regression cases citing `claude-p-driver.claude-p-spawn-with-model-selection` and `bridge-driver-selection.selected-driver-is-pinned-to-invocation-lifecycle`.
   2. Run targeted existing/new adapter tests → expect FAIL at missing seam.
@@ -65,7 +67,7 @@
   4. Run direct-driver units + typecheck → expect PASS; assert no billed/live invocation in unit tier.
   5. Commit `feat: add claude print process driver`.
 - **Verification:** `tests/unit-claude-print-driver.mjs`; driver stderr/abort units; typecheck.
-- **Rollback:** revert commit; selector continues defaulting to interactive.
+- **Rollback:** revert commit; selector continues using the initial interactive bring-up default.
 
 ## Plan step 6: Router/shim two-channel correlation and capture validation IPC
 

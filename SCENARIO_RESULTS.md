@@ -1,5 +1,52 @@
 # Scenario validation results
 
+## Default `claude-print` promotion validation — 2026-08-03
+
+Branch: `feat/default-claude-print` from `origin/main` at
+`80aadd6dbc99a769ea3585a0c4822c45a617efae`.
+
+Environment:
+
+- implicit driver selection: `CLAUDE_BRIDGE_DRIVER` absent
+- direct executable `/Users/cartwmic/.local/bin/claude` (Claude Code `2.1.220`)
+- explicit rollback executable `/tmp/claude-2.1.159-bin/claude` for `claude-p`
+- authenticated driver/scenario runs executed serially
+
+Validation:
+
+```text
+implicit-default npm test:
+  unit                         498 PASS, 0 FAIL
+  smoke                          3 PASS, 0 FAIL
+  multi-turn                     5 PASS, 0 FAIL
+  cache/resume                   PASS (1 cold, 4 warm, 1 session id)
+  integration                   21 PASS, 0 FAIL, 3 explicit optional SKIP
+
+explicit claude-p gate:
+  RPC main/tool/abort             3 PASS
+  capture success/absent          2 PASS
+  S28/S29 lifecycle               2 PASS
+  selected live scenarios        14 PASS, 0 SKIP, 0 FAIL, 0 TIMEOUT
+
+explicit claude-print gate:
+  RPC main/tool/abort             3 PASS
+  capture success/absent          2 PASS
+  S28/S29 lifecycle               2 PASS
+  selected live scenarios        14 PASS, 0 SKIP, 0 FAIL, 0 TIMEOUT
+```
+
+Typecheck, build, shell syntax, and `git diff --check` passed. Targeted regression
+reruns passed after pinning mocked interactive image tests to explicit
+`claude-p` and polling asynchronous abort diagnostics. Independent fresh-context
+review returned `APPROVE` with no blocker or major findings. The three `npm test`
+skips remain explicit optional benchmark/auth gates and are not counted as
+passes; required authenticated dual-driver gates had zero skips.
+
+The prior 64/64 full dual-driver matrix below remains authoritative for complete
+scenario inventory. This promotion validation adds proof that absent
+configuration now selects `claude-print` while explicit `claude-p` rollback
+continues to pass its maintained contract.
+
 ## Authoritative dual-driver validation — 2026-08-02
 
 Branch: `opsx/add-claude-print-driver` at base `adba413` plus current

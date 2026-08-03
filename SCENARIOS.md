@@ -11,8 +11,8 @@ S10b, S16a, and S16b), S31, and S32. It does not discover scripts by glob, so
 legacy S28–S30 timeout experiments cannot silently become release gates.
 
 ```sh
-npm run test:scenarios                         # default/selected driver
-CLAUDE_BRIDGE_DRIVER=claude-print npm run test:scenarios
+npm run test:scenarios                         # default claude-print driver
+CLAUDE_BRIDGE_DRIVER=claude-p npm run test:scenarios
 npm run test:scenarios:drivers                 # claude-p + claude-print matrix
 ```
 

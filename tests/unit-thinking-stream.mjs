@@ -22,6 +22,9 @@ import {
 	__setSpawnClaudePForTests,
 } from "../index.js";
 
+// This suite exercises the explicit interactive rollback path.
+process.env.CLAUDE_BRIDGE_DRIVER = "claude-p";
+
 const MOCK_MODEL = {
 	id: "claude-haiku-4-5",
 	cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },

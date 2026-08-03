@@ -68,9 +68,10 @@ function load(f, overrides = {}) {
 }
 
 describe("layered driver configuration", () => {
-	it("defaults to claude-p when every layer is absent", () => {
+	it("defaults to claude-print and allows explicit claude-p rollback", () => {
 		const f = fixture();
-		assert.equal(load(f), "claude-p");
+		assert.equal(load(f), "claude-print");
+		assert.equal(load(f, { env: { CLAUDE_BRIDGE_DRIVER: "claude-p" } }), "claude-p");
 	});
 
 	it("uses global, then project, then non-empty environment precedence", () => {

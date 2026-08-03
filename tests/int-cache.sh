@@ -23,8 +23,8 @@ TMPFILE="$LOGDIR/cache-test-scratch.txt"
 rm -f "$TMPFILE" "$CLAUDE_BRIDGE_DEBUG_PATH"
 
 echo "Running 5-turn conversation (text + tool use)..."
-# claude-p adds ~5s interactive-boot per turn vs the SDK + may retry a StopTimeout
-# (D33), so the 5-turn conversation needs more wall-clock headroom than the SDK path.
+# The interactive path adds per-turn TUI boot time and either driver may retry a
+# pre-tool premature exit, so this conversation needs ample wall-clock headroom.
 # Override via CACHE_TEST_TIMEOUT if needed.
 timeout "${CACHE_TEST_TIMEOUT:-420}" pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-haiku-4-5" \
@@ -93,7 +93,7 @@ while IFS= read -r line; do
   # NOT let a zero perturb PREV_CACHE_READ (compare the next real turn against the last
   # turn that actually reported usage).
   if [ "$INPUT" -eq 0 ] && [ "$CACHE_READ" -eq 0 ] && [ "$CACHE_WRITE" -eq 0 ] && [ "$OUTPUT" -eq 0 ]; then
-    echo "  (turn $TURN: claude-p reported zero usage — skipped, not a cache regression)"
+    echo "  (turn $TURN: selected driver reported zero usage — skipped, not a cache regression)"
     ZERO_USAGE_TURNS=$((ZERO_USAGE_TURNS + 1))
     continue
   fi
@@ -149,21 +149,19 @@ RESUME_COUNT=0
 declare -a SESSION_IDS=()
 
 while IFS= read -r line; do
-  # Match BOTH driver dialects: SDK `streamSimple: fresh query ... resume=` and
-  # claude-p `streamSimple[claude-p]: fresh spawn ... resume=`.
-  if echo "$line" | grep -qE 'streamSimple(\[claude-p\])?: fresh (query|spawn).*resume=no'; then
+  # Match current driver dialects plus the historical unqualified SDK label.
+  if echo "$line" | grep -qE 'streamSimple(\[(claude-p|claude-print)\])?: fresh (query|spawn).*resume=no'; then
     COLD_COUNT=$((COLD_COUNT + 1))
-  elif echo "$line" | grep -qE 'streamSimple(\[claude-p\])?: fresh (query|spawn).*resume=[a-f0-9]'; then
+  elif echo "$line" | grep -qE 'streamSimple(\[(claude-p|claude-print)\])?: fresh (query|spawn).*resume=[a-f0-9]'; then
     RESUME_COUNT=$((RESUME_COUNT + 1))
   fi
   sid=$(echo "$line" | sed -nE 's/.*caching session=([a-f0-9-]+).*/\1/p')
   if [ -n "$sid" ]; then
     SESSION_IDS+=("$sid")
   fi
-# Pre-filter must include BOTH the per-turn dispatch line (`streamSimple`/
-# `streamSimple[claude-p]`) AND the session-capture line, which on the claude-p path is
-# `finalizeClaudePFrame: caching session=<sid>` (SDK logged `streamSimple: caching
-# session=`). Matching only "streamSimple" misses the claude-p caching-session lines.
+# Pre-filter must include both the driver-qualified per-turn dispatch line and
+# the shared session-capture line (`finalizeClaudePFrame: caching session=<sid>`).
+# Matching only "streamSimple" misses caching-session lines.
 done < <(grep -E "streamSimple|caching session=" "$CLAUDE_BRIDGE_DEBUG_PATH" 2>/dev/null || true)
 
 UNIQUE_SIDS=$(printf "%s\n" "${SESSION_IDS[@]+"${SESSION_IDS[@]}"}" | sort -u | sed '/^$/d' | wc -l | tr -d ' ')

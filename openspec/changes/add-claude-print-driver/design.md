@@ -11,7 +11,7 @@ Constitution I keeps pi canonical and permits only content-free typed sidecar me
 ## Goals / Non-Goals
 
 **Goals:**
-- Add equally supported `claude-print` while retaining default `claude-p`.
+- Add equally supported `claude-print`, make it the default after validation, and retain `claude-p` as an explicit interactive rollback.
 - Keep one shared orchestration path with separate argv/stdin/parser/lifecycle adapters.
 - Preserve all main, held-tool, capture, resume, abort, concurrency, usage, diagnostics, and coherence behavior except accepted peek unavailability.
 - Make config, protocol drift, version skew, and process failures deterministic and explicit.
@@ -42,7 +42,7 @@ Interactive adapter preserves exact isolation contract and changes its audited d
 
 ### D2: Layered config resolution and invocation pinning
 
-**Choice:** Add config loader returning validated `DriverKind`. Only `ENOENT` means an absent global/project file. Every present path uses `lstat → O_NOFOLLOW open → fstat` same-object verification on supported macOS/Linux; final-component symlink, replacement race, permission, directory-at-path, stat/read, invalid JSON/root, or invalid driver fails with layer + path before spawn. Platforms lacking race-resistant final-component no-follow fail closed rather than silently weaken config identity. Value precedence is non-empty env override, explicit caller invocation cwd project config (else pi session cwd), global config, default `claude-p`. Resolve once before replacing capture cwd with `os.tmpdir()`. Store driver on each frame/capture request; nested calls inherit active owner. In-flight tool delivery never re-resolves. Peek follows active main frame; without one it resolves current project config.
+**Choice:** Add config loader returning validated `DriverKind`. Only `ENOENT` means an absent global/project file. Every present path uses `lstat → O_NOFOLLOW open → fstat` same-object verification on supported macOS/Linux; final-component symlink, replacement race, permission, directory-at-path, stat/read, invalid JSON/root, or invalid driver fails with layer + path before spawn. Platforms lacking race-resistant final-component no-follow fail closed rather than silently weaken config identity. Value precedence is non-empty env override, explicit caller invocation cwd project config (else pi session cwd), global config, default `claude-print`. Resolve once before replacing capture cwd with `os.tmpdir()`. Store driver on each frame/capture request; nested calls inherit active owner. In-flight tool delivery never re-resolves. Peek follows active main frame; without one it resolves current project config.
 
 **Alternatives considered:**
 - **Environment only:** existing compatibility but user selected config and project-local behavior.
@@ -196,7 +196,7 @@ Before matrix use, make harness itself fail closed: maintain explicit S0–S27 r
 | R4 | Cross-driver resume/session contamination | Low | High | typed cache/sidecar + frame pinning + cold mismatch |
 | R5 | Abort leaves descendants | Medium | High | process-group SIGINT/SIGKILL + orphan integration |
 | R6 | Live dual-driver suite cost/flakes | Medium | Medium | deterministic fixtures first, bounded retries only in harness, retained evidence |
-| R7 | Installed Claude below 2.1.208 | High initially | Medium | pre-spawn clear error; interactive default remains usable; update environment before live direct gate |
+| R7 | Installed Claude below 2.1.208 | High initially | Medium | pre-spawn clear error; explicit `claude-p` rollback remains usable; update environment before live direct gate |
 | R8 | Config errors block despite env override | Low | Medium | intentional fail-loud all-present-file validation, clear path/error logs |
 | R9 | Output-capture spec compression loses behavior | Low | High | implementation tests preserve mapping/truncation/event ordering; analyze fidelity sweep |
 | R10 | Existing user worktree changes contaminate loop | Medium | High | apply only in isolated `opsx/add-claude-print-driver` worktree; path-scoped integration commits |
@@ -207,12 +207,12 @@ Before matrix use, make harness itself fail closed: maintain explicit S0–S27 r
 
 1. Promote qualifying ADR candidates during full-rigor archive; keep intent immutable.
 2. Create isolated apply worktree from current integration base and record locator/diff base.
-3. Land driver-neutral types/config loader and tests without changing default behavior.
-4. Add direct parser/process adapter behind `driver: "claude-print"`; default remains `claude-p`.
+3. Land driver-neutral types/config loader and tests while retaining the original default during bring-up.
+4. Add direct parser/process adapter behind `driver: "claude-print"`; keep `claude-p` as the initial default until validation passes.
 5. Add typed sidecar field; read legacy missing field as `claude-p`; malformed/mismatch cold-starts.
 6. Wire capture validation IPC, verbatim static system prompt + user control suffix, diagnostics, peek capability, idle env, and explicit interactive denylist additions `ReportFindings`/`SendMessage`. Update claude-p-driver Purpose, `openspec/domain.md`, and README from sole-interactive framing to two-driver framing while keeping claude-p adapter/fork non-print guarantees scoped.
 7. Add required manifest commands, run deterministic validation, then real integrations on Claude >=2.1.208, then dual-driver TUI scenarios. Direct dangling-resume, capture fidelity/success, exact native roster, or orphan failure is a hard stop—not a waiver or reduced-parity path.
-8. Rollout is additive. Operational rollback sets/removes config to `claude-p`. If shared refactor regresses interactive mode, revert change commits/reinstall prior package rather than relying on selection. New reader treats missing field as `claude-p`. Before package downgrade, first stop pi and all bridge/direct children so no writer remains; then run new idempotent maintenance command `npm run resume:quarantine-direct` under an active-store lock to atomically move every `driver:"claude-print"` or invalid sidecar into timestamped bridge-owned backup outside active resume directory, fsync directory, and verify zero active direct/invalid sidecars. Only then reinstall/revert package. Old reader may ignore additive fields only after direct hints are quarantined; first downgraded turn must prove cold. Preserve diagnostics and quarantine backup until rollback verification passes.
+8. After dual-driver validation passes, promote `claude-print` to the implicit default. Operational rollback explicitly sets config or `CLAUDE_BRIDGE_DRIVER=claude-p`; removing that setting returns to `claude-print`. If shared refactor regresses interactive mode, revert change commits/reinstall prior package rather than relying on selection. New reader treats missing field as `claude-p`. Before package downgrade, first stop pi and all bridge/direct children so no writer remains; then run new idempotent maintenance command `npm run resume:quarantine-direct` under an active-store lock to atomically move every `driver:"claude-print"` or invalid sidecar into timestamped bridge-owned backup outside active resume directory, fsync directory, and verify zero active direct/invalid sidecars. Only then reinstall/revert package. Old reader may ignore additive fields only after direct hints are quarantined; first downgraded turn must prove cold. Preserve diagnostics and quarantine backup until rollback verification passes.
 
 ## Open Questions
 

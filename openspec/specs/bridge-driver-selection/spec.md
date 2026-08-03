@@ -8,7 +8,7 @@ Selection, configuration precedence, lifecycle pinning, and failure isolation fo
 
 ### Requirement: Driver Selection Uses Layered Bridge Configuration
 
-THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-print` using key-wise precedence `CLAUDE_BRIDGE_DRIVER` compatibility override, project `<project>/.pi/claude-bridge.json`, global `~/.pi/agent/claude-bridge.json`, then default `claude-p`; empty environment value is absent, an absent `driver` key falls through, and every present project/global file is parsed so malformed JSON, non-string driver, or unsupported driver fails explicitly even when a higher layer supplies a valid value.
+THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-print` using key-wise precedence `CLAUDE_BRIDGE_DRIVER` compatibility override, project `<project>/.pi/claude-bridge.json`, global `~/.pi/agent/claude-bridge.json`, then default `claude-print`; empty environment value is absent, an absent `driver` key falls through, and every present project/global file is parsed so malformed JSON, non-string driver, or unsupported driver fails explicitly even when a higher layer supplies a valid value.
 
 #### Scenario: Environment override wins
 - **WHEN** `CLAUDE_BRIDGE_DRIVER=claude-print` and project/global config select `claude-p`
@@ -22,9 +22,13 @@ THE bridge SHALL select exactly one inference driver from `claude-p` or `claude-
 - **WHEN** project config exists without a `driver` key and global config selects `claude-print`
 - **THEN** fresh bridge invocations use the global `claude-print` value
 
-#### Scenario: Existing default remains interactive
+#### Scenario: Default is direct print mode
 - **WHEN** no driver value exists in environment, project config, or global config
-- **THEN** fresh bridge invocations use `claude-p`
+- **THEN** fresh bridge invocations use `claude-print`
+
+#### Scenario: Environment selects interactive rollback
+- **WHEN** `CLAUDE_BRIDGE_DRIVER=claude-p`
+- **THEN** fresh bridge invocations use `claude-p` without automatic fallback to `claude-print`
 
 #### Scenario: Malformed or invalid configuration fails loud
 - **IF** any present project/global config has a non-object JSON root, malformed JSON, non-string/unsupported driver, or any read/stat error other than file-not-found, or the non-empty environment override is unsupported

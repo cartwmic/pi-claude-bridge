@@ -33,6 +33,8 @@ const LOG_DIR = mkdtempSync(join(tmpdir(), "bridge-img-"));
 const LOG_PATH = join(LOG_DIR, "bridge.log");
 process.env.CLAUDE_BRIDGE_DEBUG_PATH = LOG_PATH;
 process.env.CLAUDE_BRIDGE_DEBUG = "1";
+// This deterministic suite mocks the explicit interactive rollback seams.
+process.env.CLAUDE_BRIDGE_DRIVER = "claude-p";
 
 const {
 	streamClaudeAgentSdk,

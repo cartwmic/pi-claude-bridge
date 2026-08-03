@@ -2,7 +2,7 @@
 
 ## 1. Driver-neutral foundations
 
-- [x] 1.1 Add tested layered driver configuration loader and runtime preflight for `claude-p | claude-print`, including all-present-file fail-loud parsing, race-resistant regular-file reads, project/global/env precedence, default `claude-p`, and direct-only Claude >=2.1.208 pre-spawn check. ACs: `bridge-driver-selection.driver-selection-uses-layered-bridge-configuration`, `bridge-driver-selection.direct-driver-enforces-independent-version-floor`.
+- [x] 1.1 Add tested layered driver configuration loader and runtime preflight for `claude-p | claude-print`, including all-present-file fail-loud parsing, race-resistant regular-file reads, project/global/env precedence, initial bring-up default `claude-p` (later promoted to `claude-print` by task 5.1), and direct-only Claude >=2.1.208 pre-spawn check. ACs: `bridge-driver-selection.driver-selection-uses-layered-bridge-configuration`, `bridge-driver-selection.direct-driver-enforces-independent-version-floor`.
   - intent: feature
   - files_allowed:
       - README.md
@@ -340,7 +340,7 @@
 
 ## 5. Documentation and required gate wiring
 
-- [x] 5.1 Update README, `openspec/domain.md`, current capability context, and operator docs for two first-class drivers, config precedence/schema, direct version floor, peek exception, diagnostics/env knobs, rollback quarantine, and no-fallback policy while keeping `claude-p` default.
+- [x] 5.1 Update README, `openspec/domain.md`, current capability context, and operator docs for two first-class drivers, config precedence/schema, direct version floor, peek exception, diagnostics/env knobs, rollback quarantine, and no-fallback policy; after dual-driver validation, promote `claude-print` to the default while retaining explicit `claude-p` rollback.
   - intent: feature
   - files_allowed:
       - README.md

@@ -31,7 +31,7 @@
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, afterEach } from "node:test";
+import { describe, it, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Type } from "@sinclair/typebox";
 
@@ -147,6 +147,12 @@ let restoreSpawn = null;
 let restorePrintSpawn = null;
 let restorePrintPreflight = null;
 let restoreDriverPin = null;
+
+beforeEach(() => {
+	// Most cases exercise the explicit interactive rollback path. Direct cases
+	// override and pin claude-print themselves.
+	process.env.CLAUDE_BRIDGE_DRIVER = "claude-p";
+});
 
 afterEach(() => {
 	restoreApi?.(); restoreApi = null;

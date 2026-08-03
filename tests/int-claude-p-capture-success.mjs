@@ -30,7 +30,7 @@ const {
 } = await import("../index.js");
 import { submitDigestTool, DigestArgs } from "./fixtures/submit-digest-schema.js";
 
-const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-print";
 assert.match(DRIVER, /^(claude-p|claude-print)$/);
 const ENABLED = process.env.RUN_REAL_CLAUDE_DRIVER === "1" || process.env.RUN_REAL_CLAUDE_P === "1";
 const TIMEOUT = 120_000;

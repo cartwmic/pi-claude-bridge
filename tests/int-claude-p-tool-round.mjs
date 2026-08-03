@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// T1.11 — FIRST end-to-end held-open tool round-trip through pi + claude-p.
-// Drives real pi (RPC mode, CLAUDE_BRIDGE_DRIVER=claude-p,
-// model claude-bridge/claude-haiku-4-5) with a test extension that registers a
+// Authenticated held-open tool round-trip through pi and the selected driver.
+// Set CLAUDE_BRIDGE_DRIVER=claude-p|claude-print; defaults to claude-p. Uses a
+// test extension that registers a
 // bridged pi tool (SlowTool, returns a known string). Asserts the FULL round-trip:
 //
 //   model emits tool_use (mcp__custom-tools__SlowTool)
@@ -17,7 +17,9 @@
 // EXACTLY ONE real tool execution (the observational stdout tool-use is
 // display-only and must NOT cause a second execution).
 //
-// Concurrency 1. Does NOT override CLAUDE_CONFIG_DIR/HOME. Retries flaky turns.
+// Concurrency 1. Does NOT override CLAUDE_CONFIG_DIR/HOME. A malformed textual
+// imitation of a tool call is retried only after a full harness restart so it
+// cannot pollute a warm session.
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -26,6 +28,9 @@ import { fileURLToPath } from "node:url";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 120_000;
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+const MODEL = process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6";
+assert.match(DRIVER, /^(claude-p|claude-print)$/);
 
 // See int-claude-p-main-turn.mjs: re-add this repo's node_modules/.bin so the
 // `claude-p` driver binary resolves on the pi subprocess PATH.
@@ -35,9 +40,9 @@ const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_mo
 const PATH_WITH_CLAUDE_P = `${BIN}:${cleanPath}`;
 
 const harness = createRpcHarness({
-	name: "claude-p-tool-round",
-	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
-	env: { CLAUDE_BRIDGE_DRIVER: "claude-p", PATH: PATH_WITH_CLAUDE_P },
+	name: `${DRIVER}-tool-round`,
+	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", `claude-bridge/${MODEL}`],
+	env: { CLAUDE_BRIDGE_DRIVER: DRIVER, PATH: PATH_WITH_CLAUDE_P },
 	defaultTimeout: TEST_TIMEOUT,
 });
 
@@ -60,7 +65,7 @@ async function runToolTurn(prompt) {
 	return { text, toolExecutions };
 }
 
-describe("claude-p held-open tool round-trip (T1.11)", () => {
+describe(`${DRIVER} held-open tool round-trip`, () => {
 	const { RPC_LOG, DEBUG_LOG } = harness;
 
 	before(async () => {
@@ -74,32 +79,33 @@ describe("claude-p held-open tool round-trip (T1.11)", () => {
 		console.log(`  Debug log: ${DEBUG_LOG}`);
 	});
 
-	it("model→shim-park→pi-exec→deliver→resolve→continue, exactly one execution", { timeout: TEST_TIMEOUT }, async () => {
+	it("model→shim-park→pi-exec→deliver→resolve→continue, exactly one execution", { timeout: TEST_TIMEOUT * 3 }, async () => {
 		// SlowTool returns "SlowTool completed after 1000ms". Ask the model to call
 		// it and then echo the result verbatim — the final text must contain that
 		// string, which can ONLY appear if the tool result threaded back through
 		// the held-open park/resolve cycle.
 		const prompt =
-			"Call SlowTool with seconds=1. Then repeat back exactly what it returned, nothing else.";
+			"Call SlowTool exactly once with seconds=1. Do not call any tool more than once. " +
+			"Then repeat back exactly that single result, nothing else.";
 		let result = null;
-		let lastErr = null;
+		let lastText = "";
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			try {
-				const r = await runToolTurn(prompt);
-				if (r.text && /slowtool completed/i.test(r.text)) {
-					result = r;
+				const candidate = await runToolTurn(prompt);
+				lastText = candidate.text;
+				if (/slowtool completed/i.test(candidate.text)) {
+					result = candidate;
 					break;
 				}
-				lastErr = new Error(`no tool result in text (attempt ${attempt}): ${JSON.stringify(r.text?.slice(0, 200))}`);
 			} catch (err) {
-				lastErr = err;
+				lastText = String(err?.message ?? err);
 			}
-			if (harness.pi()?.exitCode !== null) {
-				harness.start();
-				await new Promise((r) => setTimeout(r, 2000));
-			}
+			if (attempt < 3) await harness.restart();
 		}
-		assert.ok(result, `tool round-trip did not complete after 3 attempts: ${lastErr?.message}`);
+		assert.ok(
+			result,
+			`tool round-trip did not return tool output after 3 clean attempts: ${JSON.stringify(lastText?.slice(0, 200))}`,
+		);
 
 		// Final text contains the tool's returned string — proves the full
 		// park → pi-exec → deliver → resolve → continue cycle.
@@ -118,6 +124,7 @@ describe("claude-p held-open tool round-trip (T1.11)", () => {
 			`expected exactly 1 tool execution on the successful turn, got ${result.toolExecutions}`,
 		);
 
+		console.log(`  driver=${DRIVER}`);
 		console.log(`  text=${JSON.stringify(result.text.trim().slice(0, 120))}`);
 		console.log(`  toolExecutions=${result.toolExecutions}`);
 	});

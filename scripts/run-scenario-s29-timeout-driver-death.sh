@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Scenario S29 — a disruption MID-HELD-TOOL surfaces an error, never a hang, and
-# pi recovers (Layer 1 of the hung-turn fix), under the caller-driven-kill model.
+# pi recovers (Layer 1 of hung-turn fix), under caller-driven-kill model.
 #
-# DESIGN (current): claude-p has NO --timeout and the bridge has NO watchdog, so
-# the only thing that ends a wedged/held turn is a CALLER-DRIVEN abort. The
-# Layer-1 protection must still hold: when the driver goes away mid-held-tool
-# (here: the user aborts with Escape → the bridge SIGINT→grace→SIGKILLs the
-# claude-p process GROUP), the late tool-result pi delivers afterward must CLOSE
+# DESIGN (current): subprocess drivers have no bridge liveness watchdog, so
+# the only thing that ends a wedged/held turn is a CALLER-DRIVEN abort. Layer-1
+# protection must still hold: when selected driver goes away mid-held-tool
+# (here: user aborts with Escape → bridge signals selected process group), the
+# late tool-result pi delivers afterward must CLOSE
 # pi's stream with a terminal error/abort instead of wiring into a corpse and
 # hanging on a spinner. Then pi must RECOVER on the next turn.
 #
@@ -24,32 +24,36 @@ export SCENARIO_MODEL="${SCENARIO_MODEL:-claude-bridge/claude-opus-4-7}"
 source "$(dirname "$0")/scenario-lib.sh"
 
 SCN_FAILED=0
-SENTINEL="DRIVERDEATH-LEAK-Q8"
 scn_setup "s29-timeout-driver-death"
 
 trap 'scn_pi_stop' EXIT
-scn_pi_start
+# Dedicated SlowTool avoids model-dependent shell-tool markup. Same fixture and
+# prompt shape already prove structured held-round invocation in RPC coverage.
+scn_pi_start "-e $REPO_DIR/tests/fixtures/slow-tool-extension.ts"
 
-# ---- Phase 1: park a long bash tool, then ABORT mid-held-tool ----------------
+# ---- Phase 1: park a long SlowTool call, then ABORT mid-held-tool ------------
 # Send WITHOUT waiting for "caching session=" — this turn is aborted, so that
 # completion signal never appears. We poll for the Layer 1 markers instead.
-"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "As your very first action, immediately invoke the bash tool to run exactly: sleep 25 && echo $SENTINEL. Do not write any text before calling the tool."
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- \
+	"Call SlowTool exactly once with seconds=25. Do not call any tool more than once. Then repeat back exactly that single result, nothing else."
 "${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # Confirm the tool actually parked (the held round opened) before we abort.
-if scn_wait_for_log "onRouterPark: routed tools/call|mcp handler: bash" 30; then
-	scn_pass "bash tool parked — held round opened"
+# claude-p may need bounded PromptNotAccepted retries before accepting the first
+# prompt, especially on a cold authenticated Opus startup.
+if scn_wait_for_log 'onRouterPark: routed tools/call|mcp handler: SlowTool' 90; then
+	scn_pass "SlowTool parked — held round opened"
 else
-	scn_fail "bash never parked (model narrated, or boot too slow) — cannot test the mid-held-tool disruption"
+	scn_fail "SlowTool never parked (model narrated, or boot too slow) — cannot test the mid-held-tool disruption"
 fi
 
-# Abort the turn WHILE the tool is still held (sleep 25 is well underway).
+# Abort turn WHILE SlowTool's 25-second execution is underway.
 sleep 3
 "${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 
-# The abort must SIGKILL the claude-p process GROUP (caller-driven kill).
-if scn_wait_for_log "SIGINT to the process group|SIGKILL|aborting claude-p|abort" 20; then
-	scn_pass "abort propagated: claude-p group signalled (caller-driven kill)"
+# Abort must signal selected driver process group (caller-driven kill).
+if scn_wait_for_log "SIGINT to the process group|SIGKILL|aborting claude-p|aborting claude-print|abort" 20; then
+	scn_pass "abort propagated: selected driver group signalled (caller-driven kill)"
 else
 	scn_fail "no abort/group-kill logged after Escape — abort path not wired"
 fi
@@ -63,7 +67,7 @@ else
 	scn_fail "LAYER 1 REGRESSION: no errored/aborted-frame close — pi likely hung on the late tool result"
 fi
 
-# Negative: the sleep must NOT be reported as a successful completion.
+# Negative: SlowTool must NOT be reported as a successful completion.
 sleep 3
 "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG" 2>/dev/null || true
 if grep -qiE "error|interrupted|aborted|stopped|failed|did not (complete|finish)" "$PANE_LOG"; then

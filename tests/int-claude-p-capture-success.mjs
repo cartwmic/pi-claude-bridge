@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// T2.3 — capture SUCCESS through the REAL claude-p driver.
+// Authenticated capture success through selected real inference driver.
 //
-// Drives streamClaudeAgentSdk (Case 0 → runClaudePCapture) with the claude-p
-// driver forced on and a single unregistered capture tool (submit_digest). The
-// real claude-p spawns the real `claude`, which is steered (sole MCP tool +
+// Drives streamClaudeAgentSdk capture with one unregistered capture tool
+// (submit_digest). Selected driver spawns real `claude`, which is steered
+// (sole MCP tool +
 // disallow set) to call submit_digest exactly once. The shim validates + stashes
 // the args; the bridge synthesizes the pi toolCall block.
 //
@@ -30,9 +30,14 @@ const {
 } = await import("../index.js");
 import { submitDigestTool, DigestArgs } from "./fixtures/submit-digest-schema.js";
 
-const ENABLED = process.env.RUN_REAL_CLAUDE_P === "1";
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+assert.match(DRIVER, /^(claude-p|claude-print)$/);
+const ENABLED = process.env.RUN_REAL_CLAUDE_DRIVER === "1" || process.env.RUN_REAL_CLAUDE_P === "1";
 const TIMEOUT = 120_000;
-const MODEL = { id: "claude-haiku-4-5", cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } };
+const MODEL = {
+	id: process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6",
+	cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+};
 const ts = () => Date.now();
 
 async function runCapture() {
@@ -54,7 +59,7 @@ async function runCapture() {
 	return await stream.result();
 }
 
-describe("claude-p capture success (T2.3)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
+describe(`${DRIVER} capture success`, { skip: !ENABLED ? "set RUN_REAL_CLAUDE_DRIVER=1 to run" : false }, () => {
 	let restoreApi = null;
 
 	afterEach(() => { restoreApi?.(); restoreApi = null; __resetCachedSessionForTests(); });
@@ -90,7 +95,7 @@ describe("claude-p capture success (T2.3)", { skip: !ENABLED ? "set RUN_REAL_CLA
 		assert.ok(Number.isFinite(result.usage.cost.total) && result.usage.cost.total >= 0, "cost populated");
 
 		if (result.content[0]) {
-			console.log(`  capture OK: headline="${args.headline}" bodyLen=${args.body?.length} in=${result.usage.input} out=${result.usage.output}`);
+			console.log(`  driver=${DRIVER} capture OK: headline="${args.headline}" bodyLen=${args.body?.length} in=${result.usage.input} out=${result.usage.output}`);
 		}
 	});
 });

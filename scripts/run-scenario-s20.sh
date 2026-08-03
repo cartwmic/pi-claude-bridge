@@ -83,7 +83,7 @@ fi
 # FM1 — Case C must produce an explicit error/aborted push to pi's stream.
 # The fix instruments this with the canonical message
 # `pushAbortedError: pi was awaiting tool result, surfacing aborted to pi stream`.
-if grep -qE "pushAbortedError(\[claude-p\])?: pi was awaiting tool result" "$BRIDGE_LOG"; then
+if grep -qE "pushAbortedError(\[[^]]+\])?: pi was awaiting tool result" "$BRIDGE_LOG"; then
 	scn_pass "FM1: aborted error pushed to pi stream during tool-execution window (Case C)"
 else
 	scn_fail "FM1: silent abort — bridge never pushed error/aborted to pi while pi was awaiting tool result"
@@ -153,7 +153,7 @@ fi
 # regex still fails the test on any false success/error-completion claim.
 scn_assert_response \
 	"Did the sleep command actually complete and print anything" \
-	"(interrupted|aborted|cancel|stopped|did not (complete|finish|run|execute)|never (printed|completed|finished|ran|run|executed|invoked|got to run)|not executed|command never|didn't (run|execute|complete|finish)|you (interrupted|stopped|cancel))" \
+	"(interrupted|aborted|cancel|stopped|did not (complete|finish|run|execute)|never (printed|completed|finished|ran|run|executed|invoked|got to run)|not (run|executed|invoked|completed|finished)|command never|didn't (run|execute|complete|finish)|you (interrupted|stopped|cancel))" \
 	"(yes.*(completed|printed)|the command (completed|printed|succeeded)|tool (failed|errored|returned an error)|exit code [0-9]+)" \
 	"coherence: model reports the command did not complete (interruption or non-execution), not success/tool-failure"
 

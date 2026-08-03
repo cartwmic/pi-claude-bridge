@@ -34,9 +34,11 @@ import { mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
+import { DRIVER_DIAGNOSTIC_EVENTS, driverDiagnosticFileName } from "./diagnostics.js";
 import {
 	ClaudePStreamParser,
 	type DriverStreamEvent,
+	type DriverToolUseBatch,
 	type ResumeDiag,
 	type StreamLogger,
 } from "./stream.js";
@@ -82,6 +84,8 @@ export const CLAUDE_P_DISALLOWED_TOOLS: readonly string[] = [
 	"Skill",
 	"ToolSearch",
 	"AskUserQuestion",
+	"ReportFindings",
+	"SendMessage",
 	"EnterPlanMode",
 	"ExitPlanMode",
 	"EnterWorktree",
@@ -530,10 +534,14 @@ export interface ClaudePDoneResult {
 export interface SpawnClaudePOptions {
 	/** Sink for parsed driver-internal stream events (forwarded from the parser). */
 	onEvent: (event: DriverStreamEvent) => void;
+	/** Completed bridged observation batch for D32 correlation. */
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
 	/** Logger. Needs warn (parser) + info/error (lifecycle); all optional. */
 	logger?: ClaudePLogger;
 	/** Override the binary path (tests point this at a node stand-in). */
 	binPath?: string;
+	/** Child working directory. Capture passes isolated os.tmpdir(); main inherits. */
+	cwd?: string;
 	/** Optional external abort signal; aborting it is equivalent to handle.abort(). */
 	signal?: AbortSignal;
 	/** Override the abort grace window (ms) — tests use a tight value. */
@@ -706,6 +714,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			opts.onEvent(event);
 		},
 		logger,
+		onToolUseBatch: opts.onToolUseBatch,
 		suppressResumeReplay: opts.suppressResumeReplay,
 		livePromptText: opts.livePromptText,
 		onResumeDiag: (diag: ResumeDiag) => {
@@ -735,6 +744,9 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 	const child: ChildProcess = spawn(command, spawnArgs, {
 		detached: true,
 		stdio: ["ignore", "pipe", "pipe"],
+		cwd: opts.cwd,
+		// Held MCP rounds may legitimately wait indefinitely for caller work.
+		env: { ...process.env, CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "0" },
 	});
 
 	const pgid = child.pid; // pgid === pid because detached.
@@ -780,10 +792,10 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 						mkdirSync(opts.diagnosticsDir, { recursive: true });
 						stderrFile = joinPath(
 							opts.diagnosticsDir,
-							`claude-p-stderr-${sessionId.slice(0, 8)}-${child.pid ?? "x"}-${Date.now()}.log`,
+							driverDiagnosticFileName("claude-p", "stderr", sessionId, child.pid),
 						);
 						logger.info?.(
-							{ event: "claudeP.lifecycle.stderrFile", file: stderrFile },
+							{ event: DRIVER_DIAGNOSTIC_EVENTS.stderrFile, driver: "claude-p", file: stderrFile },
 							`claude-p stderr captured to ${stderrFile}`,
 						);
 					}
@@ -791,7 +803,7 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 				} catch (err) {
 					stderrFileFailed = true;
 					logger.warn?.(
-						{ event: "claudeP.lifecycle.stderrFileFailed", err: errMessage(err) },
+						{ event: DRIVER_DIAGNOSTIC_EVENTS.stderrFileFailed, driver: "claude-p", err: errMessage(err) },
 						"claude-p stderr file write failed (ignored; turn continues)",
 					);
 				}
@@ -817,7 +829,8 @@ export function spawnClaudeP(cfg: ClaudePSpawnConfig, opts: SpawnClaudePOptions)
 			const now = Date.now();
 			logger.warn?.(
 				{
-					event: "claudeP.lifecycle.stateDump",
+					event: DRIVER_DIAGNOSTIC_EVENTS.stateDump,
+					driver: "claude-p",
 					sessionId: sessionId.slice(0, 8),
 					pid: child.pid,
 					aborted,
@@ -960,10 +973,15 @@ export interface ResiliencePolicy {
 	/**
 	 * Mint a fresh session id for a COLD retry. When the config's session is
 	 * `fresh`, each retry gets a brand-new id from here (a stale partial session
-	 * must not be reused). When the config's session is `resume`, the id is kept
-	 * STABLE across retries (the warm transcript is the recovery anchor).
+	 * must not be reused). A `resume` id stays stable unless coldRetryConfig
+	 * explicitly repacks failed warm input as a fresh canonical replay.
 	 */
 	freshSessionId?: () => string;
+	/**
+	 * Repack a failed warm attempt as canonical cold input. When absent, warm
+	 * retries retain legacy stable-`--resume` behavior.
+	 */
+	coldRetryConfig?: (sessionId: string) => ClaudePSpawnConfig;
 	/**
 	 * Re-mint the peek mirror path for a retry spawn (per-spawn file naming —
 	 * claude-peek-overlay.peek-follows-latest-main-turn-spawn-only). Called with
@@ -1044,7 +1062,14 @@ export function spawnClaudePWithResilience(
 
 	const launch = (spawnCfg: ClaudePSpawnConfig, attempt: number) => {
 		lastSessionId = spawnCfg.session.sessionId;
-		const handle = spawnClaudeP(spawnCfg, innerOpts);
+		// A failed warm resume may be repacked into one canonical cold prompt.
+		// That fresh child emits no resumed transcript, so replay suppression
+		// would swallow its live answer.
+		const repackedCold = cfg.session.kind === "resume" && spawnCfg.session.kind === "fresh";
+		const attemptOpts = repackedCold
+			? { ...innerOpts, suppressResumeReplay: false, livePromptText: undefined }
+			: innerOpts;
+		const handle = spawnClaudeP(spawnCfg, attemptOpts);
 		current = handle;
 		// If an abort arrived between scheduling and launch, propagate immediately.
 		if (aborted) handle.abort();
@@ -1067,7 +1092,7 @@ export function spawnClaudePWithResilience(
 				{ event: "claudeP.resilience.retry", attempt: nextAttempt, maxRetries, prevStopReason: res.stopReason },
 				`claude-p spawn failed (error); retrying (attempt ${nextAttempt}/${maxRetries})`,
 			);
-			// Fresh session id on cold retry; stable --resume on warm.
+			// Fresh id on cold retry; warm stays stable unless caller repacks cold.
 			const nextCfg = buildRetryConfig(spawnCfg, policy);
 			backoffTimer = setTimeout(() => {
 				backoffTimer = undefined;
@@ -1093,15 +1118,20 @@ export function spawnClaudePWithResilience(
 	};
 }
 
-/** Build the next attempt's config: fresh id on cold, stable id on warm. Exported for tests. */
+/** Build next attempt: rotate cold ids; optionally repack failed warm resume as cold. */
 export function buildRetryConfig(cfg: ClaudePSpawnConfig, policy: ResiliencePolicy): ClaudePSpawnConfig {
 	if (cfg.session.kind === "fresh") {
 		const sessionId = policy.freshSessionId ? policy.freshSessionId() : cfg.session.sessionId;
 		const mirrorFile = policy.remintMirrorFile ? policy.remintMirrorFile(sessionId) : cfg.mirrorFile;
 		return { ...cfg, session: { kind: "fresh", sessionId }, mirrorFile };
 	}
-	// Warm resume: keep the same --resume id across retries; re-mint the mirror
-	// per attempt all the same (each spawn is a new PTY session on disk).
+	if (policy.coldRetryConfig) {
+		const sessionId = policy.freshSessionId ? policy.freshSessionId() : cfg.session.sessionId;
+		const cold = policy.coldRetryConfig(sessionId);
+		const mirrorFile = policy.remintMirrorFile ? policy.remintMirrorFile(sessionId) : cold.mirrorFile;
+		return { ...cold, mirrorFile };
+	}
+	// Legacy caller behavior: stable --resume across retries.
 	if (policy.remintMirrorFile) {
 		return { ...cfg, mirrorFile: policy.remintMirrorFile(cfg.session.sessionId) };
 	}

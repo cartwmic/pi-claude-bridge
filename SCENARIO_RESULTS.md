@@ -1,5 +1,59 @@
 # Scenario validation results
 
+## Authoritative dual-driver validation — 2026-08-02
+
+Branch: `opsx/add-claude-print-driver` at base `adba413` plus current
+uncommitted implementation.
+
+Environment:
+
+- `claude-p@0.1.0` with Claude Code `2.1.159` from
+  `/tmp/claude-2.1.159-bin/claude`
+- direct `claude-print` executable `/Users/cartwmic/.local/bin/claude`
+  (Claude Code `2.1.220`)
+- authenticated model `claude-opus-4-6` where integration override applied
+- serial scenario execution (`SCENARIO_PARALLEL=1`)
+
+Required 32-entry inventory ran once under each selected driver:
+
+```text
+claude-p:     32 PASS, 0 SKIP, 0 FAIL, 0 TIMEOUT
+claude-print: 32 PASS, 0 SKIP, 0 FAIL, 0 TIMEOUT
+TOTAL:        64 PASS, 0 SKIP, 0 FAIL, 0 TIMEOUT
+```
+
+Command:
+
+```sh
+PATH=/tmp/claude-2.1.159-bin:$PATH \
+CLAUDE_BIN=/Users/cartwmic/.local/bin/claude \
+SCENARIO_DRIVERS='claude-p claude-print' \
+SCENARIO_PARALLEL=1 SCENARIO_TIMEOUT=300 \
+  scripts/run-all-scenarios.sh
+```
+
+Run completed at approximately `2026-08-02T19:29:30Z`; driver-qualified
+pane, bridge, run, stderr, and debug evidence remains under
+`.test-output/scenarios/`. Required environment skips were zero. A later
+post-review focused S10 run passed under both drivers after strengthening its
+coherence assertion to inspect only the post-restart model response.
+
+Authenticated dual-driver RPC/lifecycle integration also passed: main text and
+warm resume, multiple direct text deltas, sequential held tool, caller
+abort/exact-descendant cleanup plus dangling-session warm recovery, capture
+success and absent-call failure, S28 unlimited held-round idle, S29 mid-held
+abort and recovery, plus 28 selected live scenario bindings including S2 and
+S8. Deterministic final results: typecheck PASS, unit `497/497` PASS, full
+`npm test` PASS, and build PASS. Strict OpenSpec CLI validation was
+intentionally not invoked because this
+change was completed under an explicit no-OpenSpec-tooling instruction; the
+required manifest command remains wired in `openspec/opsx-gates.yaml`.
+
+Historical scenario records below predate this dual-driver change and are
+retained as provenance; they are not current release status.
+
+---
+
 Branch: `refactor/sdk-native-inference-only`. Run via
 `bash scripts/run-all-scenarios.sh`. Each scenario has a deterministic
 tmux wrapper in `scripts/run-scenario-s<N>.sh` plus shared helpers in

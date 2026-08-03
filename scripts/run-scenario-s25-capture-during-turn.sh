@@ -72,14 +72,13 @@ sleep 0.5
 "${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 # ─── Step 3: Wait for the capture call to complete ────────────────────────────
-# Check the bridge log for "runCaptureQuery: done" — more reliable than waiting
-# for the transient pi.ui.notify pane message (notify may vanish before the
-# next capture-pane poll).
+# Check bridge completion diagnostic — more reliable than waiting for transient
+# pi.ui.notify pane message (notify may vanish before next capture-pane poll).
 echo "  Waiting for capture call to complete..."
 deadline=$((SECONDS + 60))
 capture_done=0
 while (( SECONDS < deadline )); do
-	if grep -qE "runCaptureQuery: done|runClaudePCapture: success" "$BRIDGE_LOG" 2>/dev/null; then
+	if grep -qE '"msg":"capture: completed"' "$BRIDGE_LOG" 2>/dev/null; then
 		capture_done=1
 		break
 	fi
@@ -88,9 +87,9 @@ done
 
 # A2: Capture completed.
 if (( capture_done )); then
-	scn_pass "A2: capture call completed (runCaptureQuery: done in bridge log)"
+	scn_pass "A2: capture call completed (capture: completed in bridge log)"
 else
-	scn_fail "A2: capture call did not complete within timeout (runCaptureQuery: done never appeared)"
+	scn_fail "A2: capture call did not complete within timeout (capture: completed never appeared)"
 fi
 
 # A3: No supersession — user turn was NOT disturbed.
@@ -171,7 +170,7 @@ scn_cache_profile
 
 echo ""
 echo "Bridge log — capture-relevant lines:"
-grep -E "mode.*capture|runCaptureQuery|runClaudePCapture|mcp handler: SlowTool|onRouterPark" "$BRIDGE_LOG" 2>/dev/null || echo "  (none found)"
+grep -E "mode.*capture|capture: (spawned|completed)|mcp handler: SlowTool|onRouterPark" "$BRIDGE_LOG" 2>/dev/null || echo "  (none found)"
 
 echo ""
 echo "Session counts:"

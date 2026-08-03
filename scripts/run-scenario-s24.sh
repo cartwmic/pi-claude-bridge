@@ -31,7 +31,7 @@ scn_pi_start
 scn_send "Reply with exactly the single token PRE-NEW-7K2 and nothing else."
 scn_wait_for "PRE-NEW-7K2" 60 || scn_fail "T1: pre-/new turn never produced marker"
 
-pre_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
+pre_queries=$(scn_grep_count "streamSimple(\[(claude-p|claude-print)\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries before /new: $pre_queries"
 
 # Issue /new as a slash command.
@@ -60,9 +60,13 @@ else
 	scn_fail "provider NOT re-registered after /new (count=$reg_count) — guard persisted"
 fi
 
+# Provider registration precedes session_start:new. Sending during that gap
+# sees an empty active-tool set and can be misclassified as a capture call.
+scn_wait_for_log '"event":"session_start:new"' 30 || scn_fail "post-/new session_start never arrived"
+sleep 1
+
 # Pi's bottom status shows `(<provider>) <model>` once /new completes. Verify
 # the bridge — not codex or another fallback — is still the active provider.
-sleep 2
 "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -2000 > "$PANE_LOG"
 if grep -qE "\(claude-bridge\)" "$PANE_LOG"; then
 	scn_pass "post-/new active provider is claude-bridge"
@@ -72,9 +76,9 @@ else
 fi
 
 # T2: confirm inference actually works post-/new (silent-hang regression guard).
-scn_send "What's the capital of Germany? Reply with exactly the single token POST-NEW-9F4 and nothing else."
+scn_send "NEW-PROBE: In one short sentence, what city is the capital of Germany?"
 
-post_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
+post_queries=$(scn_grep_count "streamSimple(\[(claude-p|claude-print)\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries after /new: $post_queries"
 
 if (( post_queries > pre_queries )); then
@@ -85,15 +89,12 @@ fi
 
 echo "==== S24 results ===="
 
-# Coherence: ensure the response token actually appears on the pane after T2.
-# (scn_probe_response is finicky when the same prompt-marker is re-rendered
-# during /new UI transitions; a direct pane scan is more reliable here.)
-"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -2000 > "$PANE_LOG"
-if grep -q "POST-NEW-9F4" "$PANE_LOG"; then
-	scn_pass "coherence: post-/new turn produced response token via bridge"
-else
-	scn_fail "coherence: post-/new turn never produced response token (model didn't answer or routed elsewhere)"
-fi
+# Coherence: response to post-/new probe must contain actual answer.
+scn_assert_response \
+	"NEW-PROBE" \
+	"Berlin" \
+	"(i (don't|cannot|can't|won't)|unable to|error)" \
+	"coherence: post-/new turn produced model response via bridge"
 
 echo "Cache profile:"
 scn_cache_profile

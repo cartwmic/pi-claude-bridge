@@ -67,9 +67,33 @@ export function createRpcHarness(opts) {
 		});
 	}
 
-	function stop() {
-		pi?.kill();
-		return new Promise((r) => rpcLog?.end(r));
+	async function stop() {
+		const child = pi;
+		pi = undefined;
+		if (child?.exitCode === null) {
+			let resolveExit;
+			const exited = new Promise((resolve) => { resolveExit = resolve; });
+			child.once("exit", resolveExit);
+			child.kill();
+			const stopped = await Promise.race([
+				exited.then(() => true),
+				new Promise((resolve) => setTimeout(() => resolve(false), 3000)),
+			]);
+			if (!stopped && child.exitCode === null) {
+				child.kill("SIGKILL");
+				await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+			}
+		}
+		if (rpcLog) await new Promise((resolve) => rpcLog.end(resolve));
+		rpcLog = undefined;
+		buffer = "";
+		listeners = [];
+	}
+
+	async function restart(delayMs = 2000) {
+		await stop();
+		start();
+		await new Promise((resolve) => setTimeout(resolve, delayMs));
 	}
 
 	function addListener(fn) {
@@ -153,6 +177,7 @@ export function createRpcHarness(opts) {
 		pi: () => pi,
 		start,
 		stop,
+		restart,
 		addListener,
 		clearListeners,
 		send,

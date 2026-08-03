@@ -33,6 +33,43 @@ trap 'scn_pi_stop' EXIT
 
 scn_pi_start
 
+# claude-print has no PTY to tail. This is the sole parity exception: command
+# must report explicit unavailability, create no overlay, and leave inference
+# fully usable through the selected direct driver.
+if [[ "$SCENARIO_DRIVER" == "claude-print" ]]; then
+	scn_send_keys -- '/claude-peek'
+	sleep 0.5
+	scn_send_keys Enter
+	if scn_wait_for "claude-print has no interactive PTY tail" 10; then
+		scn_pass "direct peek reports explicit no-tail unavailability"
+	else
+		scn_fail "direct peek did not report explicit no-tail unavailability"
+	fi
+	if scn_capture | grep -q "claude-peek —"; then
+		scn_fail "direct peek unexpectedly opened an interactive overlay"
+	else
+		scn_pass "direct peek created no interactive overlay"
+	fi
+
+	scn_send "Reply with exactly S32-DIRECT-READY and nothing else."
+	scn_assert_response \
+		"Reply with exactly S32-DIRECT-READY" \
+		"S32-DIRECT-READY" \
+		"(unable|cannot|error)" \
+		"coherence: direct turn remained usable after unavailable peek"
+	if scn_wait_for_log "streamSimple\\[claude-print\\]: fresh spawn" 15; then
+		scn_pass "selected claude-print driver owned post-peek turn"
+	else
+		scn_fail "post-peek turn did not use claude-print"
+	fi
+	if scn_wait_for_log "caching session=" 30; then
+		scn_pass "post-peek direct turn completed cleanly"
+	else
+		scn_fail "post-peek direct turn did not complete"
+	fi
+	exit "$SCN_FAILED"
+fi
+
 # ── Open the overlay (idle: no turn yet) ────────────────────────────────────
 scn_send_keys -- '/claude-peek'
 sleep 0.5
@@ -118,6 +155,11 @@ if scn_wait_for_log "caching session=" 30; then
 	scn_pass "bridge log shows completed turn (NDJSON stream unaffected)"
 else
 	scn_fail "no 'caching session=' in bridge log — turn did not complete cleanly"
+fi
+if scn_assert_selected_driver_spawn; then
+	scn_pass "requested claude-p driver owned the mirrored turn"
+else
+	scn_fail "requested claude-p driver did not own the mirrored turn"
 fi
 
 # ── Toggle off ──────────────────────────────────────────────────────────────

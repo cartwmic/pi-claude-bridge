@@ -1,0 +1,407 @@
+<!-- authored: in-session -->
+
+## 1. Driver-neutral foundations
+
+- [x] 1.1 Add tested layered driver configuration loader and runtime preflight for `claude-p | claude-print`, including all-present-file fail-loud parsing, race-resistant regular-file reads, project/global/env precedence, default `claude-p`, and direct-only Claude >=2.1.208 pre-spawn check. ACs: `bridge-driver-selection.driver-selection-uses-layered-bridge-configuration`, `bridge-driver-selection.direct-driver-enforces-independent-version-floor`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 1.2 Introduce `DriverKind` plus driver-neutral adapter/handle/event/lifecycle contracts; adapt existing `claude-p` path without external behavior change and preserve process-group abort, retry, prompt-file, MCP isolation, usage, and mirror capability. ACs: `claude-p-driver.claude-p-spawn-with-model-selection`, `bridge-driver-selection.selected-driver-is-pinned-to-invocation-lifecycle`.
+  - intent: refactor
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 1.3 Type in-memory and persisted resume hints by driver, migrate missing field to `claude-p`, invalidate malformed/mismatched hints, implement attempt-phase persistence safety, and add lock-aware idempotent `resume:quarantine-direct` downgrade command with tests. ACs: `bridge-driver-selection.in-memory-session-hints-are-driver-typed`, `warm-pi-resume.resume-sidecar-persisted-on-successful-turn`, `warm-pi-resume.resume-sidecar-records-driver-identity`, `warm-pi-resume.cross-driver-warm-resume-is-forbidden`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - scripts/**/*.mjs
+      - scripts/**/*.sh
+      - tests/**/*.mjs
+      - tests/**/*.ts
+      - package.json
+      - package-lock.json
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+## 2. Direct print process and protocol
+
+- [x] 2.1 Build fixture-first direct stream-json decoder/state machine with byte-bounded NDJSON, exact record/subtype allowlists, partial text/thinking normalization, no duplicate complete-assistant emission, nested/native observation filtering, final-call context usage, cumulative terminal billing/session metadata, and local-abort precedence. ACs: `claude-print-driver.partial-stream-is-normalized-without-duplication`, `claude-print-driver.direct-protocol-drift-surfaces-explicitly`, `claude-print-driver.direct-usage-and-session-metadata-are-authoritative`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+      - tests/fixtures/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 2.2 Implement `claude-print` process adapter: exact print/stream argv, strict MCP/settings/native isolation, fresh/resume sessions, private prompt artifacts, readiness-gated one-frame NDJSON submission, 30s validated timeout override, stdin lifetime, driver-specific diagnostics, version preflight integration, and all-path resource cleanup. ACs: `claude-print-driver.direct-print-invocation-uses-bidirectional-stream-protocol`, `claude-print-driver.prompt-submission-waits-for-exact-mcp-readiness`, `claude-print-driver.direct-native-tool-surface-is-closed`, `claude-print-driver.direct-driver-avoids-mutable-claude-filesystem-coupling`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+      - tests/fixtures/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 2.3 Extend router/shim IPC with driver-neutral bridged-only D32 observation join, stable pi resolver ids, batch-scoped identical-call pairing, fail-loud count reconciliation, idempotent teardown, exact readiness publication, and bounded capture-validation-failure evidence. ACs: `mcp-stdio-shim.tool-call-correlation-across-the-split-channels-d32`, `mcp-stdio-shim.shim-readiness-proves-exact-tool-availability`, `mcp-stdio-shim.shim-lifecycle-is-bound-to-its-spawn`, `output-capture.surface-absent-capture-tool-call-as-error`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+      - tests/fixtures/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 2.4 Wire shared main-turn orchestration to selected pinned adapter, one process across sequential/parallel held rounds, same-driver cold-repack retries, abort/steer detachment, partial preservation, caller-only termination, per-invocation isolation, text/image conversion parity, and no automatic fallback. ACs: `claude-print-driver.one-direct-process-spans-held-tool-rounds`, `claude-print-driver.direct-abort-preserves-partial-and-reaps-process-group`, `claude-print-driver.direct-failure-and-retry-preserve-side-effect-safety`, `claude-print-driver.direct-driver-has-no-inference-liveness-timeout`, `claude-print-driver.direct-concurrent-invocations-are-isolated`, `claude-print-driver.direct-image-behavior-matches-bridge-contract`, `claude-print-driver.direct-steering-uses-abort-and-fresh-dispatch`, `bridge-driver-selection.driver-failures-never-trigger-cross-driver-fallback`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+      - tests/fixtures/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+## 3. Capture, diagnostics, and peek parity
+
+- [x] 3.1 Make capture use owning pinned driver before tmpdir isolation; preserve classification/strict shape/event contract, restore verbatim static system prompt, move adapter-appropriate forcing/readiness text to user control suffix, warn/drop images, require stash plus successful terminal result, map usage/cost exactly once, and surface validation field paths. ACs: all delta requirements under `output-capture`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+      - tests/fixtures/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 3.2 Add driver-neutral diagnostics identity/tails/state dumps/default-on debug files, set unlimited MCP idle policy on both drivers, add `ReportFindings`/`SendMessage` to interactive denylist, and make `/claude-peek` preserve interactive behavior while explicitly unavailable/no-tail under direct selection. ACs: all delta requirements under `driver-diagnostics`, `claude-peek-overlay`, plus `claude-p-driver.native-tool-emission-is-blocked-via-disallowedtools` and `claude-p-driver.interactive-held-calls-have-no-upstream-idle-cutoff`.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*.mjs
+      - tests/**/*.ts
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+## 4. Deterministic and live validation
+
+- [x] 4.1 Complete deterministic unit/fixture coverage for both stream schemas, config/version edges, prompt temp security/cleanup, router ordering, capture validation, sidecar phase/rollback behavior, retry history safety, diagnostics, native filtering, and selected-driver peek behavior; run typecheck and complete unit bundle green.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*.mjs
+      - package.json
+      - package-lock.json
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 4.2 Add authenticated `test:integration:drivers` command and retained evidence for readiness ordering, exact native roster/non-execution, sequential and parallel held tools, capture success/failure/fidelity, warm/cache/dangling resume, abort/orphan cleanup, mixed concurrency, S28 upstream idle behavior, and S29 held-round process failure; fail rather than skip when Claude/auth/version preconditions are absent.
+  - intent: infra
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - .test-output/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 4.3 Harden scenario harness and add `test:scenarios:drivers`: explicit script-backed required inventory, deterministic S21 assertions, nonzero required skips including S22, requested-driver spawn assertions, forced failure/skip propagation fixtures, S0–S27 matrix, dual-driver S31 large cold start, and driver-specific S32 peek expectation; require conversation coherence rather than exit alone.
+  - intent: infra
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - SCENARIOS.md
+      - package.json
+      - package-lock.json
+      - .test-output/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+## 5. Documentation and required gate wiring
+
+- [x] 5.1 Update README, `openspec/domain.md`, current capability context, and operator docs for two first-class drivers, config precedence/schema, direct version floor, peek exception, diagnostics/env knobs, rollback quarantine, and no-fallback policy while keeping `claude-p` default.
+  - intent: feature
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - README.md
+      - SCENARIOS.md
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true
+
+- [x] 5.2 Extend `openspec/opsx-gates.yaml` with required typecheck, complete unit, strict current-change OpenSpec, authenticated driver integration, and dual-driver scenario commands; prove deterministic tier fails closed before costly live tiers and retain final validation evidence.
+  - intent: infra
+  - files_allowed:
+      - README.md
+      - SCENARIOS.md
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - .test-output/**/*
+      - openspec/changes/add-claude-print-driver/tasks.md
+      - README.md
+      - SCENARIOS.md
+      - openspec/domain.md
+      - openspec/specs/**/*.md
+      - openspec/opsx-gates.yaml
+      - index.ts
+      - src/**/*.ts
+      - tests/**/*
+      - scripts/**/*
+      - package.json
+      - package-lock.json
+      - .test-output/**/*
+  - files_forbidden:
+      - "**/*.bak"
+      - "**/secrets/**"
+  - allow_new_files: true

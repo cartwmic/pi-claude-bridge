@@ -13,7 +13,7 @@ trap 'scn_pi_stop' EXIT
 
 scn_pi_start
 
-ps_before=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || echo 0)
+ps_before=$(pgrep -f "sleep 120" 2>/dev/null | wc -l | tr -d ' \n' || true)
 ps_before=${ps_before:-0}
 
 # Send long-running tool prompt — do NOT wait for completion
@@ -25,8 +25,9 @@ sleep 8
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
 sleep 3
 
-# Coherence probe
-scn_send "Did the sleep command actually finish and print anything? Be specific about what you observed."
+# Coherence probe. Explicitly forbid a retry: otherwise a model may invoke the
+# same 120-second command again instead of reporting the interrupted attempt.
+scn_send "Do not run the command again. Based only on the prior attempt: did the sleep command finish and print anything? Be specific about what you observed."
 
 echo "==== S8 results ===="
 
@@ -54,7 +55,8 @@ if (( ps_after <= ps_before )); then
 	scn_pass "no orphan sleep subprocesses"
 else
 	scn_fail "$((ps_after - ps_before)) orphan sleep subprocess(es)"
-	pkill -9 -f "sleep 120" 2>/dev/null || true
+	# Do not use broad pkill. scn_pi_stop snapshots this scenario pane's exact
+	# descendants and terminates only those PIDs/processes during trap cleanup.
 fi
 
 # No legacy abort surgery
@@ -67,7 +69,7 @@ fi
 # COHERENCE: model must NOT claim the sleep finished or HELLO-S8 was printed.
 # Negative regex is precise — must claim positive completion of HELLO-S8 to match.
 scn_assert_response \
-	"Did the sleep command actually finish" \
+	"Based only on the prior attempt" \
 	"(no|did not|didn't|never (executed|printed|finished|completed|reached)|interrupted|aborted|stopped|cancel|wasn't able to (finish|complete|run))" \
 	"(yes.*finished|yes.*completed successfully|HELLO-S8 was printed|the command printed HELLO-S8|output was HELLO-S8|i saw HELLO-S8|the marker.*HELLO-S8)" \
 	"coherence: model knows sleep was aborted, didn't fabricate HELLO-S8"

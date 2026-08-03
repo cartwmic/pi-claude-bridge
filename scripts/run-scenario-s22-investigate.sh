@@ -6,7 +6,7 @@
 #   - Parent dispatches a subagent that uses a NON-claude-bridge provider
 #     (openai-codex/gpt-5.4-mini), so the subagent's model calls never go
 #     through our bridge.
-#   - Mid-subagent, user types a steer (no Escape — just a new user message).
+#   - Mid-subagent, user presses Escape, then submits a steer message.
 #   - We capture the full bridge timeline and inspect:
 #       * Did case 3 supersede fire? On which frame (top vs deeper)?
 #       * Did parent's onAbort fire (and how long after the steer)?
@@ -31,11 +31,29 @@ for cand in \
 	fi
 done
 if [[ -z "$SUBAGENT_PATH" ]]; then
-	echo "  SKIP: pi-subagents not installed"
-	exit 0
+	echo "  SKIP: pi-subagents not installed (environment prerequisite)"
+	exit 77
 fi
 
 trap 'scn_pi_stop' EXIT
+
+# Isolate the non-bridge child from ambient extensions. Inheriting the
+# parent's CLAUDE_BRIDGE_DRIVER into a separately installed legacy bridge can
+# otherwise fail child startup before Codex runs, invalidating the race.
+SCN_CLEANUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pi-s22-agent.XXXXXX")
+export SCN_CLEANUP_DIR
+cat > "$SCN_CLEANUP_DIR/s22-openai-worker.md" <<'EOF'
+---
+name: s22-openai-worker
+description: Isolated long-running non-bridge scenario worker
+tools: write
+extensions:
+defaultContext: fresh
+inheritProjectContext: false
+acceptance: false
+---
+Complete the assigned writing task and return only the requested marker.
+EOF
 
 # Start pi with both this bridge and pi-subagents loaded.
 # Use opus to mirror the user's session profile (haiku tends to ramble
@@ -43,18 +61,8 @@ trap 'scn_pi_stop' EXIT
 S22_MODEL="${S22_MODEL:-claude-bridge/claude-opus-4-7}"
 "${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-	 pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$S22_MODEL'"
-
-# Poll until pi has finished its startup banner — the input area is ready
-# only after the bottom prompt line appears.
-deadline=$((SECONDS + 30))
-while (( SECONDS < deadline )); do
-	if "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "claude-bridge.*claude-opus|claude-bridge.*claude-haiku"; then
-		break
-	fi
-	sleep 0.5
-done
-sleep 2  # extra breath
+	 PI_SUBAGENT_EXTRA_AGENT_DIRS='$SCN_CLEANUP_DIR' PATH='$PATH' pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$S22_MODEL'"
+scn_wait_ready
 
 START_TS=$(date +%s)
 ts_rel() { local now=$(date +%s); echo "+$((now - START_TS))s"; }
@@ -73,7 +81,7 @@ if [[ -z "$ready_check" ]]; then
 fi
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" BSpace
 
-PROMPT='Call the subagent tool with agent=worker model=openai-codex/gpt-5.4-mini task: write a 2000-word essay on file system history in 10 numbered sections of 200+ words each, save to /tmp/s22-essay.txt, then return only S22-DONE-MARKER-XYZ. Call once, no list action.'
+PROMPT='Call the subagent tool with agent=s22-openai-worker model=openai-codex/gpt-5.4-mini task: write a 2000-word essay on file system history in 10 numbered sections of 200+ words each, save to /tmp/s22-essay.txt, then return only S22-DONE-MARKER-XYZ. Call once, no list action.'
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -l "$PROMPT"
 sleep 1
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
@@ -108,9 +116,9 @@ done
 echo "[$(ts_rel)] tool handler events so far:"
 grep -E "mcp handler:|router: parked tools/call|onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null | tail -10 || echo "  (no handlers)"
 if (( saw_awaiting == 0 )); then
-	echo "[$(ts_rel)] WARN: parent never dispatched a long-running subagent tool. Pane:"
+	echo "[$(ts_rel)] FAIL: parent never dispatched the requested long-running subagent tool. Pane:"
 	scn_capture | tail -30
-	exit 0
+	exit 1
 fi
 echo "[$(ts_rel)] T1: parent has dispatched subagent; bridge handler awaiting pi (subagent now running independently in pi → codex CLI)"
 
@@ -206,12 +214,11 @@ echo "==== End S22 ===="
 # orphan-pathed and discarded. The model on the next turn reads the
 # synthetic text and concludes the subagent failed.
 #
-# After Option H: onAbort should NOT pre-drain pendingResolvers. When
-# pi delivers the real tool_result (Case 1 or via orphan-path lookup
-# across all frames), the resolver gets the real content. The synthetic
-# drain only fires later, when pi sends a fresh user turn (Case 3),
-# unblocking the SDK with honest "user superseded" attribution AFTER
-# we've given pi's already-in-flight delivery a chance to land.
+# After Option H: onAbort should NOT synchronously fabricate resolver content.
+# Pi may then either deliver a real completed result to a still-pending resolver,
+# or deliver its authentic cancellation result after the aborted stream closed.
+# A synthetic drain is allowed only later, when a fresh turn supersedes another
+# still-active frame (Case 3), never as part of the initial onAbort path.
 #
 # Concrete signals in the bridge log:
 SCN_FAILED=0
@@ -243,17 +250,38 @@ else
 	scn_fail "onAbort did NOT defer drain — pendingResolvers were drained synchronously"
 fi
 
-# Architectural: a tool-result delivery line must appear AFTER the onAbort
-# event with `1 resolvers waiting` (or similar non-zero) — proving the
-# resolver was still alive when pi delivered the real subagent result.
-post_abort_delivery=$(awk '
+# Architectural: Pi's post-abort result must remain observable. Depending on
+# Pi/subagent timing, this is either a completed result matched to a live
+# resolver, or Pi's authentic cancellation result delivered to the retained
+# aborted frame. The latter is not a lost result: the aborted stream is closed
+# explicitly rather than reported as success.
+post_abort_waiting=$(awk '
 	/onAbort/ { seen_abort=1 }
 	seen_abort && /tool-result delivery.*[1-9][0-9]* resolvers waiting/ { print; exit }
 ' "$BRIDGE_LOG")
-if [[ -n "$post_abort_delivery" ]]; then
-	scn_pass "post-abort tool-result delivery matched a still-pending resolver (real subagent output reached the SDK)"
+post_abort_cancel=$(awk '
+	/onAbort/ { seen_abort=1 }
+	seen_abort && /tool-result delivery to aborted frame: closed pi stream with aborted-error/ { print; exit }
+' "$BRIDGE_LOG")
+if [[ -n "$post_abort_waiting" ]]; then
+	scn_pass "post-abort completed tool result matched a still-pending resolver"
+elif [[ -n "$post_abort_cancel" ]]; then
+	scn_pass "post-abort authentic cancellation result closed the retained aborted frame"
 else
-	scn_fail "no post-abort tool-result delivery with waiting resolver — real subagent output was lost"
+	scn_fail "no safe post-abort tool-result delivery path observed"
+fi
+
+# Synthetic content must never be injected by onAbort itself. It is valid only
+# after a later fresh turn explicitly supersedes a still-active frame.
+early_synth=$(awk '
+	/onAbort/ { seen_abort=1 }
+	seen_abort && /superseding active frame/ { seen_supersede=1 }
+	seen_abort && /drainPendingResolversAsAborted/ && !seen_supersede { print; exit }
+' "$BRIDGE_LOG")
+if [[ -n "$early_synth" ]]; then
+	scn_fail "synthetic resolver drain occurred before any superseding fresh turn"
+else
+	scn_pass "synthetic resolver drain, if any, occurred only after supersede"
 fi
 
 # Cleanup essay file (keep around briefly in case we want to inspect)

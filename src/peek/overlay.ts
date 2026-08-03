@@ -83,12 +83,21 @@ export function buildOverlayLines(
 	return lines;
 }
 
+export interface ClaudePeekCommandOptions {
+	/** Resolve current project selection when command runs. Defaults to interactive. */
+	getDriverKind?: (cwd: string) => "claude-p" | "claude-print";
+}
+
 /** Register the /claude-peek toggle command. Returns nothing; safe to call once at activate. */
-export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger): void {
+export function registerClaudePeekCommand(
+	pi: ExtensionAPI,
+	log: FollowerLogger,
+	options: ClaudePeekCommandOptions = {},
+): void {
 	let openDone: ((r: undefined) => void) | undefined;
 
 	pi.registerCommand("claude-peek", {
-		description: "Toggle a live read-only peek of the underlying Claude session",
+		description: "Toggle interactive Claude peek (unavailable for claude-print)",
 		handler: async (_args: string, ctx) => {
 			if (!ctx.ui) return; // headless mode: no overlay surface
 			if (openDone) {
@@ -99,6 +108,10 @@ export function registerClaudePeekCommand(pi: ExtensionAPI, log: FollowerLogger)
 				return;
 			}
 			try {
+				if (options.getDriverKind?.(ctx.cwd) === "claude-print") {
+					ctx.ui.notify("/claude-peek unavailable: claude-print has no interactive PTY tail", "info");
+					return;
+				}
 				// Terminal height, captured via the overlayOptions `visible` callback
 			// (invoked each render cycle with current dimensions) so the popup is
 			// clamped to HALF the vertical space. Handler-scoped: shared between

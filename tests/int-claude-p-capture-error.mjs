@@ -28,9 +28,14 @@ const {
 } = await import("../index.js");
 import { submitDigestTool } from "./fixtures/submit-digest-schema.js";
 
-const ENABLED = process.env.RUN_REAL_CLAUDE_P === "1";
+const DRIVER = process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p";
+assert.match(DRIVER, /^(claude-p|claude-print)$/);
+const ENABLED = process.env.RUN_REAL_CLAUDE_DRIVER === "1" || process.env.RUN_REAL_CLAUDE_P === "1";
 const TIMEOUT = 120_000;
-const MODEL = { id: "claude-haiku-4-5", cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } };
+const MODEL = {
+	id: process.env.CLAUDE_BRIDGE_INTEGRATION_MODEL ?? "claude-sonnet-4-6",
+	cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+};
 const ts = () => Date.now();
 
 async function runNoCall() {
@@ -45,7 +50,7 @@ async function runNoCall() {
 	return await stream.result();
 }
 
-describe("claude-p capture absent-call error (T2.5)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
+describe(`${DRIVER} capture absent-call error`, { skip: !ENABLED ? "set RUN_REAL_CLAUDE_DRIVER=1 to run" : false }, () => {
 	let restoreApi = null;
 
 	afterEach(() => { restoreApi?.(); restoreApi = null; __resetCachedSessionForTests(); });
@@ -70,6 +75,6 @@ describe("claude-p capture absent-call error (T2.5)", { skip: !ENABLED ? "set RU
 
 		assert.equal(result.stopReason, "error");
 		assert.match(result.errorMessage ?? "", /did not call capture tool|abnormally/i);
-		console.log(`  absent-call error surfaced: "${result.errorMessage}"`);
+		console.log(`  driver=${DRIVER} absent-call error surfaced: "${result.errorMessage}"`);
 	});
 });

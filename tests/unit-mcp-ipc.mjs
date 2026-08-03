@@ -123,6 +123,33 @@ describe("ipc — client<->server round-trip over a real tmp socket", () => {
 		await server.close();
 	});
 
+	it("carries bounded capture-validation-failed evidence and acknowledges it", async () => {
+		const sock = generateSocketPath();
+		const failures = [];
+		const server = createIpcServer(sock, noopHandlers({
+			onCaptureValidationFailed: (req) => failures.push(req),
+		}));
+		await server.listen();
+		const client = await connectIpcClient(sock);
+		const ack = await client.request({
+			kind: "capture-validation-failed",
+			id: "bad-1",
+			attempt: 1,
+			field: "$.payload.title",
+			message: "expected string",
+		});
+		assert.equal(ack.kind, "capture-validation-failed:ack");
+		assert.equal(ack.id, "bad-1");
+		assert.deepEqual(failures.map(({ id, ...failure }) => failure), [{
+			kind: "capture-validation-failed",
+			attempt: 1,
+			field: "$.payload.title",
+			message: "expected string",
+		}]);
+		client.close();
+		await server.close();
+	});
+
 	it("handles multiple concurrent in-flight messages without cross-wiring", async () => {
 		const sock = generateSocketPath();
 		// Server resolves out of order: req-slow waits longer than req-fast.

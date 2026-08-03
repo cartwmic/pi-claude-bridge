@@ -12,11 +12,23 @@
  *   - success → synthesized toolCall block (name + arguments + usage + toolu_ id)
  *   - absent call (no stash) → stopReason error
  *   - abort → stopReason aborted, no stash consulted
- *   - isolation: capture call does NOT mutate cachedSessionId (verified via a
- *     subsequent main-path turn resuming the pre-capture session)
+ *   - isolation: capture call does NOT mutate cachedSessionId
+ *
+ * AC coverage:
+ *   - output-capture.output-capture-classification-of-ctx-tools
+ *   - output-capture.strict-call-shape-capture-mode-mutually-exclusive-with-executable-tools-root-must-be-object
+ *   - output-capture.capture-path-isolation
+ *   - output-capture.synthesized-toolcall-content-block-on-success
+ *   - output-capture.surface-absent-capture-tool-call-as-error
+ *   - output-capture.capture-path-honors-abortsignal
+ *   - output-capture.capture-path-forwards-systemprompt-and-replays-message-history-text-only-lossy
+ *   - output-capture.capture-path-does-not-leak-resources
+ *   - output-capture.empty-prompt-handling
+ *   - output-capture.capture-path-emits-no-intermediate-stream-events
+ *   - output-capture.capture-uses-owning-invocation-driver
  */
 
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, afterEach } from "node:test";
@@ -32,6 +44,9 @@ const {
 	streamClaudeAgentSdk,
 	__setPiApiRefForTests,
 	__setCaptureSpawnForTests,
+	__setSpawnClaudePrintForTests,
+	__setClaudePrintPreflightForTests,
+	__pinExtensionDriverForTests,
 	__resetCachedSessionForTests,
 } = await import("../index.js");
 import { connectIpcClient } from "../src/mcp/ipc.js";
@@ -71,12 +86,15 @@ function assertCaptureMcpConfig(cfg, mcpToolName) {
  * @param opts.usage  driver usage event to emit (defaults to a representative set).
  * @param opts.stopReason  the ClaudePDoneResult.stopReason (default "result").
  * @param opts.onCfg  observer for the cfg the spawn received.
+ * @param opts.onSpawnOpts observer for adapter-normalized spawn options.
+ * @param opts.events extra normalized events emitted before terminal usage.
  * @param opts.holdForAbort  if true, the spawn never resolves on its own; it
  *        resolves "aborted" only when handle.abort() is called.
  */
 function makeMockSpawn(opts = {}) {
 	const factory = (cfg, spawnOpts) => {
 		opts.onCfg?.(cfg);
+		opts.onSpawnOpts?.(spawnOpts);
 		let resolveDone;
 		const done = new Promise((res) => { resolveDone = res; });
 		let aborted = false;
@@ -84,17 +102,23 @@ function makeMockSpawn(opts = {}) {
 		const usage = opts.usage ?? { input: 100, output: 50, cacheRead: 10, cacheWrite: 0, totalTokens: 160 };
 
 		(async () => {
+			for (const event of opts.events ?? []) spawnOpts.onEvent(event);
 			// Emit a usage event (mirrors the terminal `result` line).
-			spawnOpts.onEvent({ kind: "usage", usage });
+			spawnOpts.onEvent({ kind: "usage", usage, billing: opts.billing ?? usage });
 
 			if (opts.holdForAbort) return; // wait for abort() to resolve.
 
-			if (opts.stash !== undefined) {
-				// Simulate the shim: connect to the router and stash validated args.
+			if (opts.stash !== undefined || opts.validationFailures?.length) {
+				// Simulate shim IPC: validation evidence and/or authoritative stash.
 				try {
 					const socketPath = socketFromCfg(cfg);
 					const client = await connectIpcClient(socketPath);
-					await client.request({ kind: "capture-stash", id: randomUUID(), arguments: opts.stash });
+					for (const failure of opts.validationFailures ?? []) {
+						await client.request({ kind: "capture-validation-failed", id: randomUUID(), ...failure });
+					}
+					if (opts.stash !== undefined) {
+						await client.request({ kind: "capture-stash", id: randomUUID(), arguments: opts.stash });
+					}
 					client.close();
 				} catch (err) {
 					// Surface as spawn error if the router isn't reachable.
@@ -120,10 +144,17 @@ function makeMockSpawn(opts = {}) {
 
 let restoreApi = null;
 let restoreSpawn = null;
+let restorePrintSpawn = null;
+let restorePrintPreflight = null;
+let restoreDriverPin = null;
 
 afterEach(() => {
 	restoreApi?.(); restoreApi = null;
 	restoreSpawn?.(); restoreSpawn = null;
+	restorePrintSpawn?.(); restorePrintSpawn = null;
+	restoreDriverPin?.(); restoreDriverPin = null;
+	restorePrintPreflight?.(); restorePrintPreflight = null;
+	delete process.env.CLAUDE_BRIDGE_DRIVER;
 	__resetCachedSessionForTests();
 });
 
@@ -249,15 +280,23 @@ describe("capture success (claude-p)", () => {
 		assert.equal(kinds.filter((k) => k === "done").length, 1, "exactly one done");
 		assert.equal(kinds.filter((k) => k === "error").length, 0, "no error event");
 
-		// cfg sanity: capture-mode shim pointed at submit_digest and system prompt
-		// forces the single capture tool so real small-model runs do not end in prose.
+		// Sole capture MCP tool, fresh isolated session, caller-owned static system
+		// prompt unchanged. Operational forcing lives in user control suffix.
 		assert.ok(seenCfg, "spawn received a cfg");
 		assertCaptureMcpConfig(seenCfg, "submit_digest");
 		assert.equal(seenCfg.session.kind, "fresh", "capture session is always fresh (never resumed)");
 		assert.equal(seenCfg.systemPrompt.kind, "text");
-		assert.match(seenCfg.systemPrompt.text, /structured capture mode/);
-		assert.match(seenCfg.systemPrompt.text, /mcp__custom-tools__submit_digest/);
-		assert.match(seenCfg.systemPrompt.text, /Do not answer in prose/);
+		assert.equal(seenCfg.systemPrompt.text, "Summarize.");
+		assert.equal(seenCfg.prompt.kind, "positional");
+		assert.match(seenCfg.prompt.text, /structured capture mode/);
+		assert.match(seenCfg.prompt.text, /`submit_digest` tool exactly once/);
+		assert.match(seenCfg.prompt.text, /connected `custom-tools` MCP server/);
+		assert.match(seenCfg.prompt.text, /WaitForMcpServers/);
+		assert.match(seenCfg.prompt.text, /CAPTURE_COMPLETE/);
+		assert.match(seenCfg.prompt.text, /even if the tool was not called or failed/);
+		assert.ok(seenCfg.mcpReadyFile, "interactive capture passes claude-p Enter-gate sentinel");
+		assert.equal(existsSync(seenCfg.mcpReadyFile), false, "readiness sentinel cleaned before terminal event");
+		assert.equal(existsSync(socketFromCfg(seenCfg)), false, "capture router socket cleaned before terminal event");
 	});
 });
 
@@ -280,6 +319,46 @@ describe("capture absent (claude-p)", () => {
 		assert.match(result.errorMessage, /did not call capture tool/i);
 	});
 
+	// AC: output-capture.surface-absent-capture-tool-call-as-error
+	it("invalid-only attempts surface latest bounded field-path evidence", async () => {
+		restoreApi = __setPiApiRefForTests(makeApiStub([]));
+		restoreSpawn = __setCaptureSpawnForTests(makeMockSpawn({
+			validationFailures: [
+				{ attempt: 1, field: "$.headline", message: "required field missing" },
+				{ attempt: 2, field: "$.topics[0]", message: "expected string" },
+			],
+		}));
+
+		const result = await streamClaudeAgentSdk(MODEL, {
+			systemPrompt: "Summarize.",
+			messages: [{ role: "user", content: "please summarize", timestamp: ts() }],
+			tools: [submitDigestTool],
+		}).result();
+
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage, /validation failed/i);
+		assert.match(result.errorMessage, /\$\.topics\[0\]/);
+		assert.match(result.errorMessage, /attempt 2/);
+	});
+
+	it("stash without successful terminal result remains selected-driver error", async () => {
+		restoreApi = __setPiApiRefForTests(makeApiStub([]));
+		restoreSpawn = __setCaptureSpawnForTests(makeMockSpawn({
+			stash: { headline: "h", body: "b".repeat(60), topics: [] },
+			stopReason: "error",
+		}));
+
+		const result = await streamClaudeAgentSdk(MODEL, {
+			systemPrompt: "Summarize.",
+			messages: [{ role: "user", content: "x", timestamp: ts() }],
+			tools: [submitDigestTool],
+		}).result();
+
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.content.length, 0, "failed terminal must not synthesize toolCall");
+		assert.match(result.errorMessage, /claude-p|terminal|abnormal/i);
+	});
+
 	it("claude-p exits abnormally (error stopReason, no stash) → stopReason error", async () => {
 		restoreApi = __setPiApiRefForTests(makeApiStub([]));
 		restoreSpawn = __setCaptureSpawnForTests(makeMockSpawn({ stopReason: "error" }));
@@ -292,6 +371,102 @@ describe("capture absent (claude-p)", () => {
 
 		assert.equal(result.stopReason, "error");
 		assert.match(result.errorMessage, /abnormally|did not call/i);
+	});
+});
+
+describe("selected-driver capture parity", () => {
+	it("claude-print owner uses direct adapter, verbatim static prompt, direct suffix, and terminal billing", async () => {
+		restoreApi = __setPiApiRefForTests(makeApiStub([]));
+		process.env.CLAUDE_BRIDGE_DRIVER = "claude-print";
+		restorePrintPreflight = __setClaudePrintPreflightForTests(() => {});
+		restoreDriverPin = __pinExtensionDriverForTests(process.cwd());
+		process.env.CLAUDE_BRIDGE_DRIVER = "claude-p"; // later mutation must not switch capture
+		let seenCfg = null;
+		let seenSpawnOpts = null;
+		restorePrintSpawn = __setSpawnClaudePrintForTests(makeMockSpawn({
+			stash: { headline: "direct", body: "b".repeat(60), topics: [] },
+			usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10 },
+			billing: { input: 101, output: 102, cacheRead: 103, cacheWrite: 104, totalTokens: 410 },
+			events: [
+				{ kind: "thinking-delta", text: "hidden" },
+				{ kind: "text-delta", text: "must not surface" },
+			],
+			onCfg: (cfg) => { seenCfg = cfg; },
+			onSpawnOpts: (spawnOpts) => { seenSpawnOpts = spawnOpts; },
+		}));
+
+		const staticPrompt = "  caller bytes\nremain exact  ";
+		const captureStream = streamClaudeAgentSdk(MODEL, {
+			systemPrompt: staticPrompt,
+			messages: [{ role: "user", content: "capture direct", timestamp: ts() }],
+			tools: [submitDigestTool],
+		}, { cwd: process.cwd() });
+		const events = [];
+		for await (const event of captureStream) events.push(event);
+		const result = await captureStream.result();
+
+		assert.equal(result.stopReason, "toolUse");
+		assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
+		assert.equal(seenCfg.systemPrompt.kind, "text");
+		assert.equal(seenCfg.systemPrompt.text, staticPrompt);
+		assert.match(seenCfg.prompt.text, /structured capture mode/);
+		assert.match(seenCfg.prompt.text, /readiness gate/i);
+		assert.doesNotMatch(seenCfg.prompt.text, /WaitForMcpServers|CAPTURE_COMPLETE/);
+		assert.equal(seenSpawnOpts.cwd, tmpdir(), "direct capture process uses isolated tmpdir cwd");
+		assert.deepEqual(
+			{ input: result.usage.input, output: result.usage.output, cacheRead: result.usage.cacheRead, cacheWrite: result.usage.cacheWrite },
+			{ input: 101, output: 102, cacheRead: 103, cacheWrite: 104 },
+		);
+	});
+
+	it("capture warns and drops images instead of rejecting", async () => {
+		restoreApi = __setPiApiRefForTests(makeApiStub([]));
+		let seenCfg = null;
+		restoreSpawn = __setCaptureSpawnForTests(makeMockSpawn({
+			stash: { headline: "image", body: "b".repeat(60), topics: [] },
+			onCfg: (cfg) => { seenCfg = cfg; },
+		}));
+
+		const result = await streamClaudeAgentSdk(MODEL, {
+			systemPrompt: "image capture",
+			messages: [{ role: "user", content: [
+				{ type: "text", text: "use text" },
+				{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+			], timestamp: ts() }],
+			tools: [submitDigestTool],
+		}).result();
+
+		assert.equal(result.stopReason, "toolUse");
+		assert.ok(seenCfg, "capture still spawned after dropping image");
+		assert.doesNotMatch(seenCfg.prompt.text, /aGVsbG8=/);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const logs = readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8");
+		assert.match(logs, /dropping 1 image block/);
+	});
+
+	it("divergent observed tool use warns but authoritative valid stash succeeds", async () => {
+		restoreApi = __setPiApiRefForTests(makeApiStub([]));
+		const stash = { headline: "stash", body: "b".repeat(60), topics: [] };
+		restoreSpawn = __setCaptureSpawnForTests(makeMockSpawn({
+			stash,
+			events: [{
+				kind: "tool-use",
+				toolUseId: "toolu_divergent",
+				name: "mcp__custom-tools__submit_digest",
+				arguments: { headline: "other" },
+			}],
+		}));
+
+		const result = await streamClaudeAgentSdk(MODEL, {
+			systemPrompt: "capture",
+			messages: [{ role: "user", content: "capture", timestamp: ts() }],
+			tools: [submitDigestTool],
+		}).result();
+
+		assert.equal(result.stopReason, "toolUse");
+		assert.deepEqual(result.content[0].arguments, stash);
+		const logs = readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8");
+		assert.match(logs, /divergent capture observation/i);
 	});
 });
 

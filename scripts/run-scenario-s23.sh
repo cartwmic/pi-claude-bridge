@@ -29,7 +29,7 @@ scn_send "Reply with exactly the single token PRE-RELOAD-7K2 and nothing else."
 scn_wait_for "PRE-RELOAD-7K2" 60 || scn_fail "T1: pre-reload turn never produced marker"
 
 # Snapshot bridge-log query count before reload.
-pre_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
+pre_queries=$(scn_grep_count "streamSimple(\[(claude-p|claude-print)\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries before reload: $pre_queries"
 
 # Issue /reload as a slash command.
@@ -60,14 +60,16 @@ else
 	scn_fail "provider NOT re-registered after /reload (count=$reg_count) — guard persisted"
 fi
 
-# Settle so pi finishes wiring up post-reload UI.
-sleep 2
+# Provider registration precedes session_start:reload. Sending during that gap
+# sees an empty active-tool set and can be misclassified as a capture call.
+scn_wait_for_log '"reason":"reload".*"msg":"session_start:reload' 30 || scn_fail "post-reload session_start never arrived"
+sleep 1
 
 # T2: now submit a turn after reload. If the bug is present, this hangs and
 # scn_send times out (no `caching session=` ever appears).
-scn_send "What's the capital of France? Respond with exactly the single token POST-RELOAD-9F4 and nothing else."
+scn_send "RELOAD-PROBE: In one short sentence, what city is the capital of France?"
 
-post_queries=$(scn_grep_count "streamSimple(\[claude-p\])?: fresh (query|spawn)" "$BRIDGE_LOG")
+post_queries=$(scn_grep_count "streamSimple(\[(claude-p|claude-print)\])?: fresh (query|spawn)" "$BRIDGE_LOG")
 echo "  fresh queries after reload: $post_queries"
 
 if (( post_queries > pre_queries )); then
@@ -83,9 +85,9 @@ echo "==== S23 results ===="
 # response token) — scn_probe_response finds the LAST match and captures after,
 # so prompt and response markers must differ.
 scn_assert_response \
-	"capital of France" \
-	"POST-RELOAD-9F4" \
-	"(i (don't|cannot|can't)|unable to|error)" \
+	"RELOAD-PROBE" \
+	"Paris" \
+	"(i (don't|cannot|can't|won't)|unable to|error)" \
 	"coherence: post-reload turn produced model response"
 
 echo "Cache profile:"

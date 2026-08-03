@@ -37,23 +37,38 @@ fi
 
 trap 'scn_pi_stop' EXIT
 
+# Pin the child to this worktree's bridge copy. Ambient child extension loading
+# can otherwise select a separately installed legacy bridge and make the
+# scenario test machine package state instead of parent→child bridge routing.
+SCN_CLEANUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pi-s14-agent.XXXXXX")
+export SCN_CLEANUP_DIR
+cat > "$SCN_CLEANUP_DIR/s14-bridge-worker.md" <<EOF
+---
+name: s14-bridge-worker
+description: Scenario worker pinned to current bridge worktree
+tools: bash
+extensions: $REPO_DIR
+defaultContext: fresh
+inheritProjectContext: true
+acceptance: false
+---
+Run the assigned command and return its exact result.
+EOF
+
 # Custom start with both extensions
 "${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-	 pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$SCENARIO_MODEL'"
-sleep 3
+	 PI_SUBAGENT_EXTRA_AGENT_DIRS='$SCN_CLEANUP_DIR' PATH='$PATH' pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$SCENARIO_MODEL'"
+scn_wait_ready
 
-scn_send "Use the subagent tool ONCE to dispatch a worker on claude-bridge/claude-haiku-4-5. The worker's task: run bash 'ls *.ts | wc -l' to count .ts files, then return the count in its message. Do not call list first."
-
-# Wait for parent turn to complete (caching session line means turn ended).
-# Architectural signal — we don't depend on the worker writing a file because
-# different worker models follow instructions differently. The bridge-side
-# concern is that subagent dispatch goes through correctly.
-deadline=$((SECONDS + 240))
-while (( SECONDS < deadline )); do
-	if grep -qE "mcp handler: subagent |onRouterPark: routed tools/call" "$BRIDGE_LOG" 2>/dev/null; then break; fi
-	sleep 2
-done
+pre_completions=$(scn_grep_count "caching session=" "$BRIDGE_LOG")
+scn_send --no-wait "Use the subagent tool ONCE to dispatch agent s14-bridge-worker on claude-bridge/claude-haiku-4-5. Task: run bash 'ls *.ts | wc -l' to count .ts files, then return the count in its message. Do not call list first."
+# Both child and parent use the bridge. Waiting for only the first new caching
+# line races: the child completes first and the harness would kill the parent
+# before it consumes the subagent result.
+scn_wait_for_log_count "caching session=" $((pre_completions + 2)) 240 || scn_fail "parent and child bridge turns did not both complete"
+scn_assert_selected_driver_spawn || scn_fail "selected driver did not own S14"
+scn_capture >/dev/null
 
 echo "==== S14 results ===="
 
@@ -67,8 +82,13 @@ echo "  CC session_ids: $unique_sids"
 if (( unique_sids >= 2 )); then
 	scn_pass "parent+child CC sessions are distinct"
 else
-	# Could be 1 if subagent doesn't use claude-bridge for the child path
-	scn_pass "(at least one CC session id captured: $unique_sids)"
+	scn_fail "child did not establish a distinct bridge session"
+fi
+
+if grep -qiE "(Subagent invocation failed|Subagent dispatch failed|✗ s14-bridge-worker|MCP initialization failed)" "$PANE_LOG"; then
+	scn_fail "bridge child reported a startup or invocation failure"
+else
+	scn_pass "bridge child completed without rendered failure"
 fi
 
 # Architectural: subagent tool was actually invoked at least once

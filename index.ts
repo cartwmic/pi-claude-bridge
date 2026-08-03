@@ -1,12 +1,10 @@
-// pi-claude-bridge: claude-p driver, pi-canonical, inference-only.
+// pi-claude-bridge: dual Claude subprocess drivers, pi-canonical, inference-only.
 //
 // Architecture (see SCENARIOS.md for the full charter):
-//   - pi owns conversation history. `claude-p` (an interactive-TUI driver for
-//     the `claude` CLI) is the sole inference provider. The bridge NEVER shells
-//     out to a nominal `claude -p`; it drives the interactive TUI so the model
-//     behaves identically to a human-driven session.
-//   - One claude-p spawn spans one pi user-turn (which may include many tool
-//     rounds).
+//   - pi owns conversation history. Extension-load configuration pins either
+//     the interactive `claude-p` driver or direct `claude -p` driver.
+//   - One selected-driver spawn spans one pi user-turn (which may include many
+//     tool rounds).
 //   - Tool execution happens IN PI. Tools are declared to `claude` via a stdio
 //     MCP server (the shim) that the bridge spawns; the in-process router holds
 //     each `tools/call` open (parks it) until pi delivers the tool result via
@@ -29,7 +27,21 @@ import {
 } from "@mariozechner/pi-ai";
 import * as piAi from "@mariozechner/pi-ai";
 import { keyHint, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
+import {
+	closeSync,
+	constants as fsConstants,
+	existsSync,
+	fstatSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	type Stats,
+} from "fs";
 import pino from "pino";
 import { createStream } from "rotating-file-stream";
 import { homedir, tmpdir } from "os";
@@ -43,25 +55,36 @@ import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import {
 	spawnClaudePWithResilience as _realSpawnClaudeP,
 	spawnClaudeP as _realSpawnClaudePSingle,
+	RESILIENCE_BACKOFF_MS,
 	getInstalledClaudeVersion,
 	type ClaudePSpawnConfig,
-	type ClaudePHandle,
-	type ClaudePDoneResult,
 	type SystemPromptSource,
 	type PromptSource,
 } from "./src/driver/claudeP.js";
+import {
+	spawnClaudePrint as _realSpawnClaudePrint,
+	type ClaudePrintHandle,
+} from "./src/driver/claudePrint.js";
 import {
 	readSidecar,
 	writeSidecar,
 	invalidateSidecar,
 	validateWarmResume,
 	computeSha256Chain,
+	resumeStoreDir,
 } from "./src/resume-store.js";
 import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
-import type { DriverStreamEvent } from "./src/driver/stream.js";
-import { createRouter, type Router, type ParkedCallInfo, type ToolDef } from "./src/mcp/router.js";
-import { runClaudePCapture, type CaptureDeps, type CaptureSpawnFactory } from "./src/capture.js";
+import { driverDiagnosticFileName } from "./src/driver/diagnostics.js";
+import type { DriverStreamEvent, DriverToolUseBatch } from "./src/driver/stream.js";
+import { createRouter, type Router, type ParkedCallInfo, type ToolDef, type CorrelationFailure } from "./src/mcp/router.js";
+import {
+	runCapture,
+	type CaptureDeps,
+	type CaptureDriverAdapter,
+	type CaptureDriverSpawnOptions,
+} from "./src/capture.js";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -125,6 +148,7 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 let _spawnClaudePFactory: typeof _realSpawnClaudeP = _realSpawnClaudeP;
+let _spawnClaudePrintFactory: typeof _realSpawnClaudePrint = _realSpawnClaudePrint;
 
 /** Test-only: swap the claude-p spawn (resilience) factory and return a restorer. */
 export function __setSpawnClaudePForTests(f: typeof _realSpawnClaudeP): () => void {
@@ -133,12 +157,20 @@ export function __setSpawnClaudePForTests(f: typeof _realSpawnClaudeP): () => vo
 	return () => { _spawnClaudePFactory = prev; };
 }
 
+/** Test-only: swap direct process spawn and return a restorer. */
+export function __setSpawnClaudePrintForTests(f: typeof _realSpawnClaudePrint): () => void {
+	const prev = _spawnClaudePrintFactory;
+	_spawnClaudePrintFactory = f;
+	return () => { _spawnClaudePrintFactory = prev; };
+}
+
 // ---------------------------------------------------------------------------
 // claude-p CAPTURE spawn factory — separate test seam (T2.1/T2.2). The capture
 // path uses the single-shot spawnClaudeP (NO resilience wrapper: a capture
 // respawn could re-execute the model's turn). Tests inject a mock here.
 // ---------------------------------------------------------------------------
 
+type CaptureSpawnFactory = typeof _realSpawnClaudePSingle;
 let _captureSpawnFactory: CaptureSpawnFactory = _realSpawnClaudePSingle;
 
 /** Test-only: swap the claude-p CAPTURE spawn factory and return a restorer. */
@@ -149,27 +181,820 @@ export function __setCaptureSpawnForTests(f: CaptureSpawnFactory): () => void {
 }
 
 // ---------------------------------------------------------------------------
-// Driver selection (T3 cut-over). `claude-p` is now the ONLY inference driver;
-// the legacy in-process SDK path has been deleted. CLAUDE_BRIDGE_DRIVER defaults
-// to `claude-p` and the only other accepted value is `claude-p` itself. Setting
-// it to `sdk` is a removed configuration and surfaces a clear deprecation error
-// at module load (NOT a silent fallback) so operators migrate explicitly.
+// Layered driver configuration + direct-driver runtime preflight.
 // ---------------------------------------------------------------------------
 
-const _rawDriver = (process.env.CLAUDE_BRIDGE_DRIVER ?? "claude-p").trim().toLowerCase();
-if (_rawDriver === "sdk") {
-	throw new Error(
-		"CLAUDE_BRIDGE_DRIVER=sdk is no longer supported: the in-process Claude Agent SDK " +
-		"inference path was removed in the claude-p cut-over. pi-claude-bridge now drives " +
-		"the interactive `claude` TUI exclusively via the claude-p driver. Unset " +
-		"CLAUDE_BRIDGE_DRIVER (or set it to `claude-p`) to continue.",
-	);
+export type DriverKind = "claude-p" | "claude-print";
+export type BridgeDriver = DriverKind;
+export const CLAUDE_PRINT_MIN_VERSION = "2.1.208";
+
+/** Driver-typed in-memory resume hint. Session ids never cross driver boundaries. */
+export interface DriverSessionHint {
+	driver: DriverKind;
+	sessionId: string;
+	cwd: string;
 }
-if (_rawDriver !== "claude-p") {
-	throw new Error(
-		`CLAUDE_BRIDGE_DRIVER="${process.env.CLAUDE_BRIDGE_DRIVER}" is not a valid driver. ` +
-		"The only supported value is `claude-p` (the default). Unset CLAUDE_BRIDGE_DRIVER to use it.",
-	);
+
+/** Additive persisted shape. Missing `driver` is the sole legacy migration. */
+export interface DriverResumeSidecar {
+	driver: DriverKind;
+	claudeSessionId: string;
+	piSessionId: string;
+	historyHashChain: string[];
+	claudeVersion: string | null;
+}
+
+const RESUME_SIDECAR_KEYS = new Set([
+	"driver",
+	"claudeSessionId",
+	"piSessionId",
+	"historyHashChain",
+	"claudeVersion",
+]);
+
+/** Decode persisted metadata without admitting content or unknown schema fields. */
+export function decodeDriverResumeSidecar(value: unknown): DriverResumeSidecar | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).some((key) => !RESUME_SIDECAR_KEYS.has(key))) return null;
+	const rawDriver = record.driver;
+	const driver: DriverKind | null = rawDriver === undefined
+		? "claude-p"
+		: rawDriver === "claude-p" || rawDriver === "claude-print"
+			? rawDriver
+			: null;
+	if (
+		driver === null ||
+		typeof record.claudeSessionId !== "string" ||
+		typeof record.piSessionId !== "string" ||
+		!Array.isArray(record.historyHashChain) ||
+		!record.historyHashChain.every((hash) => typeof hash === "string") ||
+		!(record.claudeVersion === null || typeof record.claudeVersion === "string")
+	) return null;
+	return {
+		driver,
+		claudeSessionId: record.claudeSessionId,
+		piSessionId: record.piSessionId,
+		historyHashChain: record.historyHashChain as string[],
+		claudeVersion: record.claudeVersion as string | null,
+	};
+}
+
+function resumeStoreLockPath(): string {
+	return `${resumeStoreDir()}.lock`;
+}
+
+/**
+ * Serialize bridge reads/writes with rollback quarantine. O_EXCL creates one
+ * active-store lock. Dead-owner locks are reclaimed so a killed quarantine can
+ * be rerun; a live or unreadable owner fails loud instead of racing.
+ */
+export function withResumeStoreLock<T>(operation: () => T): T {
+	const lockPath = resumeStoreLockPath();
+	mkdirSync(dirname(lockPath), { recursive: true });
+	let lockFd: number | undefined;
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			lockFd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+			writeFileSync(lockFd, JSON.stringify({ pid: process.pid }));
+			fsyncSync(lockFd);
+			break;
+		} catch (error) {
+			if (lockFd !== undefined) {
+				try { closeSync(lockFd); } catch { /* ignore */ }
+				lockFd = undefined;
+				try { rmSync(lockPath, { force: true }); } catch { /* ignore */ }
+			}
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			let ownerPid: number | null = null;
+			try {
+				const owner = JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: unknown };
+				if (Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0) ownerPid = owner.pid as number;
+			} catch { /* unreadable owner is conservatively active */ }
+			let ownerAlive = true;
+			if (ownerPid !== null) {
+				try { process.kill(ownerPid, 0); }
+				catch (probeError) {
+					ownerAlive = (probeError as NodeJS.ErrnoException).code !== "ESRCH";
+				}
+			}
+			if (ownerAlive || attempt > 0) {
+				throw new Error(`Resume store is locked by another process: ${lockPath}`);
+			}
+			rmSync(lockPath, { force: true });
+		}
+	}
+	if (lockFd === undefined) throw new Error(`Could not acquire resume store lock: ${lockPath}`);
+	try {
+		return operation();
+	} finally {
+		try { closeSync(lockFd); } finally { rmSync(lockPath, { force: true }); }
+	}
+}
+
+/** Read, migrate, driver-check, and invalidate unsafe persisted hints atomically. */
+export function readDriverResumeSidecar(
+	cwd: string,
+	piSessionId: string,
+	selectedDriver: DriverKind,
+): DriverResumeSidecar | null {
+	return withResumeStoreLock(() => {
+		const raw = readSidecar(cwd, piSessionId);
+		const sidecar = decodeDriverResumeSidecar(raw);
+		if (!sidecar || sidecar.piSessionId !== piSessionId || sidecar.driver !== selectedDriver) {
+			// Missing is a harmless no-op; malformed/mismatched files are removed.
+			invalidateSidecar(cwd, piSessionId);
+			return null;
+		}
+		return sidecar;
+	});
+}
+
+/** Persist only additive, content-free, driver-typed resume metadata. */
+export function writeDriverResumeSidecar(
+	cwd: string,
+	piSessionId: string,
+	sidecar: DriverResumeSidecar,
+): void {
+	if (sidecar.piSessionId !== piSessionId) {
+		throw new Error("Resume sidecar piSessionId does not match its store key");
+	}
+	withResumeStoreLock(() => writeSidecar(cwd, piSessionId, sidecar));
+}
+
+export function invalidateDriverResumeSidecar(cwd: string, piSessionId: string): void {
+	withResumeStoreLock(() => invalidateSidecar(cwd, piSessionId));
+}
+
+export type DriverAttemptPhase = "spawned" | "ready" | "promptSubmitted" | "turnAccepted" | "terminal";
+export type ResumePersistenceAction = "preserve" | "invalidate" | "persist";
+
+const ATTEMPT_PHASE_ORDER: Record<DriverAttemptPhase, number> = {
+	spawned: 0,
+	ready: 1,
+	promptSubmitted: 2,
+	turnAccepted: 3,
+	terminal: 4,
+};
+
+/** Monotonic attempt-phase transition guard for direct-driver lifecycle wiring. */
+export function advanceDriverAttemptPhase(
+	current: DriverAttemptPhase,
+	next: DriverAttemptPhase,
+): DriverAttemptPhase {
+	if (ATTEMPT_PHASE_ORDER[next] < ATTEMPT_PHASE_ORDER[current]) {
+		throw new Error(`Driver attempt phase cannot regress from ${current} to ${next}`);
+	}
+	return next;
+}
+
+/** Persistence safety boundary shared by terminal and caller-abort handling. */
+export function resumePersistenceAction(input: {
+	driver: DriverKind;
+	phase: DriverAttemptPhase;
+	outcome: "result" | "aborted" | "error" | "retry";
+}): ResumePersistenceAction {
+	if (input.outcome === "error") return "invalidate";
+	if (input.outcome === "result") return "persist";
+	if (input.driver === "claude-p") return input.outcome === "retry" ? "preserve" : "persist";
+	if (input.outcome === "retry") {
+		return ATTEMPT_PHASE_ORDER[input.phase] >= ATTEMPT_PHASE_ORDER.promptSubmitted
+			? "invalidate"
+			: "preserve";
+	}
+	if (ATTEMPT_PHASE_ORDER[input.phase] < ATTEMPT_PHASE_ORDER.promptSubmitted) return "preserve";
+	if (ATTEMPT_PHASE_ORDER[input.phase] < ATTEMPT_PHASE_ORDER.turnAccepted) return "invalidate";
+	return "persist";
+}
+
+export interface ResumeQuarantineResult {
+	movedDirect: number;
+	movedInvalid: number;
+	backupDir: string | null;
+}
+
+export interface ResumeQuarantineOptions {
+	storeDir?: string;
+	/** Injectable timestamp for deterministic fixture tests. */
+	now?: () => Date;
+	/** Test-only crash point after N durable moves. */
+	crashAfterMoves?: number;
+}
+
+function fsyncDirectory(path: string): void {
+	const fd = openSync(path, fsConstants.O_RDONLY);
+	try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function quarantineCandidate(path: string): "direct" | "invalid" | null {
+	try {
+		const decoded = decodeDriverResumeSidecar(JSON.parse(readFileSync(path, "utf8")));
+		if (!decoded) return "invalid";
+		return decoded.driver === "claude-print" ? "direct" : null;
+	} catch {
+		return "invalid";
+	}
+}
+
+/**
+ * Atomically move direct/invalid hints outside active store. Per-file rename +
+ * directory fsync makes interruption restart-safe; rerun moves remaining files
+ * and returns zero once store is clean.
+ */
+export function quarantineDirectResumeSidecars(
+	options: ResumeQuarantineOptions = {},
+): ResumeQuarantineResult {
+	const storeDir = options.storeDir ?? resumeStoreDir();
+	const priorOverride = process.env.CLAUDE_BRIDGE_RESUME_DIR;
+	if (options.storeDir !== undefined) process.env.CLAUDE_BRIDGE_RESUME_DIR = storeDir;
+	try {
+		return withResumeStoreLock(() => {
+			let names: string[];
+			try {
+				names = readdirSync(storeDir).filter((name) => name.endsWith(".json")).sort();
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+					return { movedDirect: 0, movedInvalid: 0, backupDir: null };
+				}
+				throw error;
+			}
+			const candidates = names
+				.map((name) => ({ name, kind: quarantineCandidate(join(storeDir, name)) }))
+				.filter((entry): entry is { name: string; kind: "direct" | "invalid" } => entry.kind !== null);
+			if (candidates.length === 0) return { movedDirect: 0, movedInvalid: 0, backupDir: null };
+
+			const stamp = (options.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
+			const backupDir = join(dirname(storeDir), `${basename(storeDir)}-quarantine-${stamp}`);
+			mkdirSync(backupDir, { recursive: true });
+			let movedDirect = 0;
+			let movedInvalid = 0;
+			let moved = 0;
+			for (const candidate of candidates) {
+				const source = join(storeDir, candidate.name);
+				let destination = join(backupDir, candidate.name);
+				for (let suffix = 1; existsSync(destination); suffix++) {
+					destination = join(backupDir, `${candidate.name}.${suffix}`);
+				}
+				renameSync(source, destination);
+				candidate.kind === "direct" ? movedDirect++ : movedInvalid++;
+				moved++;
+				fsyncDirectory(backupDir);
+				fsyncDirectory(storeDir);
+				if (options.crashAfterMoves === moved) throw new Error(`Injected quarantine crash after ${moved} move(s)`);
+			}
+			const remainingUnsafe = readdirSync(storeDir)
+				.filter((name) => name.endsWith(".json"))
+				.some((name) => quarantineCandidate(join(storeDir, name)) !== null);
+			if (remainingUnsafe) throw new Error("Resume quarantine verification failed: active direct/invalid sidecars remain");
+			return { movedDirect, movedInvalid, backupDir };
+		});
+	} finally {
+		if (options.storeDir !== undefined) {
+			if (priorOverride === undefined) delete process.env.CLAUDE_BRIDGE_RESUME_DIR;
+			else process.env.CLAUDE_BRIDGE_RESUME_DIR = priorOverride;
+		}
+	}
+}
+
+interface BridgeConfigFsOps {
+	lstatSync(path: string): Stats;
+	openSync(path: string, flags: number): number;
+	fstatSync(fd: number): Stats;
+	readFileSync(fd: number, encoding: BufferEncoding): string;
+	closeSync(fd: number): void;
+}
+
+export interface BridgeDriverConfigOptions {
+	/** Owning pi/session project cwd; never a later isolated subprocess cwd. */
+	projectCwd?: string;
+	homeDir?: string;
+	env?: Record<string, string | undefined>;
+	/** Injectable filesystem seam for deterministic replacement-race tests. */
+	fsOps?: BridgeConfigFsOps;
+}
+
+const DEFAULT_CONFIG_FS: BridgeConfigFsOps = {
+	lstatSync,
+	openSync,
+	fstatSync,
+	readFileSync: (fd, encoding) => readFileSync(fd, encoding),
+	closeSync,
+};
+
+function configError(layer: "project" | "global", detail: string, path: string, cause?: unknown): Error {
+	const suffix = cause instanceof Error ? `: ${cause.message}` : cause === undefined ? "" : `: ${String(cause)}`;
+	return new Error(`Bridge ${layer} config ${detail} "${path}"${suffix}`);
+}
+
+function readConfigLayer(
+	layer: "project" | "global",
+	path: string,
+	fsOps: BridgeConfigFsOps,
+): BridgeDriver | undefined {
+	let before: Stats;
+	try {
+		before = fsOps.lstatSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+		throw configError(layer, "stat failed for", path, error);
+	}
+
+	if (before.isSymbolicLink()) throw configError(layer, "symlink is not allowed at", path);
+	if (!before.isFile()) throw configError(layer, "path must be a regular file at", path);
+	if (typeof fsConstants.O_NOFOLLOW !== "number") {
+		throw configError(layer, "cannot be read safely because O_NOFOLLOW is unavailable at", path);
+	}
+
+	let fd: number;
+	try {
+		fd = fsOps.openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+	} catch (error) {
+		throw configError(layer, "open failed for", path, error);
+	}
+
+	let text: string;
+	let operationError: unknown;
+	try {
+		let after: Stats;
+		try {
+			after = fsOps.fstatSync(fd);
+		} catch (error) {
+			throw configError(layer, "fstat failed for", path, error);
+		}
+		if (!after.isFile()) throw configError(layer, "opened path is not a regular file at", path);
+		if (before.dev !== after.dev || before.ino !== after.ino) {
+			throw configError(layer, "changed between lstat and open at", path);
+		}
+		try {
+			text = fsOps.readFileSync(fd, "utf8");
+		} catch (error) {
+			throw configError(layer, "read failed for", path, error);
+		}
+	} catch (error) {
+		operationError = error;
+		throw error;
+	} finally {
+		try {
+			fsOps.closeSync(fd);
+		} catch (error) {
+			if (operationError === undefined) throw configError(layer, "close failed for", path, error);
+		}
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text!);
+	} catch (error) {
+		throw configError(layer, "contains malformed JSON at", path, error);
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw configError(layer, "root must be an object at", path);
+	}
+
+	const value = (parsed as Record<string, unknown>).driver;
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") throw configError(layer, "driver must be a string at", path);
+	if (value !== "claude-p" && value !== "claude-print") {
+		throw configError(layer, `driver must be one of claude-p or claude-print, found ${JSON.stringify(value)} at`, path);
+	}
+	return value;
+}
+
+/**
+ * Resolve one driver after validating every present file. A higher-precedence
+ * value never hides malformed or unsafe lower-precedence configuration.
+ */
+export function loadBridgeDriverConfig(options: BridgeDriverConfigOptions = {}): BridgeDriver {
+	const projectCwd = options.projectCwd ?? process.cwd();
+	const homeDir = options.homeDir ?? homedir();
+	const env = options.env ?? process.env;
+	const fsOps = options.fsOps ?? DEFAULT_CONFIG_FS;
+	const projectPath = join(projectCwd, ".pi", "claude-bridge.json");
+	const globalPath = join(homeDir, ".pi", "agent", "claude-bridge.json");
+	const errors: Error[] = [];
+
+	let globalDriver: BridgeDriver | undefined;
+	let projectDriver: BridgeDriver | undefined;
+	try { globalDriver = readConfigLayer("global", globalPath, fsOps); } catch (error) { errors.push(error as Error); }
+	try { projectDriver = readConfigLayer("project", projectPath, fsOps); } catch (error) { errors.push(error as Error); }
+
+	const rawEnv = env.CLAUDE_BRIDGE_DRIVER;
+	const envValue = rawEnv?.trim() ?? "";
+	let envDriver: BridgeDriver | undefined;
+	if (envValue !== "") {
+		if (envValue === "claude-p" || envValue === "claude-print") envDriver = envValue;
+		else errors.push(new Error(
+			`CLAUDE_BRIDGE_DRIVER=${JSON.stringify(rawEnv)} is unsupported; expected claude-p or claude-print`,
+		));
+	}
+
+	if (errors.length > 0) {
+		throw new Error(`Bridge driver configuration failed:\n${errors.map((error) => `- ${error.message}`).join("\n")}`);
+	}
+	return envDriver ?? projectDriver ?? globalDriver ?? "claude-p";
+}
+
+export type ClaudeVersionProbe = () => string | null;
+let cachedClaudePrintVersion: string | null | undefined;
+
+function defaultClaudeVersionProbe(): string | null {
+	try {
+		return execFileSync(resolveClaudePrintBin(), ["--version"], {
+			encoding: "utf8",
+			timeout: 15_000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+	} catch {
+		return null;
+	}
+}
+
+function parseClaudeVersion(output: string | null): string | null {
+	if (output === null) return null;
+	return /\b(\d+)\.(\d+)\.(\d+)\b/.exec(output)?.[0] ?? null;
+}
+
+function compareVersions(left: string, right: string): number {
+	const a = left.split(".").map(Number);
+	const b = right.split(".").map(Number);
+	for (let i = 0; i < 3; i++) {
+		if (a[i] !== b[i]) return a[i] - b[i];
+	}
+	return 0;
+}
+
+/** Direct-only pre-spawn gate. `claude-p` never probes or inherits this floor. */
+export function preflightBridgeDriver(
+	driver: BridgeDriver,
+	probe: ClaudeVersionProbe = defaultClaudeVersionProbe,
+): string | undefined {
+	if (driver === "claude-p") return undefined;
+	if (driver !== "claude-print") throw new Error(`Unsupported bridge driver: ${String(driver)}`);
+	if (cachedClaudePrintVersion === undefined) {
+		try {
+			cachedClaudePrintVersion = parseClaudeVersion(probe());
+		} catch {
+			cachedClaudePrintVersion = null;
+		}
+	}
+	if (cachedClaudePrintVersion === null) {
+		throw new Error(
+			`claude-print requires Claude Code >=${CLAUDE_PRINT_MIN_VERSION}, but installed Claude version could not be read`,
+		);
+	}
+	if (compareVersions(cachedClaudePrintVersion, CLAUDE_PRINT_MIN_VERSION) < 0) {
+		throw new Error(
+			`claude-print cannot start with Claude Code ${cachedClaudePrintVersion}; version >=${CLAUDE_PRINT_MIN_VERSION} is required`,
+		);
+	}
+	return cachedClaudePrintVersion;
+}
+
+/** Test-only reset for process-wide direct-version probe memoization. */
+export function __resetClaudePrintVersionProbeForTests(): void {
+	cachedClaudePrintVersion = undefined;
+}
+
+let _claudePrintPreflight: () => void = () => { preflightBridgeDriver("claude-print"); };
+
+/** Test-only: replace direct version preflight while asserting spawn ordering. */
+export function __setClaudePrintPreflightForTests(preflight: () => void): () => void {
+	const previous = _claudePrintPreflight;
+	_claudePrintPreflight = preflight;
+	return () => { _claudePrintPreflight = previous; };
+}
+
+// ---------------------------------------------------------------------------
+// Driver-neutral inference adapter contracts (design D1/D7/D9).
+// ---------------------------------------------------------------------------
+
+/** Normalized stream events consumed by shared orchestration. */
+export type InferenceDriverEvent = DriverStreamEvent;
+
+/** Terminal lifecycle classification for one driver attempt (or retried group). */
+export type InferenceDriverStopReason = "result" | "aborted" | "error";
+
+/** Driver-neutral turn completion payload, including resumable session identity. */
+export interface InferenceDriverDoneResult {
+	stopReason: InferenceDriverStopReason;
+	sessionId: string;
+	exitCode?: number | null;
+	signal?: NodeJS.Signals | null;
+}
+
+/** Per-driver feature surface (design D9). */
+export interface DriverCapabilities {
+	peek: "mirror" | "unavailable";
+	mirror: boolean;
+}
+
+/** Observable process lifecycle transitions; stream content uses InferenceDriverEvent. */
+export type InferenceDriverLifecycleEvent =
+	| { kind: "spawned"; driverKind: DriverKind; sessionId: string; pid: number | undefined }
+	| { kind: "attempt-phase"; driverKind: DriverKind; phase: DriverAttemptPhase }
+	| { kind: "retrying"; driverKind: DriverKind; attempt: number; sessionId: string }
+	| { kind: "abort-requested"; driverKind: DriverKind; sessionId: string; pid: number | undefined }
+	| { kind: "settled"; driverKind: DriverKind; result: InferenceDriverDoneResult };
+
+/** Process handle delegated abort + done lifecycle (design D7). */
+export interface InferenceDriverHandle {
+	readonly driverKind: DriverKind;
+	readonly pid: number | undefined;
+	abort(): void;
+	readonly done: Promise<InferenceDriverDoneResult>;
+}
+
+/** Driver-neutral attempt inputs. Adapters own argv/protocol translation. */
+export interface InferenceDriverAttemptConfig {
+	model: string;
+	systemPrompt: SystemPromptSource;
+	prompt: PromptSource;
+	mcpConfig: string;
+	session: { kind: "fresh" | "resume"; sessionId: string };
+	debugFile?: string;
+	mcpReadyFile?: string;
+	mirrorFile?: string;
+}
+
+/** Spawn-time options shared by main-turn orchestration. */
+export interface InferenceDriverSpawnOptions {
+	onEvent: (event: InferenceDriverEvent) => void;
+	onToolUseBatch?: (batch: DriverToolUseBatch) => void;
+	onLifecycleEvent?: (event: InferenceDriverLifecycleEvent) => void;
+	logger: pino.Logger;
+	executable: string;
+	suppressResumeReplay: boolean;
+	livePromptText?: string;
+	diagnosticsDir: string;
+	isHeldRound: () => boolean;
+}
+
+/** Bounded retry policy wired by shared orchestration (design D7/D33). */
+export interface InferenceDriverResiliencePolicy {
+	maxRetries?: number;
+	shouldRetry: () => boolean;
+	onRetry?: (attempt: number, result: InferenceDriverDoneResult) => void;
+	freshSessionId?: () => string;
+	remintMirrorFile?: (sessionId: string) => string | undefined;
+	/** Abandon failed warm input and rebuild exact canonical cold replay. */
+	coldRetryConfig?: (sessionId: string) => InferenceDriverAttemptConfig;
+}
+
+export interface InferenceDriverMainTurnSpawn {
+	config: InferenceDriverAttemptConfig;
+	options: InferenceDriverSpawnOptions;
+	resilience: InferenceDriverResiliencePolicy;
+}
+
+/** Driver-neutral adapter consumed by shared turn orchestration. */
+export interface InferenceDriverAdapter extends CaptureDriverAdapter {
+	readonly kind: DriverKind;
+	readonly capabilities: DriverCapabilities;
+	preflight(): void;
+	spawnMainTurn(input: InferenceDriverMainTurnSpawn): InferenceDriverHandle;
+	spawnCapture(config: ClaudePSpawnConfig, options: CaptureDriverSpawnOptions): InferenceDriverHandle;
+}
+
+/** Interactive claude-p adapter — preserves argv/MCP isolation via claudeP module. */
+export const CLAUDE_P_DRIVER: InferenceDriverAdapter = {
+	kind: "claude-p",
+	capabilities: { peek: "mirror", mirror: true },
+	preflight() {},
+	spawnCapture(config, options) {
+		const inner = _captureSpawnFactory(config, {
+			onEvent: options.onEvent,
+			logger: options.logger as any,
+			binPath: options.executable,
+			diagnosticsDir: options.diagnosticsDir,
+			cwd: options.cwd,
+		});
+		return {
+			driverKind: "claude-p",
+			get pid() { return inner.pid; },
+			abort: () => inner.abort(),
+			done: inner.done,
+		};
+	},
+	spawnMainTurn({ config, options, resilience }) {
+		const sessionId = config.session.sessionId;
+		const policy = options.onLifecycleEvent
+			? {
+					...resilience,
+					onRetry: (attempt: number, result: InferenceDriverDoneResult) => {
+						options.onLifecycleEvent?.({ kind: "retrying", driverKind: "claude-p", attempt, sessionId: result.sessionId });
+						resilience.onRetry?.(attempt, result);
+					},
+				}
+			: resilience;
+		const inner = _spawnClaudePFactory(
+			config as ClaudePSpawnConfig,
+			{
+				onEvent: options.onEvent,
+				onToolUseBatch: options.onToolUseBatch,
+				logger: options.logger as any,
+				binPath: options.executable,
+				suppressResumeReplay: options.suppressResumeReplay,
+				livePromptText: options.livePromptText,
+				diagnosticsDir: options.diagnosticsDir,
+				isHeldRound: options.isHeldRound,
+			},
+			policy,
+		);
+		options.onLifecycleEvent?.({ kind: "spawned", driverKind: "claude-p", sessionId, pid: inner.pid });
+		const done = options.onLifecycleEvent
+			? inner.done.then((result) => {
+					options.onLifecycleEvent?.({ kind: "settled", driverKind: "claude-p", result });
+					return result;
+				})
+			: inner.done;
+		return {
+			driverKind: "claude-p",
+			get pid() { return inner.pid; },
+			abort() {
+				options.onLifecycleEvent?.({ kind: "abort-requested", driverKind: "claude-p", sessionId, pid: inner.pid });
+				inner.abort();
+			},
+			done,
+		};
+	},
+};
+
+/** Direct print adapter. Process/protocol ownership stays in claudePrint.ts. */
+export const CLAUDE_PRINT_DRIVER: InferenceDriverAdapter = {
+	kind: "claude-print",
+	capabilities: { peek: "unavailable", mirror: false },
+	preflight() { _claudePrintPreflight(); },
+	spawnCapture(config, options) {
+		_claudePrintPreflight();
+		const inner = _spawnClaudePrintFactory(config, {
+			onEvent: options.onEvent,
+			logger: options.logger as any,
+			binPath: options.executable,
+			diagnosticsDir: options.diagnosticsDir,
+			tmpDir: options.cwd,
+			cwd: options.cwd,
+		});
+		return {
+			driverKind: "claude-print",
+			get pid() { return inner.pid; },
+			abort: () => inner.abort(),
+			done: inner.done,
+		};
+	},
+	spawnMainTurn({ config, options, resilience }) {
+		const maxRetries = resilience.maxRetries ?? 2;
+		let aborted = false;
+		let settled = false;
+		let current: ClaudePrintHandle | null = null;
+		let currentConfig = config;
+		let currentPhase: DriverAttemptPhase = "spawned";
+		// Last acceptance-relevant phase. `terminal` must not erase whether
+		// readiness, submission, or model acceptance was actually crossed.
+		let attemptProgressPhase: DriverAttemptPhase = "spawned";
+		let visibleOutput = false;
+		let deferredError: InferenceDriverEvent | undefined;
+		let backoffTimer: NodeJS.Timeout | undefined;
+		let resolveDone!: (result: InferenceDriverDoneResult) => void;
+		const done = new Promise<InferenceDriverDoneResult>((resolve) => { resolveDone = resolve; });
+
+		const finish = (result: InferenceDriverDoneResult) => {
+			if (settled) return;
+			settled = true;
+			if (backoffTimer) clearTimeout(backoffTimer);
+			backoffTimer = undefined;
+			if (deferredError && !aborted) options.onEvent(deferredError);
+			const finalResult = aborted ? { ...result, stopReason: "aborted" as const } : result;
+			options.onLifecycleEvent?.({ kind: "settled", driverKind: "claude-print", result: finalResult });
+			resolveDone(finalResult);
+		};
+
+		const mintFreshSessionId = () => resilience.freshSessionId?.() ?? randomUUID();
+		const retryConfig = (): InferenceDriverAttemptConfig | null => {
+			const crossedSubmission = ATTEMPT_PHASE_ORDER[attemptProgressPhase] >= ATTEMPT_PHASE_ORDER.promptSubmitted;
+			if (crossedSubmission) {
+				const sessionId = mintFreshSessionId();
+				if (resilience.coldRetryConfig) return resilience.coldRetryConfig(sessionId);
+				// A fresh attempt already carries canonical cold input; only its possibly
+				// mutated session identity must rotate. A resumed delta cannot be safely
+				// reconstructed here, so fail loud unless orchestrator supplied repacker.
+				if (currentConfig.session.kind === "fresh") {
+					return { ...currentConfig, session: { kind: "fresh", sessionId } };
+				}
+				return null;
+			}
+			if (currentConfig.session.kind === "fresh") {
+				return { ...currentConfig, session: { kind: "fresh", sessionId: mintFreshSessionId() } };
+			}
+			// Readiness/pre-submit failure cannot have mutated resumed model state.
+			return currentConfig;
+		};
+
+		const launch = (attemptConfig: InferenceDriverAttemptConfig, attempt: number) => {
+			if (aborted || settled) return;
+			currentConfig = attemptConfig;
+			currentPhase = "spawned";
+			attemptProgressPhase = "spawned";
+			deferredError = undefined;
+			// Enforce direct floor immediately before every inference-child spawn.
+			_claudePrintPreflight();
+			const sessionId = attemptConfig.session.sessionId;
+			const inner = _spawnClaudePrintFactory(attemptConfig as ClaudePSpawnConfig, {
+				onEvent: (event) => {
+					if (event.kind === "text-delta" || event.kind === "thinking-delta") visibleOutput = true;
+					if (event.kind === "error") {
+						// Hold attempt-local terminal error until retry decision. Retried
+						// attempts must not poison shared pi message state.
+						deferredError = event;
+						return;
+					}
+					options.onEvent(event);
+				},
+				onToolUseBatch: options.onToolUseBatch,
+				onPhase: (phase) => {
+					currentPhase = advanceDriverAttemptPhase(currentPhase, phase);
+					if (phase !== "terminal") attemptProgressPhase = phase;
+					options.onLifecycleEvent?.({ kind: "attempt-phase", driverKind: "claude-print", phase });
+				},
+				logger: options.logger as any,
+				binPath: options.executable,
+				diagnosticsDir: options.diagnosticsDir,
+				isHeldRound: options.isHeldRound,
+			});
+			current = inner;
+			options.onLifecycleEvent?.({ kind: "spawned", driverKind: "claude-print", sessionId, pid: inner.pid });
+			if (aborted) inner.abort();
+
+			void inner.done.then((result) => {
+				if (aborted) {
+					finish({ ...result, stopReason: "aborted" });
+					return;
+				}
+				const canRetry = result.stopReason === "error" &&
+					attempt < maxRetries &&
+					!visibleOutput &&
+					resilience.shouldRetry();
+				if (!canRetry) {
+					finish(result);
+					return;
+				}
+				const nextConfig = retryConfig();
+				if (!nextConfig) {
+					finish(result);
+					return;
+				}
+				const nextAttempt = attempt + 1;
+				options.onLifecycleEvent?.({
+					kind: "retrying",
+					driverKind: "claude-print",
+					attempt: nextAttempt,
+					sessionId: nextConfig.session.sessionId,
+				});
+				resilience.onRetry?.(nextAttempt, result);
+				options.logger.warn(
+					{ event: "claudePrint.resilience.retry", attempt: nextAttempt, maxRetries, priorPhase: attemptProgressPhase, newSessionId: nextConfig.session.sessionId },
+					`claude-print attempt failed before visible output/tool routing; retrying same driver (${nextAttempt}/${maxRetries})`,
+				);
+				deferredError = undefined;
+				backoffTimer = setTimeout(() => {
+					backoffTimer = undefined;
+					launch(nextConfig, nextAttempt);
+				}, RESILIENCE_BACKOFF_MS * nextAttempt);
+			});
+		};
+
+		const abort = () => {
+			if (aborted || settled) return;
+			aborted = true;
+			options.onLifecycleEvent?.({
+				kind: "abort-requested",
+				driverKind: "claude-print",
+				sessionId: currentConfig.session.sessionId,
+				pid: current?.pid,
+			});
+			if (backoffTimer) {
+				clearTimeout(backoffTimer);
+				backoffTimer = undefined;
+				finish({ stopReason: "aborted", sessionId: currentConfig.session.sessionId, exitCode: null, signal: null });
+				return;
+			}
+			current?.abort();
+		};
+
+		launch(config, 0);
+		return {
+			driverKind: "claude-print",
+			get pid() { return current?.pid; },
+			abort,
+			done,
+		};
+	},
+};
+
+/** Resolve concrete adapter for validated driver kind. Never falls back. */
+export function getInferenceDriverAdapter(kind: DriverKind): InferenceDriverAdapter {
+	if (kind === "claude-p") return CLAUDE_P_DRIVER;
+	if (kind === "claude-print") return CLAUDE_PRINT_DRIVER;
+	throw new Error(`Unsupported inference driver: ${String(kind)}`);
 }
 
 /** Test-only: swap piApiRef and return a restorer. Not part of the public API. */
@@ -186,8 +1011,7 @@ export function __getDebugLogPathForTests(): string {
 
 /** Test-only: reset cross-call session cache. Not part of the public API. */
 export function __resetCachedSessionForTests(): void {
-	cachedSessionId = null;
-	cachedSessionCwd = null;
+	cachedSessionHint = null;
 	lastSentMessageHashes = null;
 	// Drop any frames a test left on the stack (e.g. a retained errored/aborted
 	// frame whose driver never popped) so the next test in the same file starts
@@ -244,9 +1068,9 @@ const DIAGNOSTICS_DIR = dirname(DEBUG_LOG_PATH);
 // CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE === "0" (mirrors CLAUDE_BRIDGE_DEBUG). Returns
 // a per-spawn bridge-owned path, or undefined when disabled (no flag emitted).
 const CLAUDE_DEBUG_FILE_ENABLED = process.env.CLAUDE_BRIDGE_CLAUDE_DEBUG_FILE !== "0";
-function resolveClaudeDebugFile(sessionId: string): string | undefined {
+function resolveClaudeDebugFile(sessionId: string, driver: DriverKind = "claude-p"): string | undefined {
 	if (!CLAUDE_DEBUG_FILE_ENABLED) return undefined;
-	return join(DIAGNOSTICS_DIR, `claude-debug-${sessionId.slice(0, 8)}-${Date.now()}.log`);
+	return join(DIAGNOSTICS_DIR, driverDiagnosticFileName(driver, "debug", sessionId, process.pid));
 }
 
 // rotating-file-stream maintains the live file at DEBUG_LOG_PATH and moves
@@ -329,8 +1153,33 @@ function getFullPiSessionId(): string | null {
  * on /tree, on /compact — anything that diverges history — this is dropped
  * and the next turn cold-starts.
  */
-let cachedSessionId: string | null = null;
-let cachedSessionCwd: string | null = null;
+let cachedSessionHint: DriverSessionHint | null = null;
+
+/** Process-scoped selection resolved and preflighted when extension loads. */
+let extensionDriverOwner: { driverKind: DriverKind; driver: InferenceDriverAdapter } | null = null;
+
+function pinExtensionDriver(projectCwd: string): { driverKind: DriverKind; driver: InferenceDriverAdapter } {
+	const driverKind = loadBridgeDriverConfig({ projectCwd });
+	const driver = getInferenceDriverAdapter(driverKind);
+	driver.preflight();
+	const owner = { driverKind, driver };
+	extensionDriverOwner = owner;
+	return owner;
+}
+
+/** Test-only: model one extension load and return a restorer for module state. */
+export function __pinExtensionDriverForTests(projectCwd: string): () => void {
+	const previous = extensionDriverOwner;
+	pinExtensionDriver(projectCwd);
+	return () => { extensionDriverOwner = previous; };
+}
+
+/** Test-only: release process activation ownership and pinned module state. */
+export function __resetExtensionActivationForTests(): void {
+	delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
+	extensionDriverOwner = null;
+	piApiRef = null;
+}
 
 // Context-window total (totalTokens) last reported to pi for the MAIN turn. Used
 // to SEED the in-progress assistant message's usage so pi's context bar holds at
@@ -417,8 +1266,11 @@ function detectHistoryDivergence(
  * MCP handler).
  */
 type QueryFrame = {
-	/** claude-p driver handle for this spawn. */
-	claudeHandle?: ClaudePHandle;
+	/** Pinned for the frame lifecycle (design D2); nested calls inherit owner. */
+	driverKind: DriverKind;
+	driver: InferenceDriverAdapter;
+	/** Selected driver's process handle for this spawn. */
+	driverHandle?: InferenceDriverHandle;
 	/** Per-spawn MCP router; its onPark drives the pi round-trip. */
 	router?: Router;
 	currentPiStream: AssistantMessageEventStream | null;
@@ -439,6 +1291,11 @@ type QueryFrame = {
 	// the handler parks.
 	pendingResolvers: Map<string, (result: { content: { type: "text"; text: string }[]; isError?: boolean }) => void>;
 	pendingResults: Map<string, { content: { type: "text"; text: string }[]; isError?: boolean }>;
+	/** Pi ids routed for this frame, retained as tombstones after mismatch drain. */
+	routedPiIds: Set<string>;
+	/** Coalesced router parks so one assistant batch can expose parallel calls together. */
+	pendingRouterParks: ParkedCallInfo[];
+	routerParkFlushScheduled: boolean;
 
 	wasAborted: boolean;
 	// Set true when the driver terminated with an error (claude-p exited/crashed/
@@ -448,12 +1305,18 @@ type QueryFrame = {
 	// (the error-path analogue of `wasAborted`). See finalizeClaudePFrame +
 	// streamClaudeAgentSdk Case 1 (`willHangIfWired`).
 	driverErrored: boolean;
+	correlationFailed: boolean;
 	donePromise: Promise<void>;
 	// Warm-pi-resume: the one-way sha256 fingerprint chain of pi's history as it
 	// stood at THIS turn's start (over context.messages). Stashed at turn-start so
 	// finalizeClaudePFrame — which does not receive the messages — can persist the
 	// content-free resume sidecar on a successful main-turn finalize (design D1).
 	sha256Chain?: string[];
+	// In-memory divergence boundary rolls back when direct attempt was not accepted.
+	priorMessageHashes: string[] | null;
+	currentMessageHashes: string[];
+	// Direct attempt persistence boundary. claude-p keeps established abort semantics.
+	attemptPhase: DriverAttemptPhase;
 };
 
 const stack: QueryFrame[] = [];
@@ -654,12 +1517,9 @@ function resetTurnState(frame: QueryFrame) {
 // ---------------------------------------------------------------------------
 
 function extractUserPrompt(messages: Context["messages"]): string | null {
-	// Warm-resume delta = the contiguous run of trailing `user` messages (every
-	// message added since the last assistant turn Claude already saw). We must
-	// forward ALL of them, not just the last: extensions (e.g. hindsight
-	// auto-recall) inject additional `custom` messages that `convertToLlm`
-	// flattens into trailing `user` messages AFTER the real prompt. Returning
-	// only the last message silently drops the user's actual text.
+	// Fresh-call guard uses contiguous trailing user material. Extensions (e.g.
+	// hindsight auto-recall) flatten into extra trailing user messages, so retain
+	// every member of that run rather than only last message.
 	const last = messages[messages.length - 1];
 	if (!last || last.role !== "user") return null;
 	const run: string[] = [];
@@ -671,6 +1531,20 @@ function extractUserPrompt(messages: Context["messages"]): string | null {
 	}
 	run.reverse();
 	return run.join("\n\n");
+}
+
+/** Exact warm frame: every user material item appended after accepted history boundary. */
+export function buildWarmDeltaPrompt(messages: Context["messages"], acceptedHistoryLength: number): string {
+	if (!Number.isSafeInteger(acceptedHistoryLength) || acceptedHistoryLength < 0 || acceptedHistoryLength > messages.length) {
+		throw new Error(`Invalid accepted warm-history boundary: ${acceptedHistoryLength}`);
+	}
+	const appended: string[] = [];
+	for (const message of messages.slice(acceptedHistoryLength)) {
+		if (message.role !== "user") continue;
+		const text = typeof message.content === "string" ? message.content : messageContentToText(message.content) || "";
+		if (text) appended.push(text);
+	}
+	return appended.join("\n\n");
 }
 
 /**
@@ -915,7 +1789,7 @@ export function streamClaudeAgentSdk(
 		let matchedFrame: QueryFrame | null = null;
 		for (const r of trailing) {
 			for (let i = stack.length - 1; i >= 0; i--) {
-				if (stack[i].pendingResolvers.has(r.id)) { matchedFrame = stack[i]; break; }
+				if (stack[i].pendingResolvers.has(r.id) || stack[i].routedPiIds.has(r.id)) { matchedFrame = stack[i]; break; }
 			}
 			if (matchedFrame) break;
 		}
@@ -931,6 +1805,7 @@ export function streamClaudeAgentSdk(
 		if (!willHangIfWired) {
 			active.currentPiStream = stream;
 			resetTurnState(active);
+			scheduleRouterParkFlush(active);
 		}
 
 		// Deliver each result to the matching resolver across the stack.
@@ -942,10 +1817,17 @@ export function streamClaudeAgentSdk(
 				const resolver = f.pendingResolvers.get(r.id);
 				if (resolver) {
 					f.pendingResolvers.delete(r.id);
+					f.routedPiIds.delete(r.id);
 					resolver(result);
 					if (i !== stack.length - 1 || f.wasAborted) {
 						f.log.info({ id: r.id, aborted: f.wasAborted }, `tool-result delivery: matched ${f.wasAborted ? "aborted-frame" : "buried-frame"} resolver (post-abort late delivery)`);
 					}
+					resolved = true;
+					break;
+				}
+				if (f.routedPiIds.delete(r.id)) {
+					// Correlation teardown already drained shim resolver; tombstone keeps
+					// late pi delivery attached to its terminal frame.
 					resolved = true;
 					break;
 				}
@@ -967,7 +1849,7 @@ export function streamClaudeAgentSdk(
 				const out = newTurnOutput(model);
 				if (erroredNotAborted) {
 					out.stopReason = "error";
-					out.errorMessage = "claude-p driver exited before returning the tool result — turn ended (the tool result was captured for next-turn resume)";
+					out.errorMessage = `${terminalFrame.driverKind} driver exited before returning the tool result — turn ended (the tool result was captured for next-turn resume)`;
 				} else {
 					out.stopReason = "aborted";
 					out.errorMessage = "Operation aborted by user (real tool result captured for next-turn resume)";
@@ -981,6 +1863,10 @@ export function streamClaudeAgentSdk(
 					{ deliveredFor: erroredNotAborted ? "errored-frame" : "aborted-frame" },
 					`tool-result delivery to ${erroredNotAborted ? "errored" : "aborted"} frame: closed pi stream with ${erroredNotAborted ? "error" : "aborted"}-error`,
 				);
+				if (top() === terminalFrame && terminalFrame.pendingResolvers.size === 0 && terminalFrame.routedPiIds.size === 0) {
+					void terminalFrame.router?.stop();
+					stack.pop();
+				}
 			});
 		}
 		return stream;
@@ -1030,9 +1916,42 @@ export function streamClaudeAgentSdk(
 		}
 
 		if (shape.kind === "single-capture") {
-			// Capture executor: the claude-p forced-toolcall capture path. The
-			// classification + strict-call-shape gate above is driver-agnostic.
-			void runClaudePCapture(model, shape.captureTool, shape.cleanedSchema, context, options, stream, buildCaptureDeps());
+			// Resolve owning driver from project/frame BEFORE capture replaces process
+			// cwd with os.tmpdir(). Never consult config from isolated capture cwd.
+			let captureDriver: InferenceDriverAdapter;
+			try {
+				if (active) {
+					captureDriver = active.driver;
+				} else if (extensionDriverOwner) {
+					captureDriver = extensionDriverOwner.driver;
+				} else {
+					// Direct unit callers do not execute the Pi extension entry point.
+					const projectCwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+					captureDriver = getInferenceDriverAdapter(loadBridgeDriverConfig({ projectCwd }));
+				}
+				captureDriver.preflight();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				queueMicrotask(() => {
+					const out = newTurnOutput(model);
+					out.stopReason = "error";
+					out.errorMessage = message;
+					stream.push({ type: "start", partial: out });
+					stream.push({ type: "error", reason: "error", error: out });
+					stream.end();
+				});
+				return stream;
+			}
+			void runCapture(
+				model,
+				shape.captureTool,
+				shape.cleanedSchema,
+				context,
+				options,
+				stream,
+				captureDriver,
+				buildCaptureDeps(),
+			);
 			return stream;
 		}
 
@@ -1051,11 +1970,27 @@ export function streamClaudeAgentSdk(
 	// delivering the tool_result), so it's safe to fabricate. Drain BEFORE
 	// the pop so we don't lose the resolvers. Also drain any deeper buried
 	// frames whose pending tool calls were also superseded by this turn.
+	let steeringOwner: { driverKind: DriverKind; driver: InferenceDriverAdapter } | undefined;
 	if (active) {
+		steeringOwner = { driverKind: active.driverKind, driver: active.driver };
 		active.log.info(`streamSimple: superseding active frame (top of stack), interrupting`);
 		drainPendingResolversAsAborted(active, "superseded by new user turn");
 		active.wasAborted = true;
 		abortFrame(active);
+		if (active.driverKind === "claude-print") {
+			// Keep old frame attached through finalization so acceptance-aware resume
+			// persistence still recognizes its main-turn ownership. Only after done
+			// has committed partial/aborted state do we detach stale correlation ids
+			// and permit replacement output from same pinned driver.
+			void active.donePromise.finally(() => {
+				active.routedPiIds.clear();
+				const index = stack.indexOf(active);
+				if (index >= 0) stack.splice(index, 1);
+				void active.router?.stop();
+				return startFreshQuery(model, context, options, stream, steeringOwner);
+			});
+			return stream;
+		}
 		stack.pop();
 		// Drain any deeper buried frames too — they're equally orphaned by
 		// the steer. Without this, a parent_frame buried beneath a popped
@@ -1070,7 +2005,9 @@ export function streamClaudeAgentSdk(
 		}
 	}
 
-	void startFreshQuery(model, context, options, stream);
+	// Interactive behavior remains immediate; steering still pins its owner so
+	// mid-flight config changes cannot switch inference surfaces.
+	void startFreshQuery(model, context, options, stream, steeringOwner);
 	return stream;
 }
 
@@ -1086,7 +2023,8 @@ const ABORTED_TOOL_RESULT_TEXT = "[Tool execution interrupted by user before com
  * Used by every abort/supersede/clearSession site.
  */
 function abortFrame(frame: QueryFrame): void {
-	frame.claudeHandle?.abort();
+	frame.pendingRouterParks.length = 0;
+	frame.driverHandle?.abort();
 	void frame.router?.stop();
 }
 
@@ -1187,6 +2125,11 @@ function resolveClaudePBin(): string {
 	}
 }
 
+/** Authenticated Claude Code executable for direct print mode. */
+function resolveClaudePrintBin(): string {
+	return process.env.CLAUDE_BIN?.trim() || "claude";
+}
+
 /** Spill large/multiline content to a tmpfile under os.tmpdir() (NEVER ~/.claude). */
 function writeOverflowTmp(prefix: string, content: string): string {
 	const p = join(tmpdir(), `${prefix}-${randomBytes(8).toString("hex")}.txt`);
@@ -1205,21 +2148,18 @@ function buildCaptureDeps(): CaptureDeps {
 	return {
 		newTurnOutput,
 		buildColdStartPrompt,
-		cleanSchemaForSdk,
-		// Opus-corrected so the capture path bills at Anthropic's published rate too.
+		// Opus-corrected so capture bills at Anthropic's published rate too.
 		calculateCost: calculateCostCorrected,
 		resolveShimPath,
 		shimNodeArgs,
-		resolveClaudePBin,
+		resolveDriverExecutable: (kind) => kind === "claude-p" ? resolveClaudePBin() : resolveClaudePrintBin(),
 		writeOverflowTmp,
 		logger: logger.child({ piSessionId: getPiSessionId() }) as unknown as CaptureDeps["logger"],
 		execPath: process.execPath,
 		mcpServerName: MCP_SERVER_NAME,
-		mcpWaitPreamble: withClaudePMcpWaitPreamble,
 		promptFileThresholdBytes: PROMPT_FILE_THRESHOLD_BYTES,
 		diagnosticsDir: DIAGNOSTICS_DIR,
 		resolveDebugFile: resolveClaudeDebugFile,
-		spawnClaudeP: (cfg, opts) => _captureSpawnFactory(cfg, opts),
 	};
 }
 
@@ -1322,26 +2262,47 @@ function updateUsageFromDriver(frame: QueryFrame, context: DriverUsage, billing?
  * (unchanged) finds the resolver in frame.pendingResolvers (== router.pendingResolvers)
  * and resolves it, unblocking the shim. Mirrors the SDK message_stop path.
  */
-function onRouterPark(frame: QueryFrame, info: ParkedCallInfo): void {
-	if (!frame.currentPiStream || !frame.turnOutput) return;
+function flushRouterParks(frame: QueryFrame): void {
+	if (frame.wasAborted || !frame.currentPiStream || !frame.turnOutput || frame.pendingRouterParks.length === 0) return;
+	const parks = frame.pendingRouterParks.splice(0);
 	ensureTurnStarted(frame);
 	closeOpenInlineBlocks(frame);
-	frame.turnBlocks.push({
-		type: "toolCall",
-		id: info.piId, // router-minted pi id — the id pi echoes back as toolResult.id
-		name: mapToolName(info.name, frame.customToolNameToPi),
-		arguments: mapToolArgs(info.name, info.arguments),
-	});
-	const idx = frame.turnBlocks.length - 1;
-	syncTurnContent(frame);
+	for (const info of parks) {
+		frame.turnBlocks.push({
+			type: "toolCall",
+			id: info.piId, // router-minted pi id — the id pi echoes back as toolResult.id
+			name: mapToolName(info.name, frame.customToolNameToPi),
+			arguments: mapToolArgs(info.name, info.arguments),
+		});
+		const idx = frame.turnBlocks.length - 1;
+		syncTurnContent(frame);
+		frame.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: frame.turnOutput });
+		frame.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: frame.turnBlocks[idx], partial: frame.turnOutput });
+		frame.log.debug({ piId: info.piId, name: info.name }, `onRouterPark: routed tools/call to pi (piId=${info.piId})`);
+	}
 	frame.turnSawToolCall = true;
 	frame.turnOutput.stopReason = "toolUse";
-	frame.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: frame.turnOutput });
-	frame.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: frame.turnBlocks[idx], partial: frame.turnOutput });
 	frame.currentPiStream.push({ type: "done", reason: "toolUse", message: frame.turnOutput });
 	frame.currentPiStream.end();
 	frame.currentPiStream = null;
-	frame.log.debug({ piId: info.piId, name: info.name }, `onRouterPark: routed tools/call to pi (piId=${info.piId})`);
+}
+
+function scheduleRouterParkFlush(frame: QueryFrame): void {
+	if (frame.routerParkFlushScheduled || frame.pendingRouterParks.length === 0) return;
+	frame.routerParkFlushScheduled = true;
+	// One check-phase coalescing window gathers sibling MCP requests emitted by
+	// same assistant batch. If a late sibling arrives after pi starts executing,
+	// it remains queued and Case 1 flushes it on next attached stream.
+	setImmediate(() => {
+		frame.routerParkFlushScheduled = false;
+		flushRouterParks(frame);
+	});
+}
+
+function onRouterPark(frame: QueryFrame, info: ParkedCallInfo): void {
+	frame.routedPiIds.add(info.piId);
+	frame.pendingRouterParks.push(info);
+	scheduleRouterParkFlush(frame);
 }
 
 /**
@@ -1366,6 +2327,35 @@ function closeOpenInlineBlocks(frame: QueryFrame, onlyType?: "text" | "thinking"
 	}
 }
 
+function applyCorrelationFailure(frame: QueryFrame, failure: CorrelationFailure): void {
+	if (frame.wasAborted || frame.correlationFailed) return;
+	frame.correlationFailed = true;
+	frame.driverErrored = true;
+	if (frame.turnOutput) {
+		frame.turnOutput.stopReason = "error";
+		frame.turnOutput.errorMessage = `bridge tool-call correlation failed: ${failure.message}`;
+	}
+	frame.log.error(
+		{ event: "bridge.toolCorrelation.failed", ...failure },
+		"bridge tool-call correlation failed; pending resolvers drained and resume invalidated",
+	);
+}
+
+function processDriverToolUseBatch(frame: QueryFrame, batch: DriverToolUseBatch): void {
+	const router = frame.router;
+	if (!router || frame.wasAborted) return;
+	for (const observation of batch.observations) {
+		router.observeToolUse({
+			batchId: batch.batchId,
+			modelId: observation.modelId,
+			name: observation.name,
+			arguments: observation.arguments,
+		});
+	}
+	const failure = router.sealToolUseBatch(batch.batchId);
+	if (failure) applyCorrelationFailure(frame, failure);
+}
+
 /**
  * Translate one driver-internal stream event into pi event-stream pushes.
  * text/thinking deltas open+append inline blocks; tool-use is DISPLAY ONLY
@@ -1377,6 +2367,27 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 	if (!frame.turnOutput) return;
 
 	switch (ev.kind) {
+		case "content-block-start": {
+			if (!frame.currentPiStream) return;
+			ensureTurnStarted(frame);
+			closeOpenInlineBlocks(frame);
+			if (ev.blockType === "text") {
+				const block = { type: "text" as const, text: "", index: frame.turnBlocks.length };
+				frame.turnBlocks.push(block);
+				syncTurnContent(frame);
+				frame.currentPiStream.push({ type: "text_start", contentIndex: block.index, partial: frame.turnOutput });
+			} else {
+				const block = { type: "thinking" as const, thinking: "", thinkingSignature: "", index: frame.turnBlocks.length };
+				frame.turnBlocks.push(block);
+				syncTurnContent(frame);
+				frame.currentPiStream.push({ type: "thinking_start", contentIndex: block.index, partial: frame.turnOutput });
+			}
+			return;
+		}
+		case "content-block-end": {
+			closeOpenInlineBlocks(frame, ev.blockType);
+			return;
+		}
 		case "text-delta": {
 			if (!frame.currentPiStream) return;
 			ensureTurnStarted(frame);
@@ -1425,10 +2436,9 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			closeOpenInlineBlocks(frame);
 			// DISPLAY ONLY (D32). Best-effort: label an already-parked toolCall
 			// block whose name+args match. Do NOT push a new block; do NOT route.
-			const parked = frame.router?.listParkedCalls() ?? [];
-			const match = parked.find((p) => p.name === ev.name);
-			if (match) {
-				frame.log.debug({ toolu: ev.toolUseId, piId: match.piId }, "processDriverEvent: tool-use observed (display-only correlation)");
+			const piId = frame.router?.resolvePiIdForModelId(ev.toolUseId);
+			if (piId) {
+				frame.log.debug({ toolu: ev.toolUseId, piId }, "processDriverEvent: tool-use observed (display-only correlation)");
 			}
 			return;
 		}
@@ -1437,11 +2447,13 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			return;
 		}
 		case "done": {
+			const failure = frame.router?.finalizeToolUseCorrelation();
+			if (failure) applyCorrelationFailure(frame, failure);
 			if (frame.currentPiStream) {
 				closeOpenInlineBlocks(frame);
 				syncTurnContent(frame);
 			}
-			frame.turnOutput.stopReason = frame.turnSawToolCall ? "toolUse" : "stop";
+			if (!frame.correlationFailed) frame.turnOutput.stopReason = frame.turnSawToolCall ? "toolUse" : "stop";
 			return;
 		}
 		case "error": {
@@ -1458,7 +2470,9 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
  * the next turn cold-starts); finalizes the current pi stream like the SDK
  * finalizer; pops the frame iff it's the top and has no pending resolvers.
  */
-function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
+function finalizeClaudePFrame(frame: QueryFrame, res: InferenceDriverDoneResult): void {
+	const correlationFailure = frame.wasAborted ? undefined : frame.router?.finalizeToolUseCorrelation();
+	if (correlationFailure) applyCorrelationFailure(frame, correlationFailure);
 	// Best-effort: remove this turn's MCP-readiness sentinel (paired to the
 	// router socket). Per-attempt spawns already clear stale copies; this drops
 	// the final one so /tmp doesn't accumulate. Never throws.
@@ -1477,55 +2491,74 @@ function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 	// "this is the main turn" discriminator (design D1). Persisting a subagent frame
 	// would make a later --resume reattach the wrong (subagent) transcript.
 	const isMainTurn = stack[0] === frame;
-	// Clear the cache on a spawn-level error OR a turn-level error so the next turn
-	// cold-starts — giving the MCP attach a fresh try.
-	if (res.stopReason === "error" || frame.turnOutput?.stopReason === "error") {
-		// Mark the frame as driver-errored so a tool-result that pi delivers AFTER
-		// the driver died (currentPiStream is null while pi executes a held tool)
-		// closes pi's stream with a terminal error instead of wiring into a dead
-		// driver and hanging forever. See streamClaudeAgentSdk Case 1
-		// (`willHangIfWired`). This is the error-path analogue of the abort path.
+	const errored = res.stopReason === "error" || frame.turnOutput?.stopReason === "error";
+	const outcome = errored
+		? "error" as const
+		: frame.wasAborted || res.stopReason === "aborted"
+			? "aborted" as const
+			: "result" as const;
+	const persistence = resumePersistenceAction({
+		driver: frame.driverKind,
+		phase: frame.attemptPhase,
+		outcome,
+	});
+
+	if (errored) {
+		// Error-path analogue of abort: late tool results close instead of hanging.
 		frame.driverErrored = true;
-		// Clear cache so the next turn cold-starts (spec: "any cached driver
-		// session id is cleared").
-		if (cachedSessionId === res.sessionId || cachedSessionCwd === cwd) {
-			cachedSessionId = null;
-			cachedSessionCwd = null;
-		}
-		// D7: invalidate the persisted sidecar UNCONDITIONALLY by key (the in-memory
-		// clear above is session-id-guarded, but a stale sidecar left on disk would
-		// warm-resume on the next restart). Includes the McpNotReady fail-fast path
-		// (a gated, never-submitted attempt persists no resumable sidecar).
+	}
+	if (persistence !== "persist" && isMainTurn && frame.driverKind === "claude-print") {
+		lastSentMessageHashes = frame.priorMessageHashes;
+	} else if (persistence === "persist" && isMainTurn) {
+		lastSentMessageHashes = frame.currentMessageHashes;
+	}
+	if (persistence === "invalidate") {
+		if (
+			cachedSessionHint?.driver === frame.driverKind &&
+			(cachedSessionHint.sessionId === res.sessionId || cachedSessionHint.cwd === cwd)
+		) cachedSessionHint = null;
 		if (isMainTurn) {
 			const fullSid = getFullPiSessionId();
-			if (fullSid) invalidateSidecar(cwd, fullSid);
+			if (fullSid) {
+				try { invalidateDriverResumeSidecar(cwd, fullSid); }
+				catch (err) {
+					frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "finalizeClaudePFrame: resume sidecar invalidation failed (ignored)");
+				}
+			}
 		}
-		frame.log.warn({ stopReason: res.stopReason, turnStopReason: frame.turnOutput?.stopReason, exitCode: res.exitCode, signal: res.signal }, `finalizeClaudePFrame: error (exitCode=${res.exitCode ?? "null"} signal=${res.signal ?? "null"}) — cleared cached session`);
-	} else if (res.sessionId) {
-		// Cache the session id for next-turn warm resume — even on abort, so the
-		// next turn can resume and the model sees the interrupted partial.
-		cachedSessionId = res.sessionId;
-		cachedSessionCwd = cwd;
-		// D1: persist the content-free resume sidecar for cross-restart warm resume.
-		// Main turn only (isMainTurn); abort is non-error and reaches here, so an
-		// aborted-mid-tool session stays resumable (R7). Best-effort: a write
-		// failure logs and the turn completes normally.
+		frame.log.warn(
+			{ driver: frame.driverKind, phase: frame.attemptPhase, outcome, exitCode: res.exitCode, signal: res.signal },
+			"finalizeClaudePFrame: invalidated resume hint",
+		);
+	} else if (persistence === "persist" && res.sessionId) {
+		cachedSessionHint = { driver: frame.driverKind, sessionId: res.sessionId, cwd };
 		if (isMainTurn && frame.sha256Chain) {
 			const fullSid = getFullPiSessionId();
 			if (fullSid) {
 				try {
-					writeSidecar(cwd, fullSid, {
+					writeDriverResumeSidecar(cwd, fullSid, {
+						driver: frame.driverKind,
 						claudeSessionId: res.sessionId,
 						piSessionId: fullSid,
 						historyHashChain: frame.sha256Chain,
 						claudeVersion: getInstalledClaudeVersion(),
 					});
 				} catch (err) {
+					// A failed replacement cannot be trusted for later warm resume.
+					try { invalidateDriverResumeSidecar(cwd, fullSid); } catch { /* ignore */ }
 					frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "finalizeClaudePFrame: resume sidecar write failed (ignored)");
 				}
 			}
 		}
-		frame.log.debug({ aborted: frame.wasAborted, session: res.sessionId.slice(0, 8) }, `finalizeClaudePFrame: caching session=${res.sessionId.slice(0, 8)}${frame.wasAborted ? " (aborted)" : ""}`);
+		frame.log.debug(
+			{ driver: frame.driverKind, aborted: frame.wasAborted, session: res.sessionId.slice(0, 8) },
+			`finalizeClaudePFrame: caching session=${res.sessionId.slice(0, 8)}${frame.wasAborted ? " (aborted)" : ""}`,
+		);
+	} else {
+		frame.log.debug(
+			{ driver: frame.driverKind, phase: frame.attemptPhase, outcome },
+			"finalizeClaudePFrame: preserving prior resume hint",
+		);
 	}
 
 	// Finalize the most recent stream (mirrors SDK finalizer).
@@ -1548,7 +2581,7 @@ function finalizeClaudePFrame(frame: QueryFrame, res: ClaudePDoneResult): void {
 	}
 
 	if (top() === frame) {
-		if (frame.pendingResolvers.size === 0) {
+		if (frame.pendingResolvers.size === 0 && frame.routedPiIds.size === 0) {
 			void frame.router?.stop();
 			stack.pop();
 		} else {
@@ -1568,6 +2601,7 @@ async function startFreshQuery(
 	context: Context,
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
+	pinnedOwner?: { driverKind: DriverKind; driver: InferenceDriverAdapter },
 ): Promise<void> {
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const { mcpTools, customToolNameToPi } = resolveMcpTools(context, "");
@@ -1586,14 +2620,53 @@ async function startFreshQuery(
 		return;
 	}
 
-	// Image handling: claude-p cannot inject images — strip + warn, deliver text-only.
+	// Resolve owner before consulting any cache or persisted hint. Nested
+	// invocations inherit their frame; normal fresh turns use extension-load pin.
+	// Direct unit callers fall back to local resolution because they never invoke
+	// the Pi extension entry point.
+	let driverKind: DriverKind;
+	let driver: InferenceDriverAdapter;
+	try {
+		const ownerFrame = stack.length > 0 ? stack[stack.length - 1] : undefined;
+		const owner = pinnedOwner ?? ownerFrame ?? extensionDriverOwner;
+		if (owner) {
+			driverKind = owner.driverKind;
+			driver = owner.driver;
+		} else {
+			driverKind = loadBridgeDriverConfig({ projectCwd: cwd });
+			if (cachedSessionHint && cachedSessionHint.driver !== driverKind) cachedSessionHint = null;
+			driver = getInferenceDriverAdapter(driverKind);
+			driver.preflight();
+		}
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd }).error(
+			{ err: msg },
+			`startFreshQuery: driver selection failed — ${msg}`,
+		);
+		queueMicrotask(() => {
+			const out = newTurnOutput(model);
+			out.stopReason = "error";
+			out.errorMessage = msg;
+			stream.push({ type: "start", partial: out });
+			stream.push({ type: "error", reason: "error", error: out });
+			stream.end();
+		});
+		return;
+	}
+
+	// Both maintained drivers expose text-normalized history. Count every image
+	// block, warn with pinned identity, and omit image bytes from cold/warm frames.
 	let imageCount = 0;
-	for (const m of context.messages) {
-		const content = Array.isArray(m.content) ? m.content : [];
-		for (const b of content) if ((b as any).type === "image") imageCount++;
+	for (const message of context.messages) {
+		const content = Array.isArray(message.content) ? message.content : [];
+		for (const block of content) if ((block as any).type === "image") imageCount++;
 	}
 	if (imageCount > 0) {
-		logger.child({ piSessionId: getPiSessionId(), model: model.id }).warn({ imageCount }, `streamSimple[claude-p]: dropping ${imageCount} image block(s) — claude-p path is text-only (image-strip-on-main-path)`);
+		logger.child({ piSessionId: getPiSessionId(), model: model.id, driver: driverKind }).warn(
+			{ imageCount },
+			`streamSimple[${driverKind}]: dropping ${imageCount} image block(s) — selected driver is text-only (image-strip-on-main-path)`,
+		);
 	}
 
 	// Divergence detection: if any prior-position content changed (or pi's
@@ -1605,11 +2678,10 @@ async function startFreshQuery(
 	const diverged = detectHistoryDivergence(lastSentMessageHashes, newHashes);
 	if (diverged) {
 		logger.child({ piSessionId: getPiSessionId(), model: model.id }).info(
-			{ priorLen: lastSentMessageHashes?.length ?? 0, newLen: newHashes.length, droppedSession: cachedSessionId?.slice(0, 8) ?? null },
-			`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionId?.slice(0, 8) ?? "none"})`,
+			{ priorLen: lastSentMessageHashes?.length ?? 0, newLen: newHashes.length, droppedSession: cachedSessionHint?.sessionId.slice(0, 8) ?? null },
+			`startFreshQuery: history divergence detected — dropping cached session (was ${cachedSessionHint?.sessionId.slice(0, 8) ?? "none"})`,
 		);
-		cachedSessionId = null;
-		cachedSessionCwd = null;
+		cachedSessionHint = null;
 	}
 
 	// Warm-pi-resume (design D4/D2): on the FIRST turn after a session_start:resume
@@ -1621,20 +2693,28 @@ async function startFreshQuery(
 	// always-safe floor. A deleted transcript is NOT pre-checked here: it surfaces
 	// as a `--resume` runtime error -> sidecar invalidated -> next turn cold (T0.1).
 	const fingerprintItems = messagesToFingerprintItems(context.messages);
+	let persistedWarmBoundaryLength: number | undefined;
 	if (warmResumePending) {
 		warmResumePending = false; // one-shot, regardless of outcome
 		const fullSid = getFullPiSessionId();
-		if (cachedSessionId === null && fullSid) {
-			const sidecar = readSidecar(cwd, fullSid);
+		if (cachedSessionHint === null && fullSid) {
+			let sidecar: DriverResumeSidecar | null = null;
+			try { sidecar = readDriverResumeSidecar(cwd, fullSid, driverKind); }
+			catch (err) {
+				logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }).warn(
+					{ err: err instanceof Error ? err.message : String(err) },
+					"startFreshQuery: resume store locked/unreadable — cold-starting",
+				);
+			}
 			const decision = validateWarmResume({
 				sidecar,
 				currentMessages: fingerprintItems,
 				currentClaudeVersion: getInstalledClaudeVersion(),
 			});
-			const wlog = logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd });
+			const wlog = logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind });
 			if (decision.warm && sidecar) {
-				cachedSessionId = sidecar.claudeSessionId;
-				cachedSessionCwd = cwd;
+				cachedSessionHint = { driver: sidecar.driver, sessionId: sidecar.claudeSessionId, cwd };
+				persistedWarmBoundaryLength = sidecar.historyHashChain.length;
 				wlog.info(
 					{ resume: sidecar.claudeSessionId.slice(0, 8), reason: decision.reason },
 					`startFreshQuery: warm-resume validated — resuming claude session ${sidecar.claudeSessionId.slice(0, 8)} (no cold re-pack)`,
@@ -1648,16 +2728,30 @@ async function startFreshQuery(
 		}
 	}
 
-	// R6: set the in-memory divergence baseline by recomputing LOCALLY over pi's
-	// loaded history (hashMessage format) — NOT from the sidecar's sha256 chain —
-	// so subsequent in-process turns detect a fork after a warm resume.
+	// R6: keep prior boundary so an unaccepted direct attempt can roll back. The
+	// current boundary becomes durable only at the same acceptance-safe finalizer.
+	const priorMessageHashes = lastSentMessageHashes;
 	lastSentMessageHashes = newHashes;
 
-	const useResume = cachedSessionId !== null && cachedSessionCwd === cwd;
+	if (cachedSessionHint && cachedSessionHint.driver !== driverKind) {
+		logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }).info(
+			{ hintDriver: cachedSessionHint.driver },
+			"startFreshQuery: dropping cross-driver in-memory resume hint",
+		);
+		cachedSessionHint = null;
+	}
+	const useResume = cachedSessionHint !== null &&
+		cachedSessionHint.cwd === cwd &&
+		cachedSessionHint.driver === driverKind;
 
-	// Cold → embed full pi history; warm → only the new user message (text-only).
+	// Cold → exact full canonical history. Warm → every user material item after
+	// last accepted boundary. This matters after pre-submit abort: prior hint is
+	// preserved, while aborted/unseen user material must still reach resumed model.
+	const warmBoundaryLength = persistedWarmBoundaryLength ?? priorMessageHashes?.length;
 	const promptString = useResume
-		? promptText
+		? warmBoundaryLength === undefined
+			? promptText
+			: buildWarmDeltaPrompt(context.messages, warmBoundaryLength)
 		: buildColdStartPrompt(context.messages);
 
 	// System-prompt assembly.
@@ -1669,10 +2763,17 @@ async function startFreshQuery(
 	// Prepend the MCP-startup-race guard so the model deterministically waits for
 	// the `custom-tools` shim to connect before declaring a bridged tool missing
 	// (root cause of S14/S25 on the claude-p path; see CLAUDE_P_MCP_WAIT_PREAMBLE).
-	const staticSystemPrompt = withClaudePMcpWaitPreamble(systemPromptAppend ?? "You are a helpful coding assistant.");
+	const baseSystemPrompt = systemPromptAppend ?? "You are a helpful coding assistant.";
+	// Direct path has structural tools/list readiness and --tools "" removes the
+	// native WaitForMcpServers tool. Keep historical preamble interactive-only.
+	const staticSystemPrompt = driverKind === "claude-p"
+		? withClaudePMcpWaitPreamble(baseSystemPrompt)
+		: baseSystemPrompt;
 
 	// Build the frame BEFORE the router (onPark closes over it).
 	const frame: QueryFrame = {
+		driverKind,
+		driver,
 		currentPiStream: stream,
 		turnOutput: newTurnOutput(model),
 		turnStarted: false,
@@ -1681,15 +2782,22 @@ async function startFreshQuery(
 		customToolNameToPi,
 		model,
 		cwd,
-		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: "claude-p" }),
+		log: logger.child({ piSessionId: getPiSessionId(), model: model.id, cwd, driver: driverKind }),
 		pendingResolvers: new Map(),
 		pendingResults: new Map(),
+		routedPiIds: new Set(),
+		pendingRouterParks: [],
+		routerParkFlushScheduled: false,
 		wasAborted: false,
 		driverErrored: false,
+		correlationFailed: false,
 		donePromise: Promise.resolve(),
 		// Content-free fingerprint of pi's history at this turn's start, for the
 		// resume sidecar persisted on a successful main-turn finalize (design D1).
 		sha256Chain: computeSha256Chain(fingerprintItems),
+		priorMessageHashes,
+		currentMessageHashes: newHashes,
+		attemptPhase: "spawned",
 	};
 	resetTurnState(frame);
 
@@ -1698,6 +2806,7 @@ async function startFreshQuery(
 	const router = createRouter({
 		logger: frame.log,
 		onPark: (info) => onRouterPark(frame, info),
+		onCorrelationFailure: (failure) => applyCorrelationFailure(frame, failure),
 	});
 	frame.router = router;
 	frame.pendingResolvers = router.pendingResolvers as any;
@@ -1736,18 +2845,23 @@ async function startFreshQuery(
 	});
 
 	// System prompt: inline text, or file when large.
-	const systemPrompt: SystemPromptSource = staticSystemPrompt.length > PROMPT_FILE_THRESHOLD_BYTES
-		? { kind: "file", path: writeOverflowTmp("pcb-sysprompt", staticSystemPrompt) }
-		: { kind: "text", text: staticSystemPrompt };
+	const systemPrompt: SystemPromptSource = driverKind === "claude-print"
+		? { kind: "text", text: staticSystemPrompt }
+		: staticSystemPrompt.length > PROMPT_FILE_THRESHOLD_BYTES
+			? { kind: "file", path: writeOverflowTmp("pcb-sysprompt", staticSystemPrompt) }
+			: { kind: "text", text: staticSystemPrompt };
 
-	// Prompt: positional, or --input-file when large/multiline.
-	const promptSrc: PromptSource = promptString.length > PROMPT_FILE_THRESHOLD_BYTES
-		? { kind: "file", path: writeOverflowTmp("pcb-prompt", promptString) }
-		: { kind: "positional", text: promptString };
+	// Direct user history always rides one stdin NDJSON frame; its adapter owns
+	// private prompt artifacts. Interactive keeps positional/overflow behavior.
+	const promptSrc: PromptSource = driverKind === "claude-print"
+		? { kind: "positional", text: promptString }
+		: promptString.length > PROMPT_FILE_THRESHOLD_BYTES
+			? { kind: "file", path: writeOverflowTmp("pcb-prompt", promptString) }
+			: { kind: "positional", text: promptString };
 
 	// Session identity: fresh (new uuid) XOR resume (cached id).
-	const session = useResume && cachedSessionId
-		? { kind: "resume" as const, sessionId: cachedSessionId }
+	const session = useResume && cachedSessionHint
+		? { kind: "resume" as const, sessionId: cachedSessionHint.sessionId }
 		: { kind: "fresh" as const, sessionId: randomUUID() };
 
 	// Peek mirror: MAIN-TURN spawns only. startFreshQuery is the shared spawn
@@ -1758,7 +2872,9 @@ async function startFreshQuery(
 	// code-review r1 P0). prepareMirrorForSpawn is failure-isolated: any fs
 	// error → undefined and the spawn proceeds unmirrored.
 	const isMainTurnSpawn = stack.length === 0;
-	const mirrorFile = isMainTurnSpawn ? prepareMirrorForSpawn(session.sessionId, frame.log) : undefined;
+	const mirrorFile = isMainTurnSpawn && driver.capabilities.mirror
+		? prepareMirrorForSpawn(session.sessionId, frame.log)
+		: undefined;
 	// Retries re-mint a fresh mirror path (per-spawn naming); track the LATEST
 	// minted path so the turn-end owner check clears the right one.
 	let turnMirrorFile = mirrorFile;
@@ -1769,14 +2885,14 @@ async function startFreshQuery(
 		prompt: promptSrc,
 		mcpConfig,
 		session,
-		debugFile: resolveClaudeDebugFile(session.sessionId),
+		debugFile: resolveClaudeDebugFile(session.sessionId, driverKind),
 		mcpReadyFile,
 		mirrorFile,
 	};
 
 	frame.log.debug(
-		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionId?.slice(0, 8) : null },
-		`streamSimple[claude-p]: fresh spawn model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionId?.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
+		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionHint?.sessionId.slice(0, 8) : null },
+		`streamSimple[${driverKind}]: fresh spawn model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionHint?.sessionId.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
 	);
 
 	stack.push(frame);
@@ -1785,7 +2901,7 @@ async function startFreshQuery(
 	// pi stream when pi is awaiting a tool result (currentPiStream null). Does
 	// NOT drop cachedSessionId here (finalizeClaudePFrame handles caching).
 	const onAbort = () => {
-		frame.log.info({ pendingResolvers: frame.pendingResolvers.size }, `onAbort[claude-p]: pendingResolvers=${frame.pendingResolvers.size} (deferred drain)`);
+		frame.log.info({ pendingResolvers: frame.pendingResolvers.size, driver: frame.driverKind }, `onAbort[${frame.driverKind}]: pendingResolvers=${frame.pendingResolvers.size} (deferred drain)`);
 		frame.wasAborted = true;
 		abortFrame(frame);
 		if (!frame.currentPiStream) {
@@ -1795,9 +2911,9 @@ async function startFreshQuery(
 				out.errorMessage = out.errorMessage ?? "Operation aborted by user";
 				stream.push({ type: "error", reason: "aborted", error: out });
 				stream.end();
-				frame.log.info({ where: "tool-execution-window" }, "pushAbortedError[claude-p]: pi was awaiting tool result, surfacing aborted");
+				frame.log.info({ where: "tool-execution-window", driver: frame.driverKind }, `pushAbortedError[${frame.driverKind}]: pi was awaiting tool result, surfacing aborted`);
 			} catch (err) {
-				frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "pushAbortedError[claude-p]: stream may already be ended");
+				frame.log.warn({ err: err instanceof Error ? err.message : String(err), driver: frame.driverKind }, `pushAbortedError[${frame.driverKind}]: stream may already be ended`);
 			}
 		}
 	};
@@ -1821,28 +2937,78 @@ async function startFreshQuery(
 	// No bridge-side liveness timer: a silent claude-p is recovered only by a real
 	// subprocess exit (classified `error` → D33 retry gate) or a caller-driven
 	// abort. See change `no-liveness-timeouts-add-visibility`.
-	const handle = _spawnClaudePFactory(
-		cfg,
-		{ onEvent: (ev: DriverStreamEvent) => { processDriverEvent(frame, ev); }, logger: frame.log as any, binPath: resolveClaudePBin(), suppressResumeReplay, livePromptText: useResume ? promptText : undefined, diagnosticsDir: DIAGNOSTICS_DIR, isHeldRound: () => frame.pendingResolvers.size > 0 },
-		{
+	const handle = driver.spawnMainTurn({
+		config: cfg,
+		options: {
+			onEvent: (ev: InferenceDriverEvent) => { processDriverEvent(frame, ev); },
+			onToolUseBatch: (batch) => processDriverToolUseBatch(frame, batch),
+			onLifecycleEvent: (event: InferenceDriverLifecycleEvent) => {
+					if (event.kind === "attempt-phase") {
+					// Persistence needs last acceptance-relevant boundary. Terminal is
+					// observable lifecycle metadata, not evidence prompt was submitted.
+					if (event.phase !== "terminal") {
+						frame.attemptPhase = advanceDriverAttemptPhase(frame.attemptPhase, event.phase);
+					}
+					return;
+				}
+				if (event.kind !== "retrying") return;
+				const action = resumePersistenceAction({
+					driver: frame.driverKind,
+					phase: frame.attemptPhase,
+					outcome: "retry",
+				});
+				if (action === "invalidate") {
+					if (frame.driverKind === "claude-print" && stack[0] === frame) {
+						lastSentMessageHashes = frame.priorMessageHashes;
+					}
+					if (cachedSessionHint?.driver === frame.driverKind && cachedSessionHint.cwd === cwd) {
+						cachedSessionHint = null;
+					}
+					if (stack[0] === frame) {
+						const fullSid = getFullPiSessionId();
+						if (fullSid) {
+							try { invalidateDriverResumeSidecar(cwd, fullSid); }
+							catch (err) {
+								frame.log.warn({ err: err instanceof Error ? err.message : String(err) }, "startFreshQuery: retry sidecar invalidation failed (ignored)");
+							}
+						}
+					}
+				}
+				frame.attemptPhase = "spawned";
+			},
+			logger: frame.log,
+			executable: driverKind === "claude-print" ? resolveClaudePrintBin() : resolveClaudePBin(),
+			suppressResumeReplay,
+			livePromptText: useResume ? promptText : undefined,
+			diagnosticsDir: DIAGNOSTICS_DIR,
+			isHeldRound: () => frame.pendingResolvers.size > 0,
+		},
+		resilience: {
 			maxRetries: 2,
 			shouldRetry: () => !router.everRoutedToolCall,
 			freshSessionId: () => randomUUID(),
+			coldRetryConfig: (sessionId) => ({
+				...cfg,
+				prompt: { kind: "positional", text: buildColdStartPrompt(context.messages) },
+				session: { kind: "fresh", sessionId },
+				debugFile: resolveClaudeDebugFile(sessionId, driverKind),
+				mirrorFile: undefined,
+			}),
 			// Per-spawn mirror naming across retries: each retry attempt gets its
 			// own mirror file, published as current so an open overlay retargets
 			// (claude-peek-overlay.peek-follows-latest-main-turn-spawn-only;
 			// code-review r4). Main-turn spawns only — subagent spawns never
 			// mirrored, so their retries stay unmirrored too.
-			remintMirrorFile: isMainTurnSpawn
+			remintMirrorFile: isMainTurnSpawn && driver.capabilities.mirror
 				? (sid) => {
 						turnMirrorFile = prepareMirrorForSpawn(sid, frame.log);
 						return turnMirrorFile;
 					}
 				: undefined,
-			onRetry: (attempt) => frame.log.warn({ attempt }, `startFreshQueryClaudeP: retrying claude-p spawn (attempt ${attempt})`),
+			onRetry: (attempt) => frame.log.warn({ attempt, driver: driverKind }, `startFreshQuery: retrying ${driverKind} spawn (attempt ${attempt})`),
 		},
-	);
-	frame.claudeHandle = handle;
+	});
+	frame.driverHandle = handle;
 	frame.donePromise = handle.done
 		.then((res) => finalizeClaudePFrame(frame, res))
 		// Turn over → no active main-provider spawn: publish null so the overlay
@@ -1865,20 +3031,51 @@ async function startFreshQuery(
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	const activeKey = Symbol.for("claude-bridge:active");
+	const globals = globalThis as Record<symbol, any>;
+	if (globals[activeKey]) {
+		log.info("provider: skipping duplicate extension activation (already active)");
+		return;
+	}
+
+	// Claim ownership before registering commands, events, or providers. Duplicate
+	// module activations must not mutate the process-scoped driver owner. A real
+	// /reload is admitted only after session_shutdown releases this marker.
+	extensionDriverOwner = null;
+	const selectedOwner = pinExtensionDriver(process.cwd());
+	globals[activeKey] = streamClaudeAgentSdk;
+	try {
+		activateOwnedExtension(pi, selectedOwner);
+	} catch (error) {
+		delete globals[activeKey];
+		extensionDriverOwner = null;
+		throw error;
+	}
+}
+
+function activateOwnedExtension(
+	pi: ExtensionAPI,
+	selectedOwner: { driverKind: DriverKind; driver: InferenceDriverAdapter },
+): void {
 	piApiRef = pi;
 
 	// Disable non-essential CC traffic.
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+	log.info({ driver: selectedOwner.driverKind }, "provider: selected driver at extension load");
 
-	// /claude-peek: live read-only PiP of the underlying claude TUI
+	// /claude-peek: live read-only PiP of the pinned underlying driver.
 	// (claude-peek-overlay.overlay-toggle-command).
-	registerClaudePeekCommand(pi, log);
+	registerClaudePeekCommand(pi, log, {
+		getDriverKind: () => selectedOwner.driverKind,
+	});
 
 	// Reset session cache on pi lifecycle events that diverge history.
 	const clearSession = (event: string) => {
-		log.info({ event, droppedSession: cachedSessionId?.slice(0, 8) ?? null }, `${event}: dropping cached session ${cachedSessionId?.slice(0, 8) ?? "none"}`);
-		cachedSessionId = null;
-		cachedSessionCwd = null;
+		log.info(
+			{ event, droppedSession: cachedSessionHint?.sessionId.slice(0, 8) ?? null, driver: cachedSessionHint?.driver ?? null },
+			`${event}: dropping cached session ${cachedSessionHint?.sessionId.slice(0, 8) ?? "none"}`,
+		);
+		cachedSessionHint = null;
 		lastSentMessageHashes = null;
 		// Forget the seeded context window: a post-/compact (or /new, /fork, …) turn
 		// must show "?" until its real usage lands, not a stale prior size.
@@ -1938,28 +3135,38 @@ export default function (pi: ExtensionAPI) {
 		delete (globalThis as Record<symbol, any>)[Symbol.for("claude-bridge:active")];
 	});
 
-	// Provider registration. Subagent-loaded module instances don't re-register
-	// because pi-ai's ModelRegistry is shared — first writer wins for the
-	// claude-bridge provider. Subsequent calls for claude-bridge models go
-	// through the parent's streamSimple via the stack (which we own).
-	const ACTIVE_KEY = Symbol.for("claude-bridge:active");
-	const g = globalThis as Record<symbol, any>;
-	if (!g[ACTIVE_KEY]) {
-		g[ACTIVE_KEY] = streamClaudeAgentSdk;
-		pi.registerProvider(PROVIDER_ID, {
-			baseUrl: "claude-bridge",
-			apiKey: "not-used",
-			api: "claude-bridge" as any,
-			models: MODELS as any,
-			streamSimple: streamClaudeAgentSdk as any,
-		});
-		log.info({ models: MODELS.length }, `provider: registered (models=${MODELS.length})`);
-	} else {
-		log.info(`provider: skipping re-registration (already active)`);
-	}
+	// Provider registration. Top-level activation ownership ensures subagent-loaded
+	// module instances cannot re-register commands/events or replace pinned state.
+	pi.registerProvider(PROVIDER_ID, {
+		baseUrl: "claude-bridge",
+		apiKey: "not-used",
+		api: "claude-bridge" as any,
+		models: MODELS as any,
+		streamSimple: streamClaudeAgentSdk as any,
+	});
+	// Pi may load this extension with a host-bundled pi-ai while sibling
+	// extensions resolve the bridge package's pi-ai copy. registerProvider()
+	// populates only the host registry; register the same stream locally so
+	// direct piAi.complete() calls resolve the custom API in either graph.
+	piAi.registerApiProvider({
+		api: "claude-bridge" as any,
+		stream: streamClaudeAgentSdk as any,
+		streamSimple: streamClaudeAgentSdk as any,
+	}, `provider:${PROVIDER_ID}:local`);
+	log.info({ models: MODELS.length }, `provider: registered (models=${MODELS.length})`);
 }
 
 // Suppress unused-import lints in TS strict mode
 void _resolveModelId;
 void keyHint;
 void pascalCase;
+
+if (process.argv.includes("--resume-quarantine-direct")) {
+	try {
+		const result = quarantineDirectResumeSidecars();
+		process.stdout.write(`${JSON.stringify(result)}\n`);
+	} catch (error) {
+		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+		process.exitCode = 1;
+	}
+}

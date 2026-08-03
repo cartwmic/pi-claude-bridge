@@ -40,7 +40,7 @@ describe("router — park and resolve", () => {
 			assert.equal(resolved, false, "must not resolve before deliver()");
 			const parked = router.listParkedCalls();
 			assert.equal(parked.length, 1);
-			assert.equal(parked[0].name, "mcp__custom-tools__read");
+			assert.equal(parked[0].name, "read", "qualified shim name normalizes to router bare name");
 			const piId = parked[0].piId;
 			assert.equal(piId, "pi-1");
 			assert.ok(router.pendingResolvers.has(piId));
@@ -79,6 +79,186 @@ describe("router — park and resolve", () => {
 			const res = await client.request({ kind: "tools/call", id: "s", name: "n", arguments: {} });
 			assert.deepEqual(res.content, [{ type: "text", text: "early" }]);
 			assert.equal(router.pendingResults.has("pi-fixed"), false);
+		} finally {
+			client.close();
+			await router.stop();
+		}
+	});
+});
+
+// AC: mcp-stdio-shim.tool-call-correlation-across-the-split-channels-d32
+// Observation channel never executes. Router keeps pi id as resolver key while
+// model ids become order-independent aliases inside a sealed assistant batch.
+describe("router — D32 observation join", () => {
+	it("joins observation-first qualified name to delayed bare shim call", async () => {
+		await withRouter(async (router, client) => {
+			router.observeToolUse({ batchId: "msg-1", modelId: "toolu_obs", name: "mcp__custom-tools__read", arguments: { z: 1, a: 2 } });
+			router.sealToolUseBatch("msg-1");
+
+			const callP = client.request({ kind: "tools/call", id: "shim-obs", name: "read", arguments: { a: 2, z: 1 } });
+			await new Promise((r) => setTimeout(r, 20));
+			const [parked] = router.listParkedCalls();
+			assert.equal(parked.piId, "pi-1");
+			assert.equal(parked.modelId, "toolu_obs");
+			assert.equal(router.resolvePiIdForModelId("toolu_obs"), "pi-1");
+			assert.equal(router.getCorrelationFailure(), undefined);
+
+			router.deliver("pi-1", { content: [{ type: "text", text: "ok" }] });
+			assert.equal((await callP).content[0].text, "ok");
+			assert.equal(router.resolvePiIdForModelId("toolu_obs"), undefined, "alias removed with resolver");
+		});
+	});
+
+	it("keeps completed shim metadata until a later observation joins", async () => {
+		await withRouter(async (router, client) => {
+			const callP = client.request({ kind: "tools/call", id: "shim-fast", name: "read", arguments: { path: "/fast" } });
+			await new Promise((r) => setTimeout(r, 20));
+			router.deliver("pi-1", { content: [{ type: "text", text: "fast" }] });
+			await callP;
+			assert.equal(router.listParkedCalls().length, 0, "resolver already settled");
+			router.observeToolUse({ batchId: "msg-fast", modelId: "toolu_fast", name: "mcp__custom-tools__read", arguments: { path: "/fast" } });
+			router.sealToolUseBatch("msg-fast");
+			assert.equal(router.finalizeToolUseCorrelation(), undefined);
+			assert.equal(router.resolvePiIdForModelId("toolu_fast"), undefined, "settled resolver alias is not retained");
+		});
+	});
+
+	it("joins shim-first and keeps resolver keyed by stable pi id", async () => {
+		await withRouter(async (router, client) => {
+			const callP = client.request({ kind: "tools/call", id: "shim-first", name: "read", arguments: { path: "/x" } });
+			await new Promise((r) => setTimeout(r, 20));
+			assert.ok(router.pendingResolvers.has("pi-1"));
+
+			router.observeToolUse({ batchId: "msg-1", modelId: "toolu_late", name: "mcp__custom-tools__read", arguments: { path: "/x" } });
+			router.sealToolUseBatch("msg-1");
+			assert.equal(router.resolvePiIdForModelId("toolu_late"), "pi-1");
+			assert.ok(router.pendingResolvers.has("pi-1"));
+			assert.equal(router.pendingResolvers.has("toolu_late"), false);
+
+			router.deliver("pi-1", { content: [{ type: "text", text: "done" }] });
+			assert.equal((await callP).id, "shim-first");
+		});
+	});
+
+	it("pairs identical calls positionally inside one sealed batch", async () => {
+		await withRouter(async (router, client) => {
+			router.observeToolUse({ batchId: "msg-p", modelId: "toolu_1", name: "mcp__custom-tools__ls", arguments: { dir: "/" } });
+			router.observeToolUse({ batchId: "msg-p", modelId: "toolu_2", name: "mcp__custom-tools__ls", arguments: { dir: "/" } });
+			router.sealToolUseBatch("msg-p");
+			const p1 = client.request({ kind: "tools/call", id: "shim-1", name: "ls", arguments: { dir: "/" } });
+			const p2 = client.request({ kind: "tools/call", id: "shim-2", name: "ls", arguments: { dir: "/" } });
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(router.resolvePiIdForModelId("toolu_1"), "pi-1");
+			assert.equal(router.resolvePiIdForModelId("toolu_2"), "pi-2");
+			router.deliver("pi-2", { content: [{ type: "text", text: "second" }] });
+			router.deliver("pi-1", { content: [{ type: "text", text: "first" }] });
+			assert.equal((await p1).content[0].text, "first");
+			assert.equal((await p2).content[0].text, "second");
+		});
+	});
+
+	it("ignores native, housekeeping, foreign, and unadvertised custom observations without count failure", async () => {
+		const router = createRouter({ mintPiId: seqMinter() });
+		router.declareTools([{ name: "read" }]);
+		assert.equal(router.observeToolUse({ batchId: "ignored", modelId: "native", name: "Read", arguments: {} }), "ignored");
+		assert.equal(router.observeToolUse({ batchId: "ignored", modelId: "wait", name: "WaitForMcpServers", arguments: {} }), "ignored");
+		assert.equal(router.observeToolUse({ batchId: "ignored", modelId: "foreign", name: "mcp__foreign__read", arguments: {} }), "ignored");
+		assert.equal(
+			router.observeToolUse({ batchId: "ignored", modelId: "hallucinated", name: "mcp__custom-tools__retain", arguments: { text: "remember" } }),
+			"ignored",
+			"model-authored custom namespace names absent from tools/list are Claude-owned unknown-tool observations",
+		);
+		router.sealToolUseBatch("ignored");
+		assert.equal(router.finalizeToolUseCorrelation(), undefined);
+		await router.stop();
+	});
+
+	it("fails, drains, and signals invalidation on terminal canonical mismatch", async () => {
+		const failures = [];
+		const router = createRouter({ mintPiId: seqMinter(), onCorrelationFailure: (failure) => failures.push(failure) });
+		await router.start();
+		const client = await connectIpcClient(router.socketPath);
+		try {
+			const callP = client.request({ kind: "tools/call", id: "shim-bad", name: "write", arguments: { path: "/x" } });
+			await new Promise((r) => setTimeout(r, 20));
+			router.observeToolUse({ batchId: "msg-bad", modelId: "toolu_bad", name: "mcp__custom-tools__read", arguments: { path: "/x" } });
+			router.sealToolUseBatch("msg-bad");
+			assert.equal(router.getCorrelationFailure(), undefined, "seal defers while later batches may still arrive");
+			const failure = router.finalizeToolUseCorrelation();
+			assert.equal(failure?.code, "tool-call-correlation-mismatch");
+			assert.equal(failure?.invalidateResumeHint, true);
+			assert.equal(failures.length, 1);
+			const drained = await callP;
+			assert.equal(drained.isError, true);
+			assert.match(drained.content[0].text, /correlation/i);
+			assert.equal(router.pendingResolvers.size, 0);
+		} finally {
+			client.close();
+			await router.stop();
+			await router.stop();
+		}
+	});
+
+	it("does not assign a later-round shim call to the first terminal-published batch", async () => {
+		await withRouter(async (router, client) => {
+			const first = client.request({ kind: "tools/call", id: "shim-round-1", name: "read", arguments: { path: "/a" } });
+			const second = client.request({ kind: "tools/call", id: "shim-round-2", name: "write", arguments: { path: "/b" } });
+			await new Promise((r) => setTimeout(r, 20));
+			router.deliver("pi-1", { content: [{ type: "text", text: "first" }] });
+			router.deliver("pi-2", { content: [{ type: "text", text: "second" }] });
+			await Promise.all([first, second]);
+
+			router.observeToolUse({ batchId: "msg-round-1", modelId: "toolu_round_1", name: "mcp__custom-tools__read", arguments: { path: "/a" } });
+			router.sealToolUseBatch("msg-round-1");
+			assert.equal(router.getCorrelationFailure(), undefined, "second shim call may belong to unpublished next batch");
+			router.observeToolUse({ batchId: "msg-round-2", modelId: "toolu_round_2", name: "mcp__custom-tools__write", arguments: { path: "/b" } });
+			router.sealToolUseBatch("msg-round-2");
+			assert.equal(router.finalizeToolUseCorrelation(), undefined);
+		});
+	});
+
+	it("fails terminal under-count but permits delayed shim after batch seal", async () => {
+		const router = createRouter({ mintPiId: seqMinter() });
+		await router.start();
+		const client = await connectIpcClient(router.socketPath);
+		try {
+			router.observeToolUse({ batchId: "msg-delay", modelId: "toolu_delay", name: "mcp__custom-tools__read", arguments: {} });
+			router.sealToolUseBatch("msg-delay");
+			assert.equal(router.getCorrelationFailure(), undefined, "seal waits for delayed shim");
+			const callP = client.request({ kind: "tools/call", id: "shim-delay", name: "read", arguments: {} });
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(router.getCorrelationFailure(), undefined);
+			router.deliver("pi-1", { content: [{ type: "text", text: "ok" }] });
+			await callP;
+			assert.equal(router.finalizeToolUseCorrelation(), undefined);
+		} finally {
+			client.close();
+			await router.stop();
+		}
+
+		const under = createRouter();
+		under.observeToolUse({ batchId: "msg-under", modelId: "toolu_missing", name: "mcp__custom-tools__read", arguments: {} });
+		under.sealToolUseBatch("msg-under");
+		assert.equal(under.finalizeToolUseCorrelation()?.code, "tool-call-correlation-mismatch");
+		await under.stop();
+	});
+
+	it("deduplicates repeated shim request ids without minting or routing twice", async () => {
+		let parks = 0;
+		const router = createRouter({ mintPiId: seqMinter(), onPark: () => parks++ });
+		await router.start();
+		const client = await connectIpcClient(router.socketPath);
+		try {
+			const req = { kind: "tools/call", id: "same-id", name: "read", arguments: {} };
+			const p1 = client.request(req);
+			const p2 = client.request(req);
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(parks, 1);
+			assert.equal(router.listParkedCalls().length, 1);
+			router.observeToolUse({ batchId: "msg", modelId: "toolu", name: "mcp__custom-tools__read", arguments: {} });
+			router.sealToolUseBatch("msg");
+			router.deliver("pi-1", { content: [{ type: "text", text: "once" }] });
+			assert.deepEqual(await p1, await p2);
 		} finally {
 			client.close();
 			await router.stop();
@@ -139,6 +319,16 @@ describe("router — capture stash + tool decls", () => {
 			const ack = await client.request({ kind: "capture-stash", id: "c1", arguments: { summary: "done", ok: true } });
 			assert.equal(ack.kind, "capture-stash:ack");
 			assert.deepEqual(router.getCaptureStash(), { summary: "done", ok: true });
+		});
+	});
+
+	it("keeps latest monotonic validation failure until a valid stash suppresses it", async () => {
+		await withRouter(async (router, client) => {
+			await client.request({ kind: "capture-validation-failed", id: "v2", attempt: 2, field: "$.new", message: "new" });
+			await client.request({ kind: "capture-validation-failed", id: "v1", attempt: 1, field: "$.old", message: "old" });
+			assert.deepEqual(router.getCaptureValidationFailure(), { attempt: 2, field: "$.new", message: "new" });
+			await client.request({ kind: "capture-stash", id: "valid", arguments: { ok: true } });
+			assert.equal(router.getCaptureValidationFailure(), undefined);
 		});
 	});
 

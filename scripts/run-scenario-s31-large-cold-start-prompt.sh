@@ -2,8 +2,8 @@
 # Scenario S31 — Large cold-start prompt accepted end-to-end.
 # AC: scenario-coverage.large-cold-start-prompt-coverage
 # AC: claude-p-driver.fixed-claude-p-fork-pin
-# Regression class: claude-p echo confirmation must accept Claude/Ink's
-# paste-collapse display for 801+ byte prompts (`Pastedtext#1` after CSI strip).
+# Regression class: either selected driver must submit an 801+ byte first
+# prompt without truncation, early submission, or non-delivery.
 
 set -euo pipefail
 
@@ -30,7 +30,7 @@ EOF2
 # Keep this as one submitted pi message; avoid embedded newlines becoming extra turns.
 large_prompt=${large_prompt//$'\n'/ }
 prompt_bytes=$(printf '%s' "$large_prompt" | wc -c | tr -d ' ')
-echo "==== S31 large cold-start prompt (model=$SCENARIO_MODEL bytes=$prompt_bytes sentinel=$SENTINEL) ===="
+echo "==== S31 large cold-start prompt (driver=$SCENARIO_DRIVER model=$SCENARIO_MODEL bytes=$prompt_bytes sentinel=$SENTINEL) ===="
 if (( prompt_bytes <= 800 )); then
 	scn_fail "setup: prompt is not above 800 bytes (bytes=$prompt_bytes)"
 fi
@@ -56,6 +56,13 @@ else
 	scn_fail "mechanical: no cold fresh spawn observed"
 fi
 
+selected_count=$(scn_grep_count "streamSimple\\[${SCENARIO_DRIVER}\\]: fresh spawn" "$BRIDGE_LOG")
+if (( selected_count >= 1 )); then
+	scn_pass "mechanical: selected driver $SCENARIO_DRIVER owned the turn"
+else
+	scn_fail "mechanical: no selected-driver dispatch for $SCENARIO_DRIVER"
+fi
+
 completed_turns=$(scn_grep_count "caching session=" "$BRIDGE_LOG")
 echo "  completed turn count: $completed_turns"
 if (( completed_turns >= 1 )); then
@@ -64,7 +71,7 @@ else
 	scn_fail "mechanical: no completed turn / caching session observed"
 fi
 
-if grep -qE "finalizeClaudePFrame: error|stopReason=error|closed pi stream with error" "$BRIDGE_LOG" 2>/dev/null; then
+if grep -qE "stopReason=error|closed pi stream with error|driver.lifecycle.stateDump" "$BRIDGE_LOG" 2>/dev/null; then
 	scn_fail "mechanical: bridge recorded an error path during S31"
 else
 	scn_pass "mechanical: no bridge error path recorded"

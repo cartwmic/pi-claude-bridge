@@ -109,6 +109,24 @@ export function parseShimArgs(argv: string[], env: NodeJS.ProcessEnv = process.e
 
 export type ValidationError = { field: string; message: string };
 
+const CAPTURE_VALIDATION_EVIDENCE_MAX_BYTES = 500;
+
+function appendSchemaPath(path: string, key: string): string {
+	const root = path || "$";
+	return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)
+		? `${root}.${key}`
+		: `${root}[${JSON.stringify(key)}]`;
+}
+
+function boundedSafeText(value: string): string {
+	const safe = value.replace(/[\u0000-\u001f\u007f]/g, " ");
+	const bytes = Buffer.from(safe, "utf8");
+	if (bytes.length <= CAPTURE_VALIDATION_EVIDENCE_MAX_BYTES) return safe;
+	let end = CAPTURE_VALIDATION_EVIDENCE_MAX_BYTES;
+	while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+	return bytes.subarray(0, end).toString("utf8");
+}
+
 /**
  * Validate `args` against a (subset of) JSON Schema sufficient for capture
  * tools: top-level `type: "object"`, `required: [...]`, and per-property
@@ -124,26 +142,26 @@ export function validateAgainstSchema(
 
 	if (schema.type === "object" || schema.properties || schema.required) {
 		if (args === null || typeof args !== "object" || Array.isArray(args)) {
-			return { field: pathPrefix || "(root)", message: "expected object" };
+			return { field: pathPrefix || "$", message: "expected object" };
 		}
 		const required: string[] = Array.isArray(schema.required) ? schema.required : [];
 		for (const key of required) {
 			if (!(key in args)) {
-				return { field: pathPrefix ? `${pathPrefix}.${key}` : key, message: "required field missing" };
+				return { field: appendSchemaPath(pathPrefix, key), message: "required field missing" };
 			}
 		}
 		const props: Record<string, any> = schema.properties ?? {};
 		for (const [key, val] of Object.entries(args)) {
 			const propSchema = props[key];
 			if (!propSchema) continue; // additionalProperties tolerated
-			const childPath = pathPrefix ? `${pathPrefix}.${key}` : key;
+			const childPath = appendSchemaPath(pathPrefix, key);
 			const childErr = validateScalarOrNested(propSchema, val, childPath);
 			if (childErr) return childErr;
 		}
 		return null;
 	}
 
-	return validateScalarOrNested(schema, args, pathPrefix || "(root)");
+	return validateScalarOrNested(schema, args, pathPrefix || "$");
 }
 
 function validateScalarOrNested(schema: Record<string, any>, val: unknown, field: string): ValidationError | null {
@@ -201,6 +219,7 @@ export function createShimHandlers(deps: ShimHandlersDeps): ShimHandlers {
 	const log = deps.log ?? shimLog;
 	const advertised = new Set(config.tools.map((t) => t.name));
 	let captureDone = false; // first valid capture wins (in-process state)
+	let captureValidationAttempt = 0;
 
 	const listTools: ShimHandlers["listTools"] = () => ({
 		tools: config.tools.map((t) => ({
@@ -226,8 +245,22 @@ export function createShimHandlers(deps: ShimHandlersDeps): ShimHandlers {
 			const captureDef = config.tools.find((t) => t.name === name);
 			const err = validateAgainstSchema(captureDef?.inputSchema, args ?? {});
 			if (err) {
-				log({ level: "warn", event: "capture-invalid", field: err.field, message: err.message });
-				throw new McpError(ErrorCode.InvalidParams, `Invalid params: ${err.field} — ${err.message}`);
+				const attempt = ++captureValidationAttempt;
+				const field = boundedSafeText(err.field);
+				const message = boundedSafeText(err.message);
+				log({ level: "warn", event: "capture-invalid", attempt, field, message });
+				try {
+					await ipc.request({
+						kind: "capture-validation-failed",
+						id: randomUUID(),
+						attempt,
+						field,
+						message,
+					});
+				} catch (ipcError) {
+					log({ level: "warn", event: "capture-invalid-ipc-failed", attempt, message: String(ipcError) });
+				}
+				throw new McpError(ErrorCode.InvalidParams, `Invalid params: ${field} — ${message}`);
 			}
 			// Stash validated args to the router; do NOT park.
 			await ipc.request({ kind: "capture-stash", id: randomUUID(), arguments: args ?? {} });
@@ -326,7 +359,9 @@ export async function runShim(argv: string[], env: NodeJS.ProcessEnv = process.e
 			if (!raised) {
 				raised = true;
 				try {
-					writeFileSync(readyFile, "ready\n");
+					// Invocation owner supplies a path inside its 0700 directory. Create
+					// atomically/exclusively so stale or substituted sentinels fail closed.
+					writeFileSync(readyFile, "ready\n", { flag: "wx", mode: 0o600 });
 					shimLog({ level: "info", event: "mcp-ready-raised", file: readyFile });
 				} catch (err) {
 					shimLog({ level: "warn", event: "mcp-ready-write-failed", message: String(err) });

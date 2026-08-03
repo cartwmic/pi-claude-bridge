@@ -44,8 +44,8 @@ rm -rf "$PI_SESSION_DIR" 2>/dev/null || true
 scn_pi_start_with_session() {
 	"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 		"cd '$SANDBOX' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-		 pi -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
-	sleep 3
+		 PATH='$PATH' pi -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
+	scn_wait_ready
 }
 
 scn_pi_stop_with_session() {
@@ -84,12 +84,13 @@ echo "  pi session: $latest_session"
 # Cross-check: every bridge `mcp handler: <name> [<id>]` line must agree
 # with pi's record (id → toolName). If the queue gave a handler a stale
 # id from a different tool, name(handler) ≠ name(pi[id]) → mismatch.
-mismatches=$(python3 <<EOF
-import json, re
+mismatches=$(python3 - "$latest_session" "$BRIDGE_LOG" <<'PY'
+import json, re, sys
 
+session_path, bridge_log = sys.argv[1:]
 # 1) build id → toolName map from pi's JSONL
 pi_id_to_name = {}
-for line in open("$latest_session"):
+for line in open(session_path):
     d = json.loads(line)
     if d.get("type") != "message": continue
     m = d.get("message", {})
@@ -110,7 +111,7 @@ for line in open("$latest_session"):
 mismatches = []
 matched_any = 0
 pat = re.compile(r"mcp handler: (\S+) \[(toolu_[A-Za-z0-9]+)\]")
-for line in open("$BRIDGE_LOG"):
+for line in open(bridge_log):
     try:
         rec = json.loads(line)
     except Exception:
@@ -138,7 +139,7 @@ for m in mismatches:
     print("  " + " | ".join(str(x) for x in m))
 print(f"  routed tool calls cross-checked: {matched_any}")
 print(f"COUNT={len(mismatches)}")
-EOF
+PY
 )
 echo "$mismatches"
 mismatch_count=$(echo "$mismatches" | grep -oE "COUNT=[0-9]+" | head -1 | cut -d= -f2)

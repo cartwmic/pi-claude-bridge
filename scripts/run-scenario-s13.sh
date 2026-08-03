@@ -11,23 +11,25 @@ scn_setup "s13"
 
 trap 'scn_pi_stop' EXIT
 
-scn_pi_start
+scn_pi_start "-e $REPO_DIR/tests/fixtures/slow-tool-extension.ts"
 
-# Prompt 1 — over-broad, will get aborted
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Read every file in /etc and tell me about each one in detail."
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
-sleep 5
+# Prompt 1 — deterministic long tool, aborted only after routing proves turn is live.
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Read every file in /etc and tell me about each one in detail. Before answering, call SlowTool once with seconds=30."
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
+scn_wait_for_log_count '"name":"SlowTool".*"msg":"onRouterPark: routed tools/call' 1 45 || scn_fail "first prompt never routed SlowTool"
 
-# Abort + retype prompt 2
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
-sleep 2
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Actually, just tell me how many files are in src/ of this repo."
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
-sleep 5
+# Abort + retype prompt 2.
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
+scn_wait_for_log_count "onAbort" 1 15 || scn_fail "first abort did not reach bridge"
+scn_wait_ready 30 || scn_fail "Pi did not become ready after first abort"
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "Actually, just tell me how many files are in src/ of this repo. Before answering, call SlowTool once with seconds=30."
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
+scn_wait_for_log_count '"name":"SlowTool".*"msg":"onRouterPark: routed tools/call' 2 45 || scn_fail "second prompt never routed SlowTool"
 
-# Abort + retype final prompt
-	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
-sleep 2
+# Abort + retype final prompt.
+"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Escape
+scn_wait_for_log_count "onAbort" 2 15 || scn_fail "second abort did not reach bridge"
+scn_wait_ready 30 || scn_fail "Pi did not become ready after second abort"
 scn_send "Sorry — I meant: how many .ts files are in this directory? Use bash 'ls *.ts | wc -l'."
 
 # Coherence probe

@@ -8,6 +8,11 @@ source "$(dirname "$0")/scenario-lib.sh"
 SCN_FAILED=0
 scn_setup "s15"
 
+# Opus reliably follows explicit subagent tool arguments without exploratory
+# list/default-worker calls that can exceed scenario timeout.
+SCENARIO_MODEL="${S15_MODEL:-claude-bridge/claude-opus-4-7}"
+SCENARIO_SEND_TIMEOUT=300
+
 SUBAGENT_PATH=""
 for cand in \
 	"$HOME/.pi/agent/git/github.com/cartwmic/pi-subagents" \
@@ -26,15 +31,34 @@ fi
 
 trap 'scn_pi_stop' EXIT
 
+# Give this scenario a child definition with ambient extensions disabled.
+# Otherwise the subprocess inherits CLAUDE_BRIDGE_DRIVER from its parent and
+# may auto-load a separately installed, older bridge copy. That tests local
+# machine package state instead of the intended non-bridge child boundary.
+SCN_CLEANUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pi-s15-agent.XXXXXX")
+export SCN_CLEANUP_DIR
+cat > "$SCN_CLEANUP_DIR/s15-openai-worker.md" <<'EOF'
+---
+name: s15-openai-worker
+description: Isolated non-bridge scenario worker
+tools: read, write
+extensions:
+defaultContext: fresh
+inheritProjectContext: true
+acceptance: false
+---
+Complete the assigned file task directly and report the requested result.
+EOF
+
 "${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-	 pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$SCENARIO_MODEL'"
-sleep 3
+	 PI_SUBAGENT_EXTRA_AGENT_DIRS='$SCN_CLEANUP_DIR' PATH='$PATH' pi --no-session -ne -e '$REPO_DIR' -e '$SUBAGENT_PATH' --provider claude-bridge --model '$SCENARIO_MODEL'"
+scn_wait_ready
 
 # Snapshot bridge usage lines BEFORE subagent dispatch
 pre_usage=$(scn_grep_count "\"msg\":\"usage:" "$BRIDGE_LOG")
 
-scn_send "Use the subagent tool to dispatch a worker on the openai-codex/gpt-5.4-mini model to write a one-paragraph summary of what convert.ts does in this repo. Tell it to write the summary to /tmp/s15-summary.txt and return the first sentence."
+scn_send "Call the subagent tool once. Do not call list first. Set agent to s15-openai-worker and model to openai-codex/gpt-5.4-mini. Task: read convert.ts, write a one-paragraph technical summary to /tmp/s15-summary.txt, then return its first sentence."
 
 scn_wait_for "(summary|sentence|convert)" 240 || scn_fail "Subagent — no result"
 
@@ -50,8 +74,11 @@ scn_wait_for "(gpt|codex|5\.4|mini|model)" 60 || scn_fail "Verification — no m
 
 echo "==== S15 results ===="
 
-# Coherence: response should mention the openai-codex model
-if grep -qiE "(gpt.5\.4|gpt-5\.4|codex|openai)" "$PANE_LOG"; then
+# Coherence: response should mention the openai-codex model and no child
+# startup failure may have been rendered.
+if grep -qiE "(Subagent invocation failed|Subagent dispatch failed|✗ s15-openai-worker|MCP initialization failed)" "$PANE_LOG"; then
+	scn_fail "non-bridge child reported a startup or invocation failure"
+elif grep -qiE "(gpt.5\.4|gpt-5\.4|codex|openai)" "$PANE_LOG"; then
 	scn_pass "coherence: parent attributed result to openai-codex / gpt-5.4"
 else
 	scn_fail "coherence: parent did not attribute model"

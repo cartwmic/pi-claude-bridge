@@ -19,17 +19,19 @@ SCENARIO_MODEL="${S16A_MODEL:-claude-bridge/claude-opus-4-7}"
 SESSION_DIR="$(mktemp -d /tmp/s16a-pi.XXXXXX)"
 RESTART_SESSION="pi-bridge-s16a-fork-$$"
 cleanup() {
-	"${TMUX_CMD[@]}" kill-session -t "$SESSION" 2>/dev/null || true
-	"${TMUX_CMD[@]}" kill-session -t "$RESTART_SESSION" 2>/dev/null || true
+	local rc=$?
+	trap - EXIT
+	scn_pi_stop || true
 	rm -rf "$SESSION_DIR"
+	exit "$rc"
 }
 trap cleanup EXIT
 
 # Phase 1: establish a 2-turn conversation
 "${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-	 pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
-sleep 4
+	 PATH='$PATH' pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --provider claude-bridge --model '$SCENARIO_MODEL'"
+scn_wait_ready
 scn_send "My favorite number is 137. Acknowledge briefly."
 scn_send "And my favorite color is octarine. Acknowledge briefly."
 
@@ -37,7 +39,7 @@ scn_send "And my favorite color is octarine. Acknowledge briefly."
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" -- "/exit"
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 sleep 4
-"${TMUX_CMD[@]}" kill-session -t "$SESSION" 2>/dev/null || true
+scn_pi_stop
 
 # Find the saved session UUID
 saved=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
@@ -53,8 +55,8 @@ echo "  parent session uuid: $uuid"
 SESSION="$RESTART_SESSION"
 "${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 	"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-	 pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --fork '$uuid' --provider claude-bridge --model '$SCENARIO_MODEL'"
-sleep 5
+	 PATH='$PATH' pi -ne -e '$REPO_DIR' --session-dir '$SESSION_DIR' --fork '$uuid' --provider claude-bridge --model '$SCENARIO_MODEL'"
+scn_wait_ready
 
 # Coherence probe on the forked branch
 scn_send "What facts have I told you about myself in this conversation?"

@@ -101,14 +101,30 @@ fi
 #
 # NEG was previously over-broad: `i finished` matched "I finished number 1 completely"
 # (the model accurately reporting *which* number it completed before interruption).
-# Tightened so NEG only fires on whole-task completion claims or explicit interruption denials.
+# Tightened so NEG only fires on whole-task completion claims or first-person
+# interruption denials. A buffered no-start answer may reason that "there was no
+# interruption" while still truthfully returning 0, which POS accepts.
 # POS catches "I reached number 2" / "got to 2" / standalone "2" / "stopped at
 # number 2" / buffered-driver "0. Didn't start" phrasings.
-scn_assert_response \
-	"What number did you reach before I interrupted you" \
-	"(reached|got to|stopped at).*[0-9]+|number[[:space:]]+(was|[0-9])|^[[:space:]]*[0-9]+[.,!]?[[:space:]]*\$|i (reached|stopped at|got to)[[:space:]]+(number[[:space:]]+)?[0-9]+|^[[:space:]]*0[.,!]?[[:space:]]*(didn'?t|did not)?[[:space:]]*(start|begin)?|didn'?t start|did not start" \
-	"(wasn't|was not) interrupted|didn't interrupt|never interrupted|no interruption|completed (the (entire|full|whole)|all 100|all the numbers|the count)|reached (100|all 100)|finished (the (count|task|whole|entire))|finished all (100|the numbers)|got to 100|i finished everything" \
-	"coherence: model reports a reached number or no-start abort, not 'wasn't interrupted'"
+# No-start is a distinct valid direct-driver outcome and takes precedence over
+# interruption-denial wording in hidden reasoning: claude-print buffers output,
+# so its persisted Claude transcript can truthfully contain no assistant text
+# even when Pi briefly displayed partial deltas before Escape.
+s7_resp=$(scn_probe_response "What number did you reach before I interrupted you")
+s7_no_start="^[[:space:]]*0[.,!]?[[:space:]]*(didn'?t|did not)?[[:space:]]*(start|begin)?|didn'?t start|did not start|never started"
+s7_reached="(reached|got to|stopped at).*[0-9]+|number[[:space:]]+(was|[0-9])|^[[:space:]]*[0-9]+[.,!]?[[:space:]]*$|i (reached|stopped at|got to)[[:space:]]+(number[[:space:]]+)?[0-9]+"
+s7_negative="(wasn't|was not) interrupted|didn't interrupt|never interrupted|completed (the (entire|full|whole)|all 100|all the numbers|the count)|reached (100|all 100)|finished (the (count|task|whole|entire))|finished all (100|the numbers)|got to 100|i finished everything"
+if [[ -z "$s7_resp" ]]; then
+	scn_fail "coherence: no response captured for interrupted-count probe"
+elif echo "$s7_resp" | grep -qiE "$s7_no_start"; then
+	scn_pass "coherence: buffered direct turn preserved valid no-start/0 outcome"
+elif echo "$s7_resp" | grep -qiE "$s7_negative"; then
+	scn_fail "coherence: model denied interruption or claimed full completion"
+elif echo "$s7_resp" | grep -qiE "$s7_reached"; then
+	scn_pass "coherence: model reported number reached before interruption"
+else
+	scn_fail "coherence: neither reached-number nor no-start outcome matched"
+fi
 
 echo "Cache profile:"
 scn_cache_profile

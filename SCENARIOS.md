@@ -1,8 +1,38 @@
-# pi-claude-bridge — Refactor Validation Scenarios
+# pi-claude-bridge — Validation Scenarios
 
-Living spec for the `refactor/sdk-native-inference-only` branch. Each scenario is
-**feature-driven**: a concrete user story we must pass against the real Pi TUI
-running in tmux, with `claude-bridge` as the active provider.
+Living feature-driven spec for real Pi TUI validation through both supported
+inference drivers. Each scenario must pass with `claude-bridge` active and must
+prove user-visible coherence, not only process survival.
+
+## Binding dual-driver execution contract
+
+`scripts/run-all-scenarios.sh` owns an explicit inventory: S0–S27 (including
+S10b, S16a, and S16b), S31, and S32. It does not discover scripts by glob, so
+legacy S28–S30 timeout experiments cannot silently become release gates.
+
+```sh
+npm run test:scenarios                         # default/selected driver
+CLAUDE_BRIDGE_DRIVER=claude-print npm run test:scenarios
+npm run test:scenarios:drivers                 # claude-p + claude-print matrix
+```
+
+Every inventory entry runs once per selected driver with driver-qualified tmux,
+bridge-log, pane-log, and result names. Missing/non-executable inventory entries
+fail before execution. Exit `77` means an environment prerequisite is absent
+(currently S22's optional pi-subagents extension); runner reports it as **SKIP**,
+never **PASS**, and required runs exit nonzero. Exploratory local runs may opt
+into `SCENARIO_ALLOW_SKIPS=1` without weakening release gates.
+
+All scenario requirements apply equally to `claude-p` and `claude-print`:
+main turns, multi-round and parallel held tools, capture, abort cleanup,
+resume/cache, concurrency and nested overlap, native-tool isolation, large cold
+prompts, and lifecycle coherence. Sole exception is S32: `claude-p` must render
+the live read-only PTY overlay; `claude-print` must explicitly report that no
+interactive PTY tail exists, open no overlay, and complete a following turn.
+
+Older detailed rationale below may mention the removed Agent SDK as historical
+context. For current behavior, "SDK query/session" maps to a selected-driver
+spawn/resume hint; scripts and this execution contract are binding.
 
 ## Charter (constraints every scenario assumes)
 
@@ -50,14 +80,14 @@ modified-Enter and some control sequences collapse.
 `claude-bridge/claude-opus-4-6` or `openai-codex/gpt-5.4` directly. Thinking
 level can be appended as `:high` (e.g., `claude-bridge/claude-opus-4-6:high`).
 
-A future `scripts/run-scenarios.sh` will own automation; for now, scenarios are
-executed by hand and findings recorded inline.
+`scripts/run-all-scenarios.sh` owns automated execution and writes
+`.test-output/scenarios/SUMMARY.md` plus driver-qualified run logs.
 
 ## Canonicality decision: Pi is the source of truth
 
-**Pi owns conversation history. The Claude Code SDK session is an opaque
-cache hint with no semantic meaning to the bridge.** This is the foundational
-architectural decision; every scenario below assumes it.
+**Pi owns conversation history. A selected driver's Claude session id is a
+typed, driver-bound cache hint with no semantic meaning to the bridge.** This is
+the foundational architectural decision; every scenario below assumes it.
 
 ### Why pi-canonical (not Claude-canonical)
 
@@ -76,105 +106,54 @@ is worse than not syncing at all: pi's compaction (which calls the LLM with
 Claude's log, so any sync would have to fabricate entries that don't
 correspond to anything Claude actually saw.
 
-The constraint "we can't change how Claude behaves" is true but doesn't
-imply Claude-canonical — the SDK's input is an `AsyncIterable<SDKUserMessage>`
-we control completely. On each `query()` we tell the SDK exactly what
-history to consider. The SDK's JSONL is its own internal write; we never
-have to read it.
+The constraint "we can't change how Claude behaves" does not imply
+Claude-canonical. Pi supplies canonical history to the selected driver. On a
+cold turn the bridge packs that history into the selected driver's prompt; on a
+validated warm turn it supplies only new material with a driver-typed resume
+hint. Claude Code's external transcript remains an implementation detail that
+bridge code never reads or rewrites.
 
 ### Operational rules (non-negotiable)
 
 - Pi sessions live at `~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl`
-  (v3 tree, owned by pi's `SessionManager`).
-- The Claude Code SDK manages its own JSONL under `~/.claude/sessions/`
-  with a separate UUID. **The bridge never reads or writes that directory.**
-  No `cc-session-io`, no cursor tracking, no JSONL surgery, no UUID
-  rotation, no `pendingTruncateOffset`.
-- The bridge keeps the SDK's `session_id` **in memory only**, passing it as
-  `options.resume` on the next `query()` to preserve prompt cache.
-- On any cache miss — fork, branch, compaction, restart, or `resume` failure
-  for any reason — the bridge silently starts a fresh `query()` and replays
-  pi's current branch as the async-iterable prompt. Cost: one cold turn.
-- The bridge owns no on-disk state. Restart pi → bridge starts empty →
-  first turn is a cold-resume from pi's JSONL → caches a new CC session_id
-  → warm thereafter.
+  (v3 tree, owned by Pi's `SessionManager`).
+- Claude Code owns its files under `~/.claude/`. Bridge code performs no
+  transcript reads, cursor tracking, truncation, UUID rotation, or JSONL surgery.
+- Every frame pins `claude-p` or `claude-print`; held results, capture, retries,
+  nested work, diagnostics, and resume stay on that driver.
+- Bridge may persist one content-free resume sidecar outside `~/.claude/`, keyed
+  by literal cwd plus full Pi session id. It stores driver/version/session
+  identifiers and one-way history fingerprints, never conversation content.
+- Warm resume requires safe history-prefix extension, matching Claude version,
+  and matching driver. Missing, malformed, divergent, stale, errored, or
+  cross-driver hints are invalidated and canonical Pi history is replayed cold.
+- Driver failure surfaces as that driver's error; bridge never falls back to the
+  other driver for the same invocation.
 
-### Compaction is pi's job; the SDK does not auto-compact
+### Compaction is Pi's job
 
-**Verified against `code.claude.com/docs/en/agent-sdk/*` (April 2026):** the
-Claude Agent SDK does **not** perform automatic conversation compaction at
-the SDK level. There is no `disableAutoCompact` / `compaction` option to
-configure because nothing fires by default. (Compaction at the
-Messages-API level — `compact_20260112` strategy — is a separate feature
-you'd opt into via the raw Anthropic SDK; the Agent SDK does not enable
-it.)
-
-This means **CC will not silently mutate our context behind our back.**
-The transcript the bridge sends in is the transcript the SDK uses; what
-the SDK writes to its own JSONL is exactly what we passed plus the
-assistant's reply.
-
-Pi, on the other hand, **does** auto-compact when
-`contextTokens > contextWindow - reserveTokens` (or on `/compact`). Pi
-generates the summary by calling the active provider (claude-bridge
-included) and writes a `CompactionEntry` with `firstKeptEntryId`. After
-compaction, pi feeds the LLM `[system, summary, kept messages]` — the LLM
-never knows compaction happened.
-
-The bridge handles this by accident: it just replays whatever pi gives it.
-The CC session_id from before compaction will not match the new (shorter)
-history, so the bridge will cold-replay once (cache-creation event), then
-the new session_id is warm thereafter. **The bridge requires zero
-compaction-specific code.** Any code path that special-cases compaction is
-a regression.
+Pi owns `/compact`, tree navigation, and branch summaries. These operations
+change canonical history shape. Fingerprint divergence therefore invalidates the
+resume hint and causes one cold replay; bridge code never edits Claude's
+transcript to imitate Pi history.
 
 ### Cache contract (steady-state warm; bounded cold events)
 
-The SDK uses prompt caching automatically (5-min TTL, 1h via
-`ENABLE_PROMPT_CACHING_1H` env var). Cache hit/miss is determined by the
-session transcript on disk in `~/.claude/sessions/`, which **the SDK owns
-exclusively** (the bridge never reads or writes it).
-
-Documented call shape for cache hits:
-
-- **Steady-state turn:** `query({ prompt: <only new user message>, options: { resume: <cachedSessionId> } })`. The SDK loads prior turns from its own JSONL and appends. Cache-read.
-- **Cold start / divergence event:** `query({ prompt: <asyncIterable replaying current pi branch>, options: {} })`. Generates a new session_id; cache-creation on the prefix. Subsequent turns on that id are warm.
-
-Cold events are predicted exactly by user-visible pi events:
+Both drivers expose authoritative usage metadata. Expected outcomes:
 
 | Event | Cache outcome |
 |---|---|
-| Steady-state turn | hot read |
-| First turn of a pi session | cache-creation (one-time) |
-| Pi `/fork` | cache-creation on new branch (one-time) |
-| Pi `/tree` to a different leaf | cache-creation on new active branch |
-| Pi `/compact` | cache-creation on new compacted prefix |
-| Bridge process restart | cache-creation on first turn after restart |
+| Steady-state same-driver turn | hot read |
+| First turn without a valid hint | cache creation |
+| Pi `/fork`, `/tree`, or `/compact` divergence | one cold replay, then warm |
+| Bridge restart with valid same-driver sidecar | warm read |
+| Bridge restart with invalid/missing/cross-driver sidecar | one cold replay, then warm |
 
-Cache-creation tokens cost 1.25× base; cache-read tokens cost 0.1× base —
-"cold then warm" is a small, finite premium per divergence event, not a
-per-turn regression. **Any cache-creation event NOT tied to one of the
-above is a bug** and must be investigated.
-
-Cache observability surfaces (used by every scenario below):
-
-- TS SDK exposes per-turn `cache_read_input_tokens` and
-  `cache_creation_input_tokens` on the `result` and `assistant` messages
-  (`message.modelUsage[modelName].cacheReadInputTokens` /
-  `.cacheCreationInputTokens`).
-- Pi's TUI token-usage display (from the `pi-token-usage` package, already
-  installed) renders these per turn.
-- The bridge MUST log them per turn at INFO level so a scenario run can be
-  graphed post-hoc.
-
-There is no documented way to introspect *why* a cache miss occurred —
-only the post-hoc token counts. This is fine because cold events are
-predicted by the table above; any deviation is the regression signal.
-
-Any scenario that shows the bridge writing to `~/.claude/sessions/`,
-maintaining a session-id index file, or attempting two-way sync between pi
-and CC sessions is a **fail**, regardless of whether visible behavior
-looked correct.
+Cache-creation tokens cost more than cache reads, so unexplained repeated cold
+turns are regressions. Scenarios record `cache_creation_input_tokens` and
+`cache_read_input_tokens` from normalized driver usage. Any bridge access to
+Claude transcript files, plaintext in a resume sidecar, cross-driver resume, or
+two-way transcript synchronization is a hard failure.
 
 ---
 
@@ -361,26 +340,24 @@ is killed (no orphan).
 
 ### S10 — Session resume across Pi restart
 
-**Goal:** prove SDK-native session resume works when Pi exits and restarts.
-This validates the **session reconciliation principle**: pi owns history, CC
-session_id is just a cache hint, and resume must work even if the cached CC
-session_id is gone (cold-resume case).
+**Goal:** prove driver-qualified warm resume works when Pi exits and restarts.
+Pi remains conversation authority; the bridge persists only a validated,
+cwd-keyed resume sidecar outside `~/.claude/`. Missing, malformed, divergent,
+or cross-driver hints fall back to canonical cold replay.
 
 **Steps:**
-1. Run S1 (single tool call). Note the package name from the response.
-2. Note pi's session UUID (visible in `~/.pi/agent/sessions/--<cwd>--/`).
-3. `tmux send-keys 'C-d'` to quit pi (must be on empty editor — `app.exit`).
-4. Restart pi: `pi --provider claude-bridge --model claude-bridge/claude-opus-4-6 --session <uuid-prefix>`
-   (or `pi -c` to continue most recent in this cwd).
-5. Send: *"What was the package `name` value from earlier?"*
+1. Ask Claude to remember favorite number `137` and use Pi's `read` tool to
+   report `package.json`'s package name.
+2. Quit with `/quit` so Pi session JSONL and bridge sidecar flush cleanly.
+3. Restart Pi with the saved session UUID and same selected driver.
+4. Ask for both the package name and favorite number.
 
 **Pass:**
-- Mechanical: pi resumes from its own JSONL; bridge starts a fresh `query()`
-  and replays pi's branch as the async-iterable prompt (cold-resume — its
-  in-memory CC session_id was lost when the process died, so cache miss is
-  expected on the first turn). No bridge-managed JSONL is read or written.
-  No errors.
-- **Coherence:** Claude answers with the same package name from step 1.
+- Mechanical: first turn is cold; restarted bridge validates its typed sidecar
+  and spawns the same driver with `resume=<persisted-id>`. Pi's session JSONL
+  remains untouched by bridge code; no Claude JSONL surgery occurs.
+- **Coherence:** the response to the post-restart probe itself contains both
+  `pi-claude-bridge` and `137` and does not disclaim memory.
 
 ### S10b — Session resume within the same pi process (warm cache)
 
@@ -774,75 +751,38 @@ emits one." Asserting "zero built-in tool_use" is WRONG and will false-fail.
 violation → hard fail → triggers the claude-p fork (T4.10) per gate G2. This
 scenario makes the G2 guarantee visible at the pi-TUI/acceptance-bar level.
 
-### S28 — Held tool round outlasts the idle watchdog (Layer 2: held-round-aware liveness)
+### S28 — Held tool round has no upstream idle cutoff
 
-**Goal:** prove a long-running held tool round (claude-p alive but idle, blocked
-on the MCP round-trip while pi runs the tool) is NEVER killed by the bridge's
-idle watchdog. **Added with the hung-turn fix; this is the user-reported bug — a
-long subagent/tool being killed mid-work.**
+**Goal:** prove a long-running held tool round remains alive until Pi delivers
+its result. Both drivers set `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0`; bridge adds
+no inference watchdog and `claude-p` receives no `--timeout`.
 
-**Why a watchdog at all:** claude-p's own `--timeout` counts held-tool idle time,
-so it's only a generous backstop; the bridge owns the real liveness check because
-it alone knows a tool is parked (`pendingResolvers > 0`). The watchdog must be
-**held-round-aware**: silence while a tool is parked is healthy, not a wedge.
+**Steps:** invoke one deterministic held tool whose execution exceeds the old
+idle window, then wait for its sentinel result.
 
-**Setup:** `CLAUDE_BRIDGE_WATCHDOG_IDLE_MS=8000` (a deliberately short window),
-opus (reliable tool invocation), default `--timeout`.
+**Pass:** exactly one held round routes, no watchdog/wedge/timeout machinery
+appears, result is delivered, turn finalizes, and model echoes the sentinel.
 
-**Steps:**
-1. Ask the model to invoke `bash` to run `sleep 20 && echo <SENTINEL>` (held
-   round ~20s, far longer than the 8s watchdog window).
+### S29 — Caller abort during held tool closes cleanly and Pi recovers
 
-**Pass:**
-- **Mechanical (positive):** the bridge logs `watchdog: tick during held round —
-  deferring` ≥1× — the watchdog's window elapsed *during* the parked round and it
-  chose not to kill. (Load-bearing signal.)
-- **Mechanical (negative):** no `declaring wedge` / `killing wedged claude-p` —
-  the healthy held round was left alone.
-- **Mechanical:** a real `bash` tool round routed + the tool result delivered +
-  the turn finalized (`caching session=`).
-- **Coherence:** the model echoes the sentinel the tool printed (the held tool's
-  output reached the model end-to-end).
+**Goal:** prove selected-driver death during a held round cannot leave Pi on an
+infinite spinner. Current trigger is caller-driven `Escape`; no liveness timeout
+is reintroduced.
 
-**Disposition:** any wedge-kill of a parked round is a regression of the user's
-bug → hard fail.
+**Steps:** park one 25-second `SlowTool`, abort while it runs, wait for terminal
+aborted/error evidence, then send an exact-token recovery prompt.
 
-### S29 — claude-p dies mid-held-tool: error, not hang; pi recovers (Layer 1: safety net)
-
-**Goal:** prove that when claude-p errors/exits *while pi is running a held tool*
-(its own `--timeout` firing, a crash, OOM), the bridge surfaces a terminal ERROR
-to pi instead of swallowing it — and pi recovers. **Added with the hung-turn fix;
-the original symptom was an infinite spinner.**
-
-**Setup:** `CLAUDE_BRIDGE_CLAUDE_P_TIMEOUT_SECONDS=18` (short, so claude-p's own
-timer fires while the tool is still held), watchdog left at default 180s so it
-does NOT interfere (this scenario is specifically about the `--timeout` backstop),
-opus.
-
-**Steps:**
-1. Ask the model to immediately invoke `bash` to run `sleep 25 && echo <SENTINEL>`
-   (held round 25s > 18s `--timeout`).
-2. After the error surfaces, send a trivial follow-up turn.
-
-**Pass:**
-- **Mechanical:** `bash` parked before `--timeout` (held round opened), then
-  `finalizeClaudePFrame: error` (the `--timeout` fired mid-held-tool).
-- **Mechanical (Layer 1):** `tool-result delivery to errored frame` / `closed pi
-  stream with error` — the late tool-result delivered into the dead frame closed
-  pi's stream with an error instead of wiring into a corpse and hanging.
-- **Mechanical:** the pane shows an error/non-completion (not a phantom success).
-- **Recovery (the real no-hang proof):** the follow-up turn completes — pi was
-  idle and able to take another turn, not stuck on a spinner.
-
-**Disposition:** a swallowed error / hung spinner / phantom success is a Layer-1
-regression → hard fail.
+**Pass:** selected driver process group is signalled, dead/aborted frame closes
+Pi's stream terminally, no phantom tool success appears, and recovery turn
+completes coherently.
 
 ### S32 — /claude-peek live overlay (claude-peek-overlay capability)
 
-**Goal:** prove the read-only PiP peek works end-to-end: overlay toggles,
-shows an explicit idle state, goes live and advances while a turn streams,
-never steals editor focus (a prompt typed+submitted with the overlay open
-reaches the model), and mirroring never pollutes the turn's NDJSON stream.
+**Goal:** prove driver-specific peek behavior without affecting inference.
+For `claude-p`, the read-only PiP toggles, shows idle/live states, advances,
+keeps editor focus, and never pollutes NDJSON. For `claude-print`, the command
+reports explicit no-PTY-tail unavailability, opens no overlay, and a following
+main turn succeeds through the direct driver.
 
 **Setup:** `CLAUDE_BRIDGE_PEEK_DIR` pointed at a scenario-private dir (also
 proves the env override), haiku, default timeouts.
@@ -865,15 +805,16 @@ proves the env override), haiku, default timeouts.
 `claude-p-fork.write-only-pty-output-mirror`.
 
 **Disposition:** overlay stealing focus, a garbled/stale grid presented as
-live, or any NDJSON pollution from mirroring → hard fail.
+live, NDJSON pollution, direct-mode overlay creation, or unusable inference
+after the direct-mode notice → hard fail.
 
-### S31 — Large cold-start prompt accepted end-to-end (Ink paste-collapse regression guard)
+### S31 — Large cold-start prompt accepted end-to-end
 
 **Goal:** prove a fresh `pi --no-session` session can deliver a first user
-prompt well above the proven 801-byte Claude/Ink paste-collapse threshold through
-claude-p and receive a coherent model answer. This is the regression guard for
-`claude-p: PromptNotAccepted` caused by Ink rendering long typed prompts as
-`[Pastedtext#1]` / `paste again to expand` after CSI stripping.
+prompt above 801 bytes through either selected driver and receive a coherent
+answer. On `claude-p` this retains the Ink paste-collapse regression guard for
+`PromptNotAccepted`; on `claude-print` it proves large stdin frame integrity and
+startup-readiness ordering.
 
 **Setup:** default model pinned to opus for exact sentinel compliance;
 `SCENARIO_MODEL` may override it. The prompt is built at runtime with a unique
@@ -886,17 +827,16 @@ claude-p and receive a coherent model answer. This is the regression guard for
 
 **Pass:**
 - **Mechanical:** bridge log contains zero `PromptNotAccepted` matches.
-- **Mechanical:** bridge log shows a cold `fresh spawn ... resume=no` and at
-  least one `caching session=` line for the completed turn.
+- **Mechanical:** bridge log shows the selected driver, a cold
+  `fresh spawn ... resume=no`, and at least one `caching session=` line.
 - **Mechanical:** no bridge error path is recorded for the turn.
 - **Coherence:** `scn_assert_response` checks the assistant response after the
   final prompt marker contains the sentinel and does NOT contain a non-delivery
   disclaimer such as "did not receive", "cannot see", or "no prompt".
 
-**Disposition:** any failure is a hard regression of the claude-p paste-collapse
-fix or the bridge's dependency pin. Existing scenarios did not catch this class:
-the largest checked prompt before S31 was 236 bytes, far below the 801-byte
-collapse boundary.
+**Disposition:** any failure is a hard selected-driver delivery regression. For
+`claude-p`, inspect the fork's paste-collapse patch/pin; for `claude-print`,
+inspect readiness gating and stream-json stdin framing.
 
 ## Per-scenario cache profile (expected cache shape)
 
@@ -915,7 +855,7 @@ turn. Expected shapes — deviations are regressions:
 | S7 abort during text | T1: creation; post-abort turn: read (history is just the aborted assistant prefix + new user msg) |
 | S8 abort during tool | T1: creation; post-abort turn: read |
 | S9 abort + immediate steer | T1: creation; steer turn: read |
-| S10 cold restart | first turn on new pi process: creation (new session_id); T2: read |
+| S10 durable restart | first turn: creation; restarted process resumes typed sidecar and reads cache |
 | S10b warm | T1: creation; T2: read |
 | S11 parallel tool_use | T1: creation; result turn: read |
 | S12 long convo (15+ turns) | T1: creation; T2..N: all reads (TTL must hold across turns) |
@@ -936,8 +876,8 @@ mechanical and coherence checks succeed.
 - **No bridge crash.** Bridge process stays up across all scenarios in a single pi session.
 - **No silent message loss.** Every user message either gets a response or surfaces an error to pi's UI.
 - **Pi's session JSONL stays valid.** After each scenario, pi's `~/.pi/agent/sessions/...jsonl` is replayable and parses cleanly under v3 schema.
-- **Bridge writes nothing to `~/.claude/sessions/`.** SDK manages its own files; the bridge MUST NOT read or write them. (Verifiable: stat the directory before and after; bridge process should not appear in lsof on those files.)
-- **CC session_id is in-memory only.** No persistence across pi restarts beyond what the SDK itself writes. Bridge must not maintain its own session-id index file.
+- **Bridge writes nothing to `~/.claude/sessions/`.** Claude Code manages its own files; bridge MUST NOT read, rewrite, or truncate them.
+- **Resume hints are typed cache hints, not transcript authority.** Bridge may persist its cwd-keyed sidecar outside `~/.claude/`; malformed, divergent, stale, or cross-driver hints are invalidated and canonical Pi history is replayed cold.
 - **No orphan subprocesses.** `ps` shows nothing left behind from aborted tools.
 - **Bridge logs are quiet.** No stack traces; no `DIAG` warnings about deferred messages, cursor regressions, UUID rotations, or `pendingTruncateOffset` (all of those code paths should be **deleted**, not silenced).
 - **Use `Escape` for aborts.** `Ctrl-C` clears pi's editor and never reaches the bridge — any test using `Ctrl-C` for abort is malformed.
@@ -963,7 +903,5 @@ For each scenario, append to `SCENARIO_RESULTS.md` (created at first run):
 
 ## Scope deliberately not covered (yet)
 
-- Subagent / nested `query()` reentrance (separate spec)
-- Multi-model handoff inside one Pi session
 - pi-mobile / remote scenarios
 - Performance / latency targets (qualitative only for now)

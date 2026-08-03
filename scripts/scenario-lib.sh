@@ -21,6 +21,12 @@ mkdir -p "$OUT_DIR"
 
 : "${SCENARIO_MODEL:=claude-bridge/claude-haiku-4-5}"
 : "${SCENARIO_CWD:=$REPO_DIR}"
+: "${SCENARIO_DRIVER:=${CLAUDE_BRIDGE_DRIVER:-claude-p}}"
+case "$SCENARIO_DRIVER" in
+	claude-p|claude-print) ;;
+	*) echo "ERROR: unsupported SCENARIO_DRIVER=$SCENARIO_DRIVER" >&2; exit 2 ;;
+esac
+export CLAUDE_BRIDGE_DRIVER="$SCENARIO_DRIVER"
 
 # Pi's interrupt key is Escape, not Ctrl-C. (See SCENARIOS.md.)
 PI_INTERRUPT_KEY="Escape"
@@ -36,9 +42,12 @@ TMUX_CMD=(tmux -L "$SCN_TMUX_SOCKET")
 
 scn_setup() {
 	local name="$1"
-	export SESSION="pi-bridge-${name}-$$"
-	export BRIDGE_LOG="$OUT_DIR/${name}.bridge.log"
-	export PANE_LOG="$OUT_DIR/${name}.pane.log"
+	local qualified="${SCENARIO_DRIVER}.${name}"
+	# tmux canonicalizes dots in session names to underscores, making later
+	# exact-target commands fail. Keep dots only in evidence filenames.
+	export SESSION="pi-bridge-${SCENARIO_DRIVER}-${name}-$$"
+	export BRIDGE_LOG="$OUT_DIR/${qualified}.bridge.log"
+	export PANE_LOG="$OUT_DIR/${qualified}.pane.log"
 	rm -f "$BRIDGE_LOG" "$PANE_LOG"
 	export CLAUDE_BRIDGE_DEBUG=1
 	export CLAUDE_BRIDGE_DEBUG_PATH="$BRIDGE_LOG"
@@ -67,17 +76,42 @@ scn_pi_start() {
 	# guard means the installed (legacy) one would win.
 	"${TMUX_CMD[@]}" new-session -d -s "$SESSION" -x 200 -y 50 \
 		"cd '$SCENARIO_CWD' && CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH='$BRIDGE_LOG' \
-		 $pi_env pi --no-session -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL' $extra_args"
+		 $pi_env PATH='$PATH' pi --no-session -ne -e '$REPO_DIR' --provider claude-bridge --model '$SCENARIO_MODEL' $extra_args"
 
-	local deadline=$((SECONDS + 30))
+	scn_wait_ready
+}
+
+scn_wait_ready() {
+	# Wait until custom or shared Pi startup has rendered bridge status and input
+	# focus is stable. Custom scenario launchers must call this before scn_send.
+	local timeout="${1:-30}"
+	local deadline=$((SECONDS + timeout))
 	while (( SECONDS < deadline )); do
+		if ! "${TMUX_CMD[@]}" has-session -t "$SESSION" 2>/dev/null; then
+			echo "FAIL: pi exited before scenario startup completed" >&2
+			return 1
+		fi
 		if "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "\(claude-bridge\)"; then
-			break
+			# Settle draw loop after ready marker appears.
+			sleep 1
+			return 0
 		fi
 		sleep 0.5
 	done
-	# Settle the draw loop after the ready marker appears.
-	sleep 1
+	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -100 >&2 2>/dev/null || true
+	echo "FAIL: pi scenario startup timed out waiting for claude-bridge status" >&2
+	return 1
+}
+
+scn_descendant_pids() {
+	# Snapshot descendants before tmux removes their parent. Driver subprocesses
+	# create independent process groups, so killing tmux alone can orphan them.
+	local parent="$1" child
+	while read -r child; do
+		[[ -n "$child" ]] || continue
+		scn_descendant_pids "$child"
+	done < <(pgrep -P "$parent" 2>/dev/null || true)
+	printf '%s\n' "$parent"
 }
 
 scn_pi_stop() {
@@ -94,26 +128,54 @@ scn_pi_stop() {
 	# fails when no structured tool actually routed that turn.
 	"${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -3000 > "$PANE_LOG" 2>/dev/null || true
 
-	# Tear down the entire private tmux server, not just the session. Since the
-	# server is dedicated to this scenario (per SCN_TMUX_SOCKET), kill-server
-	# cleanly disposes of everything: the session, the pi process inside it, and
-	# the server itself. No stray state survives, no broad `pkill` needed, no
-	# risk to parallel siblings.
+	# Snapshot pane process tree before tmux removes its parent. Both drivers use
+	# detached process groups; tmux kill-server alone does not reap those groups.
+	# PID-scoped cleanup avoids broad pkill and cannot touch parallel siblings.
+	local pane_pid="" descendants=""
+	pane_pid=$("${TMUX_CMD[@]}" display-message -p -t "$SESSION:0" '#{pane_pid}' 2>/dev/null || true)
+	if [[ "$pane_pid" =~ ^[0-9]+$ ]]; then
+		descendants=$(scn_descendant_pids "$pane_pid")
+		if [[ -n "$descendants" ]]; then
+			# shellcheck disable=SC2086 # intentional PID word splitting
+			kill -TERM $descendants 2>/dev/null || true
+		fi
+	fi
 	"${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+	if [[ -n "$descendants" ]]; then
+		sleep 0.5
+		local pid
+		while read -r pid; do
+			[[ "$pid" =~ ^[0-9]+$ ]] || continue
+			kill -KILL "$pid" 2>/dev/null || true
+		done <<< "$descendants"
+	fi
 
-	# Propagate a leak-induced failure into the scenario's exit status. (When rc
+	# Scenario-specific temporary fixture cleanup. Keep this inside the shared
+	# trap so cleanup commands cannot overwrite the scenario's pending status.
+	if [[ -n "${SCN_CLEANUP_DIR:-}" ]]; then
+		rm -rf -- "$SCN_CLEANUP_DIR"
+	fi
+
+	# Preserve pending scenario status after cleanup. (When rc
 	# is already non-zero from a real assertion, this is a no-op re-assertion;
 	# when the scenario otherwise passed but leaked, this flips it to FAIL.)
 	if [[ "$rc" -ne 0 ]]; then exit "$rc"; fi
 }
 
-# Cross-scenario isolation. Now a no-op when each scenario has its own
-# private tmux server (the default). Kept for explicit use in scripts
-# that want to ensure their server is fresh — idempotent. NEVER use a
-# broad `pkill -f "pi --no-session"` here: it would kill parallel
-# scenarios' pi processes that happen to share the user.
+# Cross-scenario isolation. Kept for explicit use in scripts that want to
+# ensure their private server is fresh. NEVER use broad `pkill -f
+# "pi --no-session"`: it would kill parallel scenarios sharing user.
 scn_clean_state() {
 	"${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+}
+
+scn_assert_selected_driver_spawn() {
+	local pattern="streamSimple\\[${SCENARIO_DRIVER}\\]: fresh spawn"
+	if [[ -f "$BRIDGE_LOG" ]] && grep -qE "$pattern" "$BRIDGE_LOG" 2>/dev/null; then
+		return 0
+	fi
+	echo "FAIL: requested driver $SCENARIO_DRIVER did not own any observed spawn" >&2
+	return 1
 }
 
 scn_send() {
@@ -136,7 +198,7 @@ scn_send() {
 	"${TMUX_CMD[@]}" send-keys -t "$SESSION:0" Enter
 
 	if (( wait_for_completion )); then
-		local timeout=120
+		local timeout="${SCENARIO_SEND_TIMEOUT:-120}"
 		local start=$SECONDS
 		while (( SECONDS - start < timeout )); do
 			local cur=0
@@ -146,11 +208,13 @@ scn_send() {
 			fi
 			if (( cur > pre_count )); then
 				sleep 0.5
-				return 0
+				scn_assert_selected_driver_spawn
+				return $?
 			fi
 			sleep 0.5
 		done
-		echo "WARN: scn_send timed out waiting for turn completion ('$1')" >&2
+		echo "FAIL: scn_send timed out waiting for turn completion ('$1')" >&2
+		return 1
 	fi
 }
 
@@ -196,6 +260,25 @@ scn_wait_for_log() {
 	return 1
 }
 
+scn_wait_for_log_count() {
+	# scn_wait_for_log_count "regex" minimum_count timeout_seconds
+	# Count barrier for repeated lifecycle events where an earlier match cannot
+	# prove the current operation reached the expected phase.
+	local pat="$1"
+	local minimum="$2"
+	local timeout="${3:-30}"
+	local start=$SECONDS
+	local count=0
+	while ((SECONDS - start < timeout)); do
+		count=$(grep -cE "$pat" "$BRIDGE_LOG" 2>/dev/null || true)
+		count=${count:-0}
+		if (( count >= minimum )); then return 0; fi
+		sleep 0.5
+	done
+	echo "TIMEOUT waiting for bridge-log count >= $minimum: $pat (got $count)" >&2
+	return 1
+}
+
 # Bridge log helpers — extract cache stats per turn from the debug log.
 scn_cache_profile() {
 	# Print the (creation, read) tuple per usage line in the bridge log.
@@ -220,11 +303,10 @@ scn_session_count() {
 
 # Cross-driver tool-routing helpers.
 #
-# The SDK path logs `mcp handler: <tool> [...]` per tool invocation.
-# The claude-p path logs `onRouterPark: routed tools/call to pi (piId=...)`
-# with the tool name carried in the structured JSON field `"name":"<tool>"`
-# (the message string itself only carries piId). These helpers count tool
-# routings on EITHER driver so a single assertion passes on both.
+# Older bridge builds logged `mcp handler: <tool> [...]`; both subprocess
+# drivers log `onRouterPark: routed tools/call to pi (piId=...)` with the tool
+# name in the structured `"name":"<tool>"` field. Keep both dialects so the
+# same scenario assertions remain useful while comparing old evidence.
 
 # scn_tool_count_any -> total tool routings across either driver.
 scn_tool_count_any() {
@@ -248,8 +330,6 @@ scn_tool_count_named() {
 }
 
 # scn_warm_resume_count -> number of warm-resume turns across either driver.
-# SDK: `streamSimple: fresh query ... resume=<hex>`.
-# claude-p: `streamSimple[claude-p]: fresh spawn ... resume=<hex>`.
 scn_warm_resume_count() {
 	scn_grep_count "(fresh query|fresh spawn).*resume=[a-f0-9]" "$BRIDGE_LOG"
 }

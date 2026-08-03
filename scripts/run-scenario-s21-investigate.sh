@@ -21,6 +21,7 @@
 set -euo pipefail
 source "$(dirname "$0")/scenario-lib.sh"
 
+SCN_FAILED=0
 scn_setup "s21"
 trap 'scn_pi_stop' EXIT
 scn_pi_start
@@ -34,10 +35,21 @@ echo "[$(ts_rel)] T1: dispatching long bash (sleep 12 + echo MARKER)"
 
 # Wait until pi has dispatched the tool and we're in the mid-execution window.
 deadline=$((SECONDS + 30))
+saw_route=0
 while (( SECONDS < deadline )); do
-	if grep -q "mcp handler: bash .* awaiting pi" "$BRIDGE_LOG" 2>/dev/null; then break; fi
+	if grep -qE 'mcp handler: bash .* awaiting pi' "$BRIDGE_LOG" 2>/dev/null \
+		|| { grep -E 'onRouterPark: routed tools/call' "$BRIDGE_LOG" 2>/dev/null | grep -qE '"name":"bash"'; }; then
+		saw_route=1
+		break
+	fi
 	sleep 0.5
 done
+if (( saw_route )); then
+	scn_pass "bash handler reached held execution window"
+else
+	scn_fail "model never routed the requested bash tool"
+	exit "$SCN_FAILED"
+fi
 echo "[$(ts_rel)] T1: bash handler awaiting pi (in mid-execution window)"
 
 # Capture stack/state before steer
@@ -120,5 +132,15 @@ resp=$(scn_probe_response "did the bash 'sleep 12' actually print")
 echo "$resp" | head -c 800
 echo ""
 echo ""
+if [[ -n "${resp//[[:space:]]/}" ]]; then
+	scn_pass "coherence probe returned non-empty answer"
+else
+	scn_fail "coherence probe returned no answer"
+fi
+if scn_wait_for_log "caching session=" 15; then
+	scn_pass "bridge completed and cached a session"
+else
+	scn_fail "bridge never completed a cacheable turn"
+fi
 echo "==== End S21 ===="
-exit 0
+exit "$SCN_FAILED"

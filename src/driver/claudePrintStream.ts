@@ -23,6 +23,10 @@ const STREAM_EVENT_TYPES = new Set([
 	"message_delta",
 	"message_stop",
 ]);
+// Anthropic SSE keepalive frames are forwarded verbatim by `claude -p
+// --include-partial-messages`. They carry no content or lifecycle semantics, so
+// they are logged and ignored rather than treated as protocol drift.
+const OBSERVATIONAL_STREAM_EVENT_TYPES = new Set(["ping"]);
 const MESSAGE_STOP_REASONS = new Set(["end_turn", "tool_use", "max_tokens", "stop_sequence"]);
 const ERROR_RESULT_SUBTYPES = new Set([
 	"error_during_execution",
@@ -428,6 +432,10 @@ export class ClaudePrintStreamParser {
 		const event = record.event;
 		if (!isRecord(event) || typeof event.type !== "string") {
 			this.fail("claude-print stream_event requires event.type");
+			return;
+		}
+		if (OBSERVATIONAL_STREAM_EVENT_TYPES.has(event.type)) {
+			this.logObservation(`stream_event/${event.type}`);
 			return;
 		}
 		if (!STREAM_EVENT_TYPES.has(event.type)) {

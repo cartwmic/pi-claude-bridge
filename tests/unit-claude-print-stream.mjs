@@ -284,6 +284,23 @@ describe("claude-print partial stream normalization", () => {
 			fields?.type === "user/text");
 		assert.equal(allowlisted.length, 7);
 	});
+
+	it("logs SSE ping keepalive stream events without failing the turn or emitting content", () => {
+		const { parser, debug, events } = createParser();
+		const [initRecord, ...rest] = validSuccessRecords();
+		const outcome = finish(parser, [
+			initRecord,
+			stream({ type: "ping" }),
+			...rest.slice(0, 3),
+			stream({ type: "ping" }),
+			...rest.slice(3),
+		]);
+		assert.equal(outcome.kind, "result");
+		assert.equal(events.at(-1).kind, "done");
+		assert.equal(events.some((event) => event.kind === "error"), false);
+		const pings = debug.filter(([fields]) => fields?.type === "stream_event/ping");
+		assert.equal(pings.length, 2);
+	});
 });
 
 describe("claude-print raw-byte bounded NDJSON and protocol drift", () => {

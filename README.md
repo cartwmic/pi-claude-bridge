@@ -52,6 +52,14 @@ pi install npm:pi-claude-bridge
 
 Use `/model` to select `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
 
+Pi reasoning controls work on both subprocess drivers and on isolated capture
+calls. Select a level with Pi's thinking control or a model suffix such as
+`:high`. Both drivers pass it to Claude CLI as `--effort`; direct
+`claude-print` also requests adaptive, summarized thinking display so Pi can
+render thinking blocks. `minimal` maps to Claude's lowest `low` effort, while
+`low`, `medium`, `high`, `xhigh`, and host-supported `max` pass through.
+Thinking off omits these controls.
+
 Behind the scenes, pi's tools are bridged to Claude Code (via the MCP shim) but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
 Image content on the main provider path is text-only: image blocks in the

@@ -20,6 +20,7 @@ import type {
 	PromptSource,
 	SystemPromptSource,
 } from "./driver/claudeP.js";
+import { mapPiReasoningToClaudeEffort } from "./driver/effort.js";
 import type { DriverStreamEvent, DriverStreamUsage } from "./driver/stream.js";
 import { createRouter, type ToolDef } from "./mcp/router.js";
 
@@ -217,6 +218,7 @@ export async function runCapture(
 		const captureSessionId = randomUUID();
 		const config: ClaudePSpawnConfig = {
 			model: model.id,
+			effort: mapPiReasoningToClaudeEffort(options?.reasoning),
 			systemPrompt,
 			prompt,
 			mcpConfig,
@@ -245,7 +247,7 @@ export async function runCapture(
 		});
 
 		log.debug(
-			{ messages: context.messages.length, isolatedCwd: tmpdir() },
+			{ messages: context.messages.length, isolatedCwd: tmpdir(), effort: config.effort ?? null },
 			`capture: spawned ${driver.kind} for ${captureTool.name}`,
 		);
 

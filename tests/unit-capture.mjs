@@ -406,7 +406,7 @@ describe("selected-driver capture parity", () => {
 			systemPrompt: staticPrompt,
 			messages: [{ role: "user", content: "capture direct", timestamp: ts() }],
 			tools: [submitDigestTool],
-		}, { cwd: process.cwd() });
+		}, { cwd: process.cwd(), reasoning: "high" });
 		const events = [];
 		for await (const event of captureStream) events.push(event);
 		const result = await captureStream.result();
@@ -415,6 +415,7 @@ describe("selected-driver capture parity", () => {
 		assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
 		assert.equal(seenCfg.systemPrompt.kind, "text");
 		assert.equal(seenCfg.systemPrompt.text, staticPrompt);
+		assert.equal(seenCfg.effort, "high", "capture inherits selected Pi reasoning");
 		assert.match(seenCfg.prompt.text, /structured capture mode/);
 		assert.match(seenCfg.prompt.text, /readiness gate/i);
 		assert.doesNotMatch(seenCfg.prompt.text, /WaitForMcpServers|CAPTURE_COMPLETE/);

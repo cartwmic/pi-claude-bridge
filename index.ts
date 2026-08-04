@@ -76,6 +76,7 @@ import {
 import { getCurrentMirror, prepareMirrorForSpawn, setCurrentMirror } from "./src/peek/mirror.js";
 import { registerClaudePeekCommand } from "./src/peek/overlay.js";
 import { driverDiagnosticFileName } from "./src/driver/diagnostics.js";
+import { mapPiReasoningToClaudeEffort, type ClaudeEffort } from "./src/driver/effort.js";
 import type { DriverStreamEvent, DriverToolUseBatch } from "./src/driver/stream.js";
 import { createRouter, type Router, type ParkedCallInfo, type ToolDef, type CorrelationFailure } from "./src/mcp/router.js";
 import {
@@ -707,6 +708,7 @@ export interface InferenceDriverHandle {
 /** Driver-neutral attempt inputs. Adapters own argv/protocol translation. */
 export interface InferenceDriverAttemptConfig {
 	model: string;
+	effort?: ClaudeEffort;
 	systemPrompt: SystemPromptSource;
 	prompt: PromptSource;
 	mcpConfig: string;
@@ -2382,6 +2384,7 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			} else {
 				const block = { type: "thinking" as const, thinking: "", thinkingSignature: "", index: frame.turnBlocks.length };
 				frame.turnBlocks.push(block);
+				frame.log.debug({ driver: frame.driverKind }, "processDriverEvent: thinking started");
 				syncTurnContent(frame);
 				frame.currentPiStream.push({ type: "thinking_start", contentIndex: block.index, partial: frame.turnOutput });
 			}
@@ -2422,6 +2425,7 @@ function processDriverEvent(frame: QueryFrame, ev: DriverStreamEvent): void {
 			if (!block) {
 				block = { type: "thinking", thinking: "", thinkingSignature: "", index: frame.turnBlocks.length };
 				frame.turnBlocks.push(block);
+				frame.log.debug({ driver: frame.driverKind }, "processDriverEvent: thinking started");
 				// Sync BEFORE the push (see text-delta): partial.content is pi's only source.
 				syncTurnContent(frame);
 				frame.currentPiStream.push({ type: "thinking_start", contentIndex: frame.turnBlocks.indexOf(block), partial: frame.turnOutput });
@@ -2884,6 +2888,7 @@ async function startFreshQuery(
 
 	const cfg: ClaudePSpawnConfig = {
 		model: model.id,
+		effort: mapPiReasoningToClaudeEffort(options?.reasoning),
 		systemPrompt,
 		prompt: promptSrc,
 		mcpConfig,
@@ -2894,8 +2899,8 @@ async function startFreshQuery(
 	};
 
 	frame.log.debug(
-		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionHint?.sessionId.slice(0, 8) : null },
-		`streamSimple[${driverKind}]: fresh spawn model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionHint?.sessionId.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
+		{ msgs: context.messages.length, tools: mcpTools.length, resume: useResume ? cachedSessionHint?.sessionId.slice(0, 8) : null, effort: cfg.effort ?? null },
+		`streamSimple[${driverKind}]: fresh spawn model=${model.id} effort=${cfg.effort ?? "off"} msgs=${context.messages.length} tools=${mcpTools.length} resume=${useResume ? cachedSessionHint?.sessionId.slice(0, 8) : "no"} prompt="${promptText.slice(0, 60)}"`,
 	);
 
 	stack.push(frame);

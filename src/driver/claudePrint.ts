@@ -126,6 +126,10 @@ export function buildClaudePrintArgs(
 		"--include-partial-messages",
 		"--model", cfg.model,
 	];
+	if (cfg.effort) {
+		args.push("--effort", cfg.effort);
+		args.push("--thinking", "adaptive", "--thinking-display", "summarized");
+	}
 	if (input.systemPrompt.kind === "text") {
 		args.push("--system-prompt", input.systemPrompt.text);
 	} else {

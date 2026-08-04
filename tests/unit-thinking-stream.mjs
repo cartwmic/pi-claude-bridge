@@ -73,13 +73,19 @@ describe("thinking/text presentation through the pi event stream", () => {
 	let restore = [];
 	afterEach(() => { restore.forEach((r) => r()); restore = []; __resetCachedSessionForTests(); });
 
-	it("streams partial.content live and keeps thinking a distinct, ordered block", async () => {
+	it("propagates reasoning and streams partial.content as a distinct, ordered block", async () => {
 		restore.push(__setPiApiRefForTests({ getActiveTools: () => [] }));
-		restore.push(__setSpawnClaudePForTests(makeThinkingSpawn("let me reason carefully", ["The ", "answer ", "is 391."])));
+		let seenConfig;
+		const thinkingSpawn = makeThinkingSpawn("let me reason carefully", ["The ", "answer ", "is 391."]);
+		restore.push(__setSpawnClaudePForTests((cfg, opts, policy) => {
+			seenConfig = cfg;
+			return thinkingSpawn(cfg, opts, policy);
+		}));
 
-		const stream = streamClaudeAgentSdk(MOCK_MODEL, userCtx(), {});
+		const stream = streamClaudeAgentSdk(MOCK_MODEL, userCtx(), { reasoning: "xhigh" });
 		const events = [];
 		for await (const e of stream) events.push(e);
+		assert.equal(seenConfig?.effort, "xhigh", "selected Pi reasoning must reach claude-p spawn config");
 
 		// (1) Live streaming: at least one mid-stream event must carry a non-empty
 		//     partial.content (proves turnOutput.content is synced per-delta).

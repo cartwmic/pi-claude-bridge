@@ -1,3 +1,5 @@
+import { CLAUDE_THINKING_LEVEL_MAP } from "./src/driver/effort.js";
+
 // Canonical selection + display order for the model picker.
 // `resolveModelId` returns the first partial match, so `opus` resolves to the first-listed opus entry.
 // Extracted from index.ts so tests can import without activating the extension.
@@ -26,6 +28,7 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 		.filter((m) => m != null)
 		.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
 			id, name, reasoning, input, cost, contextWindow, maxTokens,
+			...(reasoning ? { thinkingLevelMap: CLAUDE_THINKING_LEVEL_MAP } : {}),
 		}));
 }
 

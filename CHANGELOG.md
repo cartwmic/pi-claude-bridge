@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Add: Pi reasoning controls now drive Claude CLI effort.** Both
+  `claude-print` and `claude-p`, including isolated capture calls, receive the
+  selected level through `--effort`; direct `claude-print` also requests
+  adaptive, summarized thinking display. Pi `minimal` clamps to Claude `low`;
+  `low`, `medium`, `high`, `xhigh`, and newer-host `max` pass through. Thinking
+  off omits those controls. Bridge model metadata advertises the supported levels,
+  and direct-driver scenario S33 verifies visible thinking plus `effort=high`.
 - **Breaking: `claude-print` is now the default inference driver.** With no
   environment, project, or global driver setting, the bridge invokes the
   installed Claude Code binary through `claude -p` stream-JSON mode. This path

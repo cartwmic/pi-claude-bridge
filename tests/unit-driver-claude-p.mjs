@@ -72,6 +72,11 @@ describe("buildClaudePArgs — required flags", () => {
 		assert.equal(valueAfter(args, "--model"), "claude-sonnet-4-6");
 	});
 
+	it("emits selected Claude effort and omits it when reasoning is off", () => {
+		assert.equal(valueAfter(buildClaudePArgs(baseCfg({ effort: "xhigh" })), "--effort"), "xhigh");
+		assert.equal(buildClaudePArgs(baseCfg()).includes("--effort"), false);
+	});
+
 	it("includes --system-prompt <text> for inline system prompts", () => {
 		const args = buildClaudePArgs(baseCfg());
 		assert.equal(valueAfter(args, "--system-prompt"), "SYS");

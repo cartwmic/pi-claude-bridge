@@ -36,6 +36,7 @@ import { join as joinPath } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { DRIVER_DIAGNOSTIC_EVENTS, driverDiagnosticFileName } from "./diagnostics.js";
+import type { ClaudeEffort } from "./effort.js";
 import {
 	ClaudePStreamParser,
 	type DriverStreamEvent,
@@ -168,6 +169,8 @@ export type SessionMode =
 export interface ClaudePSpawnConfig {
 	/** Resolved model id, e.g. "claude-sonnet-4-6". → --model */
 	model: string;
+	/** Pi reasoning level translated to Claude CLI effort. Omitted when thinking is off. → --effort */
+	effort?: ClaudeEffort;
 	/** System prompt content (inline) or file path. → --system-prompt | --system-prompt-file */
 	systemPrompt: SystemPromptSource;
 	/** User prompt content (positional) or file path. → positional arg | --input-file */
@@ -219,8 +222,9 @@ const FORBIDDEN_FLAGS: readonly string[] = ["--settings", "-p", "--print"];
 export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 	const args: string[] = [];
 
-	// --model
+	// --model / --effort
 	args.push("--model", cfg.model);
+	if (cfg.effort) args.push("--effort", cfg.effort);
 
 	// --system-prompt <text> | --system-prompt-file <path>
 	if (cfg.systemPrompt.kind === "text") {

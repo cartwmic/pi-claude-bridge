@@ -24,7 +24,8 @@ DRIVER_WORDS="${SCENARIO_DRIVERS:-${CLAUDE_BRIDGE_DRIVER:-claude-print}}"
 DRIVER_WORDS="${DRIVER_WORDS//,/ }"
 
 # Binding inventory for parity work. S10b/S16a/S16b are named sub-scenarios;
-# S31 is the large cold-start gate and S32 carries the sole peek exception.
+# S31 is the large cold-start gate, S32 carries the sole peek exception, and
+# S33 is intentionally scheduled only for claude-print (thinking visibility).
 SCENARIO_INVENTORY=(
 	run-scenario-s0.sh
 	run-scenario-s1.sh
@@ -58,6 +59,7 @@ SCENARIO_INVENTORY=(
 	run-scenario-s27.sh
 	run-scenario-s31-large-cold-start-prompt.sh
 	run-scenario-s32-claude-peek.sh
+	run-scenario-s33-thinking-effort.sh
 )
 
 # Test-only fixture injection verifies pass/fail/skip propagation without live
@@ -162,6 +164,12 @@ for driver in "${DRIVERS[@]}"; do
 		script="$(inventory_path "$file")"
 		name="$(basename "$script" .sh | sed 's/^run-scenario-//')"
 		qualified="${driver}.${name}"
+		# Do not manufacture a required-suite SKIP for known inapplicability in
+		# the unfiltered matrix. An explicit filter targeting S33 still executes
+		# the script so its claude-p exit 77 remains observable and qualified.
+		if [[ "$name" == "s33-thinking-effort" && "$driver" != "claude-print" && -z "${SCENARIO_FILTER:-}" ]]; then
+			continue
+		fi
 		if [[ -n "${SCENARIO_FILTER:-}" ]] && ! printf '%s\n%s\n' "$name" "$qualified" | grep -qE "$SCENARIO_FILTER"; then
 			continue
 		fi

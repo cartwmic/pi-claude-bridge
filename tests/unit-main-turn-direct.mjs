@@ -145,6 +145,21 @@ describe("process-scoped driver selection", () => {
 });
 
 describe("shared main-turn orchestration — canonical cold/warm/image frames", () => {
+	it("maps selected Pi reasoning into direct Claude effort", async () => {
+		installDirect();
+		let seenConfig;
+		restorers.push(__setSpawnClaudePrintForTests((cfg, options) => {
+			seenConfig = cfg;
+			const done = new Promise((resolve) => queueMicrotask(() => resolve(emitAcceptedResult(cfg, options))));
+			return { pid: 99, abort() {}, done };
+		}));
+
+		await drain(streamClaudeAgentSdk(MODEL, context([
+			{ role: "user", content: "use selected effort", timestamp: Date.now() },
+		]), { cwd: cwd(), reasoning: "minimal" }));
+		assert.equal(seenConfig?.effort, "low");
+	});
+
 	it("sends exact full cold history, then warm delta, while dropping image bytes", async () => {
 		// claude-print-driver.direct-image-behavior-matches-bridge-contract
 		installDirect();

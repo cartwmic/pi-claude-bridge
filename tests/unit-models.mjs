@@ -6,6 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { MODEL_IDS_IN_ORDER, FALLBACK_MODELS, buildModels, resolveModelId } from "../models.js";
+import { CLAUDE_THINKING_LEVEL_MAP } from "../src/driver/effort.js";
 
 // Simulated pi-ai registry entry — extra fields mimic the ones pi-ai exposes
 // that must not leak into the provider-registered MODELS array.
@@ -28,9 +29,10 @@ describe("MODELS projection", () => {
 		}
 	});
 
-	it("preserves MODEL_IDS_IN_ORDER ordering", () => {
+	it("preserves ordering and advertises Claude reasoning levels", () => {
 		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 		assert.deepEqual(models.map((m) => m.id), MODEL_IDS_IN_ORDER);
+		for (const model of models) assert.deepEqual(model.thinkingLevelMap, CLAUDE_THINKING_LEVEL_MAP);
 	});
 
 	it("drops IDs missing from pi-ai unless FALLBACK_MODELS covers them", () => {

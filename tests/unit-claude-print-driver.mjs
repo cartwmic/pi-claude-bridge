@@ -155,6 +155,9 @@ describe("buildClaudePrintArgs — exact direct closure", () => {
 		assert.equal(valueAfter(fresh, "--input-format"), "stream-json");
 		assert.equal(valueAfter(fresh, "--output-format"), "stream-json");
 		assert.equal(valueAfter(fresh, "--setting-sources"), "");
+		assert.equal(fresh.includes("--effort"), false);
+		assert.equal(fresh.includes("--thinking"), false);
+		assert.equal(fresh.includes("--thinking-display"), false);
 		assert.equal(valueAfter(fresh, "--tools"), "");
 		assert.equal(valueAfter(fresh, "--permission-mode"), "bypassPermissions");
 		assert.equal(valueAfter(fresh, "--session-id"), SESSION);
@@ -167,6 +170,14 @@ describe("buildClaudePrintArgs — exact direct closure", () => {
 		});
 		assert.equal(valueAfter(resumed, "--resume"), RESUME);
 		assert.equal(resumed.includes("--session-id"), false);
+
+		const reasoned = buildClaudePrintArgs(baseConfig({ effort: "high" }), {
+			systemPrompt: { kind: "text", text: "SYSTEM" },
+			mcpConfig: baseConfig().mcpConfig,
+		});
+		assert.equal(valueAfter(reasoned, "--effort"), "high");
+		assert.equal(valueAfter(reasoned, "--thinking"), "adaptive");
+		assert.equal(valueAfter(reasoned, "--thinking-display"), "summarized");
 	});
 });
 

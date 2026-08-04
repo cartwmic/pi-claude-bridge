@@ -838,6 +838,36 @@ startup-readiness ordering.
 `claude-p`, inspect the fork's paste-collapse patch/pin; for `claude-print`,
 inspect readiness gating and stream-json stdin framing.
 
+### S33 — Direct-driver reasoning selection and visible thinking
+
+**Goal:** prove Pi reasoning selection reaches `claude-print` as Claude CLI
+`--effort`, Claude emits a thinking block, and Pi renders that block before a
+distinct final answer.
+
+**Scope:** `claude-print` only. Matrix scheduling excludes this entry for
+`claude-p` so the required suite does not manufacture a known-inapplicable
+skip. Direct invocation under `claude-p` exits 77 explicitly.
+
+**Setup:** isolated `PI_CODING_AGENT_DIR` with `hideThinkingBlock=false`; model
+suffix forced to `:high`; fresh private tmux server and local extension build.
+
+**Steps:**
+1. Start Pi and assert footer exposes selected `high` reasoning.
+2. Submit an arithmetic prompt requiring visible calculation steps in thinking
+   and a separate exact final-answer marker.
+3. Wait on normal completion signal; capture pane and bridge log.
+
+**Pass:**
+- **Mechanical:** pane response contains calculation thinking before exact
+  final answer; bridge log records `effort=high`, `thinking started`, selected
+  `claude-print` spawn, and clean completion.
+- **Coherence:** exact arithmetic marker appears as its own final answer and no
+  refusal/missing-reasoning disclaimer appears.
+
+**Disposition:** missing effort evidence, absent thinking event, hidden/dropped
+thinking content, merged/out-of-order final content, or wrong driver is hard
+failure.
+
 ## Per-scenario cache profile (expected cache shape)
 
 Every scenario records `(cache_creation_tokens, cache_read_tokens)` per
@@ -866,6 +896,7 @@ turn. Expected shapes — deviations are regressions:
 | S16b /tree to old branch | turns on original branch: creation→read; first turn after navigate: **creation** (expected); subsequent: read |
 | S17 /compact | turns before compact: creation→read; pi's summarization call: read (uses existing cache); first turn after compact: **creation** (expected); subsequent: read |
 | S31 large cold-start prompt | T1: creation; response must include sentinel; no warm turns |
+| S33 direct reasoning/thinking | T1: creation; response must expose thinking before exact final answer |
 
 A scenario's cache profile is recorded in `SCENARIO_RESULTS.md` as part of
 the result entry. Mismatches block the scenario from passing even if

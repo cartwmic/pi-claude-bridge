@@ -86,12 +86,22 @@ scn_wait_ready() {
 	# focus is stable. Custom scenario launchers must call this before scn_send.
 	local timeout="${1:-30}"
 	local deadline=$((SECONDS + timeout))
+	local selected_model="${SCENARIO_MODEL#*/}"
+	selected_model="${selected_model%%:*}"
 	while (( SECONDS < deadline )); do
 		if ! "${TMUX_CMD[@]}" has-session -t "$SESSION" 2>/dev/null; then
 			echo "FAIL: pi exited before scenario startup completed" >&2
 			return 1
 		fi
-		if "${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null | grep -qE "\(claude-bridge\)"; then
+		local pane=""
+		pane=$("${TMUX_CMD[@]}" capture-pane -t "$SESSION:0" -p -S -50 2>/dev/null || true)
+		# Older Pi versions render `(claude-bridge)` in the footer. Newer hosts
+		# render only the selected model id plus reasoning level, so require both
+		# that model marker and bridge provider-registration evidence.
+		if echo "$pane" | grep -qE "\(claude-bridge\)" || {
+			echo "$pane" | grep -qF "$selected_model" &&
+			[[ -f "$BRIDGE_LOG" ]] && grep -qF "provider: registered" "$BRIDGE_LOG"
+		}; then
 			# Settle draw loop after ready marker appears.
 			sleep 1
 			return 0

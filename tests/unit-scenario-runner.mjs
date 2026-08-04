@@ -59,6 +59,27 @@ describe("scenario runner propagation", () => {
 		assert.doesNotMatch(out.summary, /— PASS/);
 	});
 
+	it("reports explicit targeted S33 skip for claude-p", () => {
+		const results = mkdtempSync(join(tmpdir(), "bridge-scenario-runner-s33-"));
+		const s33 = join(REPO, "scripts", "run-scenario-s33-thinking-effort.sh");
+		const out = spawnSync("bash", [RUNNER], {
+			cwd: REPO,
+			encoding: "utf8",
+			timeout: 10_000,
+			env: {
+				...process.env,
+				SCENARIO_RUNNER_TEST_MODE: "1",
+				SCENARIO_TEST_INVENTORY: s33,
+				SCENARIO_RESULTS_DIR: results,
+				SCENARIO_DRIVERS: "claude-p",
+				SCENARIO_FILTER: "^s33-thinking-effort$",
+			},
+		});
+		const summary = readFileSync(join(results, "SUMMARY.md"), "utf8");
+		assert.notEqual(out.status, 0, "required targeted skip must keep suite nonzero");
+		assert.match(summary, /claude-p\.s33-thinking-effort — SKIP/);
+	});
+
 	it("propagates distinct results in parallel mode", () => {
 		const out = runFixture(["pass", "skip"], {
 			SCENARIO_ALLOW_SKIPS: "1",

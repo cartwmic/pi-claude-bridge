@@ -33,6 +33,9 @@ trap 'scn_pi_stop_with_session' EXIT
 SANDBOX="$OUT_DIR/s19-sandbox"
 rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX"
+# Pi canonicalizes cwd before deriving its session directory. Match that path
+# when repository was entered through a symlink (for example ~/git → /Volumes).
+SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 echo "S19-SEED-CONTENT-XK7" > "$SANDBOX/known.txt"
 
 SESSION_DIR_NAME="--$(echo "$SANDBOX" | sed 's|^/||; s|/|-|g')--"
@@ -72,8 +75,18 @@ scn_wait_for "S19-C-MARKER-Q3" 60 || scn_fail "bash#C: marker not echoed back"
 
 echo "==== S19 results ===="
 
-# Locate pi's persisted JSONL for this session.
-latest_session=$(ls -t "$PI_SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
+# Pi may defer session persistence until shutdown. Stop the owned session before
+# inspecting its JSONL, then use a bounded poll for the final filesystem flush.
+scn_pi_stop
+# Session is already stopped and pane captured. Avoid a second stop in EXIT,
+# which would truncate the retained pane log when tmux session no longer exists.
+trap 'rm -rf "$SANDBOX" 2>/dev/null || true' EXIT
+latest_session=""
+for _ in {1..20}; do
+	latest_session=$(ls -t "$PI_SESSION_DIR"/*.jsonl 2>/dev/null | head -1 || true)
+	[[ -n "$latest_session" ]] && break
+	sleep 0.25
+done
 if [[ -z "$latest_session" ]]; then
 	scn_fail "could not locate pi session JSONL under $PI_SESSION_DIR"
 	echo "===================="

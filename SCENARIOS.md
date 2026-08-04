@@ -710,7 +710,7 @@ to pin/strip the cache-perturbing injections, OR — if unfixable — blocks the
 driver swap. This is recorded as gate G4 in the change and is part of the
 "all scenarios pass or documented exemption" completion bar.
 
-### S27 — Tool-surface isolation: only pi's tools are callable, no native CC tools (constitution IV)
+### S27 — Tool-surface isolation: only pi's tools are callable, no native CC tools (tenet T4)
 
 **Goal:** prove the bridge exposes to Claude **exactly** the tools pi passed
 (`mcp__custom-tools__*`) and **no native Claude Code built-in** (Read/Write/Edit/
@@ -747,7 +747,7 @@ emits one." Asserting "zero built-in tool_use" is WRONG and will false-fail.
 - **Coherence:** the model either declines the native-tool request or routes only
   through pi's `read` — and the bridge never executed a native tool.
 
-**Disposition:** a native tool that EXECUTES or reaches pi is a constitution-IV
+**Disposition:** a native tool that EXECUTES or reaches pi is a tenet-T4
 violation → hard fail → triggers the claude-p fork (T4.10) per gate G2. This
 scenario makes the G2 guarantee visible at the pi-TUI/acceptance-bar level.
 

@@ -12,12 +12,13 @@
 //   - It does NOT invoke the nominal `claude -p`/`--print` surface. The bridge
 //     drives claude-p, which emulates `claude -p` by driving the interactive TUI
 //     in its own PTY (design D26). buildClaudePArgs() throws if `-p`/`--print`/
-//     `--settings` would ever be emitted (constitution IV defense).
+//     `--settings` would ever be emitted — a defense of tenet T4 (no native
+//     Claude tool may be routed, executed, or surfaced to pi).
 //   - It does NOT implement bounded-retry / respawn (design D33 / task T1.9a).
 //     The seam is deliberate: spawnClaudeP() is cleanly re-invokable, so a thin
 //     resilience wrapper can detect a premature `error`-classified exit and call
 //     spawnClaudeP() again with a fresh config. See "RESILIENCE SEAM" below.
-//   - It NEVER opens any path under `~/.claude/` (constitution III). It reads no
+//   - It NEVER opens any path under `~/.claude/` (tenet T3). It reads no
 //     settings, sessions, transcripts, skills, or plugins. All per-turn
 //     observation flows through claude-p's stdout, parsed by ClaudePStreamParser.
 //     There is nothing to implement for this guarantee except NOT doing it — this
@@ -62,7 +63,7 @@ import {
  * because the SDK allow-listed the bridged server separately); for the claude-p
  * path we deliberately drop it. A test asserts the absence of any mcp token.
  *
- * This is a DENYLIST; constitution IV is allowlist-shaped. design D28(ii) flags
+ * This is a DENYLIST; tenet T4 is allowlist-shaped. design D28(ii) flags
  * `--allowedTools mcp__custom-tools__*` as the preferred true-allowlist form IF
  * claude-p honors it (G2). Until G2 proves that, this denylist is the mechanism;
  * the runtime version-skew check (T4.7) must re-audit it against `claude --help`.
@@ -183,8 +184,8 @@ export interface ClaudePSpawnConfig {
 	 * Optional path for the child `claude`'s own debug log. When set, the driver
 	 * forwards `--debug-file <path>` through claude-p's verbatim unknown-flag
 	 * passthrough so the child `claude` writes its debug log to this bridge-owned
-	 * path (NEVER under `~/.claude/`; constitution III). Omitted → no flag. This is
-	 * the no-liveness-timeouts visibility surface (driver-diagnostics). → --debug-file
+	 * path (NEVER under `~/.claude/`; tenet T3). Omitted → no flag. This is
+	 * the no-liveness-timeouts visibility surface (decision D7). → --debug-file
 	 */
 	debugFile?: string;
 	/**
@@ -207,7 +208,7 @@ export interface ClaudePSpawnConfig {
 	mirrorFile?: string;
 }
 
-/** Flags this module must NEVER emit (constitution IV + "never nominal claude -p"). */
+/** Flags this module must NEVER emit (tenet T4 + "never nominal claude -p"). */
 const FORBIDDEN_FLAGS: readonly string[] = ["--settings", "-p", "--print"];
 
 /**
@@ -287,7 +288,7 @@ export function buildClaudePArgs(cfg: ClaudePSpawnConfig): string[] {
 		if (args.includes(forbidden)) {
 			throw new Error(
 				`buildClaudePArgs: refusing to emit forbidden flag "${forbidden}" ` +
-					`(constitution IV; the bridge never drives nominal claude -p / --print, ` +
+					`(tenet T4; the bridge never drives nominal claude -p / --print, ` +
 					`and claude-p reserves --settings)`,
 			);
 		}

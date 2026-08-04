@@ -1060,7 +1060,8 @@ if (DEBUG) {
 
 // Per-spawn diagnostics (driver-diagnostics): child stderr + the child claude's
 // own `--debug-file` are written here, alongside the rotating bridge log and
-// NEVER under `~/.claude/` (constitution III). Defaults to the bridge debug
+// NEVER under `~/.claude/` (tenet T3: the bridge writes no path under the
+// driver's own state directory). Defaults to the bridge debug
 // dir; override via CLAUDE_BRIDGE_DEBUG_PATH's directory.
 const DIAGNOSTICS_DIR = dirname(DEBUG_LOG_PATH);
 
@@ -2050,7 +2051,9 @@ function drainPendingResolversAsAborted(frame: QueryFrame, reason: string) {
 // principle, a wall cap counts held-tool idle time and can kill a healthy
 // parked tool; recovery is caller-driven abort. An unattended-batch ceiling
 // belongs to the supervisor, which aborts the pi turn.
-const PROMPT_FILE_THRESHOLD_BYTES = 50 * 1024; // >50KB → tmpfile (argv-limit safety, constitution III)
+// >50KB → tmpfile (argv-limit safety; the tmpfile is bridge-owned and never
+// under `~/.claude/`, per tenet T3).
+const PROMPT_FILE_THRESHOLD_BYTES = 50 * 1024;
 
 /**
  * Resolve the absolute path to the built MCP shim. Prefers the published

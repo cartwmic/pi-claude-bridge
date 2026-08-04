@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Canonical ACs:
-// - claude-print-driver.partial-stream-is-normalized-without-duplication
-// - claude-print-driver.direct-protocol-drift-surfaces-explicitly
-// - claude-print-driver.direct-usage-and-session-metadata-are-authoritative
+// Covers, for the direct `claude-print` stream decoder:
+// - partial streams normalize without duplicating blocks
+// - protocol drift surfaces explicitly and fails closed (tenet T7)
+// - usage and session metadata from the terminal record are authoritative
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

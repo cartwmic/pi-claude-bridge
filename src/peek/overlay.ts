@@ -3,10 +3,11 @@
 // Toggles a live, READ-ONLY picture-in-picture view of the underlying
 // `claude` Ink TUI inside the pi terminal (claude-peek-overlay.overlay-
 // toggle-command). Rendering goes exclusively through the documented
-// ExtensionUIContext.custom() API — never pi-tui internals (Constitution II /
-// domain "Pi UI rendering" exception).
+// ExtensionUIContext.custom() API — never pi-tui internals (tenet T2: the
+// bridge does not mutate pi's UI directly; this read-only overlay is the
+// documented exception and uses only the public API).
 //
-// Spike-proven mechanics baked in (see .spike-notes/claude-peek/CONCLUSION.md):
+// Spike-proven mechanics baked in:
 //   - registerCommand handler signature is (args, ctx) — NOT (ctx).
 //   - ctx.ui.custom() resolves only when done() is called: we retain `done`
 //     for toggle-off and clear timers/subscriptions in dispose().

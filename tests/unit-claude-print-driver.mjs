@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Canonical ACs: claude-print-driver.direct-print-invocation-uses-bidirectional-stream-protocol;
-// claude-print-driver.prompt-submission-waits-for-exact-mcp-readiness;
-// claude-print-driver.direct-native-tool-surface-is-closed;
-// claude-print-driver.direct-driver-avoids-mutable-claude-filesystem-coupling.
+// Covers, for the direct `claude-print` driver:
+// - invocation uses the bidirectional stream-json protocol
+// - prompt submission waits for exact MCP readiness
+// - the native tool surface is closed (tenet T4)
+// - no filesystem coupling to the driver's mutable state (tenet T3)
 
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";

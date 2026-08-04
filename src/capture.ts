@@ -188,8 +188,9 @@ export async function runCapture(
 			},
 		});
 
-		// Constitution V: static system prompt equals caller bytes. Bridge-owned
-		// forcing/readiness guidance belongs only to user control suffix.
+		// Tenet T5 (capture-path prompt fidelity): the static system prompt equals
+		// the caller's bytes verbatim. Bridge-owned forcing/readiness guidance
+		// belongs only to the user control suffix.
 		const systemPrompt = systemPromptSource(
 			systemPromptText,
 			deps.promptFileThresholdBytes,

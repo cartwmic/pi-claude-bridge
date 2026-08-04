@@ -5,13 +5,14 @@
 // sessionId) so the first turn after a pi restart/resume can validate and warm-
 // resume the prior `claude` driver session (`--resume`) instead of cold-starting.
 //
-// Constitution Principle I (v2.0.0): the bridge MAY persist resume *metadata*
+// Tenet T1 (content-free resume metadata exception): the bridge MAY persist
+// resume *metadata*
 // but no conversation content. The history fingerprint chain is therefore a
 // one-way `sha256` digest per message position — NOT index.ts's in-memory
 // `hashMessage` value, which embeds up to 128 chars of verbatim plaintext. No
 // message bodies, tool args/results, thinking text, or turn counters are stored.
 //
-// Storage: ~/.pi/agent/resume/<key>.json (NEVER ~/.claude/ — Principle III is
+// Storage: ~/.pi/agent/resume/<key>.json (NEVER ~/.claude/ — tenet T3 is
 // unchanged by the warm path). Writes are atomic (temp + rename). Reads are
 // best-effort: any missing/torn/malformed/expired file yields null -> cold-start,
 // the always-safe floor.

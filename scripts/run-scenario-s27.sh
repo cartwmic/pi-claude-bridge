@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario S27 — Tool-surface isolation: only pi's tools callable, no native CC
-# tools (constitution-IV / gate G2) at the pi-TUI level.
+# tools (tenet T4 / gate G2) at the pi-TUI level.
 #
 # User story: the bridge must expose to Claude EXACTLY the tools pi passed
 # (`mcp__custom-tools__*`) and no native Claude Code built-in (Bash/Read/Write/
@@ -20,7 +20,7 @@
 #   - WaitForMcpServers may appear in the stream but is never routed to pi.
 #
 # Regression class caught: a driver/allowlist change that lets a native tool
-# execute or reach pi (constitution-IV violation), invisible to "did it crash".
+# execute or reach pi (tenet-T4 violation), invisible to "did it crash".
 
 set -euo pipefail
 source "$(dirname "$0")/scenario-lib.sh"
@@ -58,9 +58,9 @@ sdk_native=${sdk_native:-0}
 native_routed=$(( cp_native + sdk_native ))
 echo "  native tools ROUTED/executed: $native_routed (cp=$cp_native sdk=$sdk_native)"
 if (( native_routed == 0 )); then
-	scn_pass "isolation: zero native tools routed/executed (constitution-IV / G2)"
+	scn_pass "isolation: zero native tools routed/executed (tenet T4 / G2)"
 else
-	scn_fail "isolation: $native_routed native tool routing(s) reached pi — constitution-IV VIOLATION"
+	scn_fail "isolation: $native_routed native tool routing(s) reached pi — tenet-T4 VIOLATION"
 fi
 
 # Positive: only pi's `read` tool was actually routed (the control).

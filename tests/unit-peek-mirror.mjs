@@ -43,7 +43,7 @@ describe("peek mirror lifecycle", () => {
 		assert.equal(resolvePeekDir({ [PEEK_DIR_ENV]: "/x/peek" }), "/x/peek");
 	});
 
-	// Constitution III guard (code-review r1): override under ~/.claude rejected.
+	// tenet T3 guard (code-review r1): override under ~/.claude rejected.
 	it("resolvePeekDir rejects an override under ~/.claude", () => {
 		const warns = [];
 		const log = { warn: (o, m) => warns.push(m) };
@@ -52,7 +52,7 @@ describe("peek mirror lifecycle", () => {
 		assert.equal(warns.length, 1);
 	});
 
-	// Constitution III guard (code-review r2): SYMLINKED override into ~/.claude rejected.
+	// tenet T3 guard (code-review r2): SYMLINKED override into ~/.claude rejected.
 	it("resolvePeekDir rejects a symlink override whose target is under ~/.claude", () => {
 		const fakeHome = mkdtempSync(join(tmpdir(), "peek-home-"));
 		const claudeTarget = join(fakeHome, ".claude", "sneaky");
@@ -155,7 +155,7 @@ describe("peek mirror lifecycle", () => {
 		off();
 	});
 
-	// Constitution III is unconditional (code-review r4): even the tmpdir()
+	// tenet T3 is unconditional (code-review r4): even the tmpdir()
 	// FALLBACK is guarded when TMPDIR points under ~/.claude.
 	it("resolvePeekDir escalates to ~/.cache when the tmpdir fallback is under ~/.claude", () => {
 		const fakeHome = mkdtempSync(join(tmpdir(), "peek-home-"));

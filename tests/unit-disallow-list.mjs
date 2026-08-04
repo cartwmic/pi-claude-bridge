@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// T4.3 — Constitution IV audit: the closed-set / argv mechanism (G2's mechanism
+// T4.3 — tenet T4 audit: the closed-set / argv mechanism (G2's mechanism
 // at unit level).
 //
-// Constitution IV ("native tools blocked; only the bridged mcp__custom-tools__*
+// tenet T4 ("native tools blocked; only the bridged mcp__custom-tools__*
 // surface is callable"). On the claude-p path the MECHANISM is the
 // `--disallowedTools` denylist (design D28) assembled by buildClaudePArgs(). This
 // suite pins that mechanism:
@@ -51,7 +51,7 @@ function valueAfter(args, flag) {
 }
 
 // A representative matrix exercising every public config branch (system-prompt
-// text/file, prompt positional/file, session fresh/resume). Constitution IV must
+// text/file, prompt positional/file, session fresh/resume). tenet T4 must
 // hold on EVERY one.
 const MATRIX = [
 	baseCfg(),

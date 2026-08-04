@@ -62,7 +62,7 @@ function isUnderClaudeRoot(p: string, home: string): boolean {
 
 /**
  * Bridge-owned peek dir: env override, else <tmpdir>/claude-bridge-peek.
- * Constitution III guard (code-review r1+r2 findings): an override that
+ * Tenet T3 guard (code-review r1+r2 findings): an override that
  * resolves under ~/.claude/ — lexically OR through symlinks (physicalPath) —
  * is REJECTED (falls back to the default, with a warning). The bridge never
  * writes under ~/.claude/ no matter what the env says.
@@ -70,16 +70,16 @@ function isUnderClaudeRoot(p: string, home: string): boolean {
 export function resolvePeekDir(env: NodeJS.ProcessEnv = process.env, log?: PeekLogger, home: string = homedir()): string {
 	// The tmpdir() default itself can land under ~/.claude when TMPDIR points
 	// there — guard the FALLBACK too, escalating to ~/.cache (code-review r4;
-	// Constitution III is unconditional).
+	// tenet T3 is unconditional).
 	let fallback = join(tmpdir(), "claude-bridge-peek");
 	if (isUnderClaudeRoot(fallback, home)) {
-		log?.warn({ fallback }, "peek: os.tmpdir() resolves under ~/.claude/ — using ~/.cache/claude-bridge-peek instead (Constitution III)");
+		log?.warn({ fallback }, "peek: os.tmpdir() resolves under ~/.claude/ — using ~/.cache/claude-bridge-peek instead (tenet T3)");
 		fallback = join(home, ".cache", "claude-bridge-peek");
 	}
 	const override = env[PEEK_DIR_ENV];
 	if (!override || override.length === 0) return fallback;
 	if (isUnderClaudeRoot(override, home)) {
-		log?.warn({ override }, `peek: ${PEEK_DIR_ENV} resolves under ~/.claude/ (lexically or via symlink) — rejected (Constitution III); using default`);
+		log?.warn({ override }, `peek: ${PEEK_DIR_ENV} resolves under ~/.claude/ (lexically or via symlink) — rejected (tenet T3); using default`);
 		return fallback;
 	}
 	return resolve(override);

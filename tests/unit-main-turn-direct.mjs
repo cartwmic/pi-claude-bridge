@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Canonical ACs:
-// claude-print-driver.one-direct-process-spans-held-tool-rounds
-// claude-print-driver.direct-abort-preserves-partial-and-reaps-process-group
-// claude-print-driver.direct-concurrent-invocations-are-isolated
-// claude-print-driver.direct-image-behavior-matches-bridge-contract
-// claude-print-driver.direct-steering-uses-abort-and-fresh-dispatch
-// bridge-driver-selection.driver-failures-never-trigger-cross-driver-fallback
+// Covers the direct `claude-print` main turn:
+// - one direct process spans all held tool rounds
+// - abort preserves partial output and reaps the process group
+// - concurrent invocations stay isolated (tenet T6)
+// - image behavior matches the bridge contract
+// - steering uses abort plus fresh dispatch
+// - driver failures never trigger cross-driver fallback (tenet T7 / D8)
 
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Canonical ACs:
-// - bridge-driver-selection.driver-selection-uses-layered-bridge-configuration
-// - bridge-driver-selection.direct-driver-enforces-independent-version-floor
+// Covers driver selection:
+// - selection uses the layered bridge configuration
+// - the direct driver enforces its own independent version floor
 
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";

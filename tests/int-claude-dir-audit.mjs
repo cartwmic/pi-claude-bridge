@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// T4.2 — Constitution III audit: the bridge opens NO path under `~/.claude/` in
+// T4.2 — tenet T3 audit: the bridge opens NO path under `~/.claude/` in
 // production code.
 //
-// Constitution III ("never read claude state"): the claude-p driver observes the
+// tenet T3 ("never read claude state"): the claude-p driver observes the
 // turn EXCLUSIVELY through claude-p's stdout (parsed by ClaudePStreamParser). It
 // reads no settings, sessions, transcripts, skills, or plugins from `~/.claude/`.
 // The ONLY filesystem touches the bridge performs are (a) its own debug log and
@@ -15,7 +15,7 @@
 // SEGMENT. It FAILS if such an access is ever introduced.
 //
 // Allowed (NOT flagged): comments and string content that merely MENTION
-// `.claude` (e.g. the constitution-III assertion comments, log messages, or the
+// `.claude` (e.g. the tenet T3 assertion comments, log messages, or the
 // `.pi` → `.claude` DISPLAY sanitizer at index.ts:437-439 which rewrites agent
 // instruction TEXT and never touches the filesystem). The distinguishing rule:
 // a `.claude` path SEGMENT (`.claude/`, `.claude"`, `~/.claude`, or a
@@ -49,7 +49,7 @@ const PROD_FILES = [
 ];
 
 // Filesystem-access call names that, applied to a `~/.claude` path, would violate
-// constitution III. Covers the sync + async + stream + promises surfaces.
+// tenet T3. Covers the sync + async + stream + promises surfaces.
 const FS_ACCESS_CALLS = [
 	"readFile", "readFileSync",
 	"writeFile", "writeFileSync",
@@ -85,7 +85,7 @@ function readLines(rel) {
 /**
  * True if `line` is purely a comment line (single-line `//`, or a block-comment
  * body/opener where the trimmed line begins with `*`, `//`, or `/*`). The
- * constitution-III assertion + the design notes are written as comments, so
+ * tenet T3 assertion + the design notes are written as comments, so
  * comment lines MUST be exempt.
  */
 function isCommentLine(line) {
@@ -132,7 +132,7 @@ function scanFile(rel) {
 	return violations;
 }
 
-describe("T4.2 — constitution III: no ~/.claude/ filesystem access in production", () => {
+describe("T4.2 — tenet T3: no ~/.claude/ filesystem access in production", () => {
 	it("scans the full production source scope (sanity: files exist + non-empty)", () => {
 		for (const rel of PROD_FILES) {
 			const lines = readLines(rel);
@@ -146,7 +146,7 @@ describe("T4.2 — constitution III: no ~/.claude/ filesystem access in producti
 		assert.deepEqual(
 			all,
 			[],
-			`constitution III violated — filesystem access on a ~/.claude path found:\n` +
+			`tenet T3 violated — filesystem access on a ~/.claude path found:\n` +
 				all.map((v) => `  ${v.file}:${v.lineNo}  ${v.line}`).join("\n"),
 		);
 	});
@@ -189,7 +189,7 @@ describe("T4.2 — constitution III: no ~/.claude/ filesystem access in producti
 		assert.equal(flagged(`writeFileSync(p + "/.claude/x", data)`), true, "concatenated .claude/ write");
 
 		// MUST NOT flag — benign mentions.
-		assert.equal(flagged(`// NEVER opens any path under ~/.claude/ (constitution III)`), false, "comment mention");
+		assert.equal(flagged(`// NEVER opens any path under ~/.claude/ (tenet T3)`), false, "comment mention");
 		assert.equal(flagged(` * which the shim builds under os.tmpdir(), never under ~/.claude/.`), false, "block-comment body");
 		assert.equal(flagged(`.replace(/~\\/\\.pi\\b/gi, "~/.claude")`), false, "display sanitizer .replace");
 		assert.equal(flagged(`frame.claudeHandle?.abort();`), false, "claudeHandle identifier substring");

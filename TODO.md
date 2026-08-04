@@ -9,7 +9,7 @@
 > workspace-trust-dialog scanner, transcript-file tailer, hook-relay — was
 > superseded by `claude-p` (which owns the PTY, hooks, ANSI probes, and trust
 > dialog) and is not pursued. See `SCENARIOS.md` / `SCENARIO_RESULTS.md` and
-> `openspec/changes/replace-sdk-with-claude-p/` for the architecture.
+> `AGENTS.md` for the architecture.
 
 ## Features
 

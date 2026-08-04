@@ -26,7 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "..");
 const SHIM = join(REPO, "dist", "src", "mcp", "shim.js");
 const CLAUDE_P_BIN = join(REPO, "node_modules", ".bin", "claude-p");
-const NOTES_DIR = join(REPO, ".spike-notes", "claude-p-gate");
+const NOTES_DIR = join(REPO, ".test-output", "claude-p-gate");
 const RAW_DIR = join(NOTES_DIR, "g4-singleshot-raw");
 
 const ENABLED = process.env.RUN_REAL_CLAUDE_P === "1";

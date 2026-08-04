@@ -2,7 +2,7 @@
 // Unit tests for the claude-p stdout stream parser in src/driver/stream.ts (T1.4).
 //
 // Cases are derived from the REAL claude-p fixture
-// (.spike-notes/claude-p-gate/expC-claude-p-stream.jsonl) plus synthetic
+// (tests/fixtures/claude-p/expC-claude-p-stream.jsonl) plus synthetic
 // multi-round / parallel-tool / partial-line / drift fixtures.
 //
 // The parser is exercised WITHOUT a real subprocess: lines are fed via
@@ -19,13 +19,7 @@ import { dirname, join } from "node:path";
 import { ClaudePStreamParser } from "../src/driver/stream.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = join(
-	__dirname,
-	"..",
-	".spike-notes",
-	"claude-p-gate",
-	"expC-claude-p-stream.jsonl",
-);
+const FIXTURE = join(__dirname, "fixtures", "claude-p", "expC-claude-p-stream.jsonl");
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -210,13 +204,7 @@ describe("real fixture replay (expC-claude-p-stream.jsonl)", () => {
 // exactly ONE `result` line for the whole turn (no `result` between rounds), so
 // the parser's "turn-end only on result; tool rounds don't terminate" rule is
 // correct against the observed schema.
-const MULTIROUND_FIXTURE = join(
-	__dirname,
-	"..",
-	".spike-notes",
-	"claude-p-gate",
-	"g1-multiround-stream.jsonl",
-);
+const MULTIROUND_FIXTURE = join(__dirname, "fixtures", "claude-p", "g1-multiround-stream.jsonl");
 
 describe("G3: real multi-round fixture (g1-multiround-stream.jsonl)", () => {
 	it("emits exactly ONE terminal done at the single per-turn result, across >=3 tool rounds", () => {
@@ -875,10 +863,10 @@ describe("warm-resume stale-turn diagnostic (detection-only)", () => {
 		// terminal `result` reflecting the replayed state — the live prompt never
 		// appeared. This is the exact production signature (byte-identical prior result).
 		const stream = [
-			line(userPrompt("what openspec changes exist right now?")),
-			line(assistantBlocks(textBlock("there are 3 changes ..."))),
+			line(userPrompt("what scenarios exist right now?")),
+			line(assistantBlocks(textBlock("there are 3 scenarios ..."))),
 			turnLifecycleNoise(),
-			line(lastPromptLine("what openspec changes exist right now?")),
+			line(lastPromptLine("what scenarios exist right now?")),
 			// NO live user-prompt line here — the live turn never ran.
 			line(resultLine({ input_tokens: 6, output_tokens: 297 })),
 		].join("\n") + "\n";

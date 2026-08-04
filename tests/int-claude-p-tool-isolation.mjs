@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Integration test for HARD GATE G2 — constitution IV (NON-NEGOTIABLE) — against
+// Integration test for HARD GATE G2 — tenet T4 (NON-NEGOTIABLE) — against
 // the REAL claude-p + claude binaries.
 //
 // G2 decides whether upstream claude-p 0.1.0 can enforce the bridge's
@@ -65,7 +65,7 @@ const SHIM = join(REPO, "dist", "src", "mcp", "shim.js");
 const CLAUDE_P_BIN = join(REPO, "node_modules", ".bin", "claude-p");
 const CLAUDE_BIN = "claude"; // from PATH; the (a) roster-introspection vehicle
 const NODE_SDK_ROOT = join(REPO, "node_modules");
-const NOTES_DIR = join(REPO, ".spike-notes", "claude-p-gate");
+const NOTES_DIR = join(REPO, ".test-output", "claude-p-gate");
 const STREAM_OUT = join(NOTES_DIR, "g2-isolation-stream.jsonl");
 const RESULTS_LOG = join(NOTES_DIR, "g2-run-log.txt");
 
@@ -293,7 +293,7 @@ async function runThroughClaudeP(attempt, pwnFile, logLines) {
 	};
 }
 
-describe("G2: tool-surface isolation through real claude-p (constitution IV)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
+describe("G2: tool-surface isolation through real claude-p (tenet T4)", { skip: !ENABLED ? "set RUN_REAL_CLAUDE_P=1 to run" : false }, () => {
 	it("enforces a closed mcp__custom-tools__* surface; refuses native Bash; bridged tool survives", async () => {
 		mkdirSync(NOTES_DIR, { recursive: true });
 		assert.ok(existsSync(SHIM), `built shim missing at ${SHIM} — run npm run build`);
@@ -392,7 +392,7 @@ describe("G2: tool-surface isolation through real claude-p (constitution IV)", {
 			assert.equal(
 				nativeExecuted,
 				false,
-				`(b) native-refused FAILED: the Bash side-effect file was created — native Bash executed despite --disallowedTools → constitution IV breach → T4.10 fork mandatory. attempts=${JSON.stringify(attempts)}`,
+				`(b) native-refused FAILED: the Bash side-effect file was created — native Bash executed despite --disallowedTools → tenet T4 breach → T4.10 fork mandatory. attempts=${JSON.stringify(attempts)}`,
 			);
 
 			assert.ok(outcome, `(c) no clean through-claude-p turn exercised the bridged tool in ${MAX_ATTEMPTS} attempts (claude-p hook-timeout flake); attempts=${JSON.stringify(attempts)}; see ${RESULTS_LOG}`);

@@ -49,7 +49,7 @@ continues to pass its maintained contract.
 
 ## Authoritative dual-driver validation — 2026-08-02
 
-Branch: `opsx/add-claude-print-driver` at base `adba413` plus current
+Branch: `add-claude-print-driver` at base `adba413` plus current
 uncommitted implementation.
 
 Environment:
@@ -91,10 +91,7 @@ abort/exact-descendant cleanup plus dangling-session warm recovery, capture
 success and absent-call failure, S28 unlimited held-round idle, S29 mid-held
 abort and recovery, plus 28 selected live scenario bindings including S2 and
 S8. Deterministic final results: typecheck PASS, unit `497/497` PASS, full
-`npm test` PASS, and build PASS. Strict OpenSpec CLI validation was
-intentionally not invoked because this
-change was completed under an explicit no-OpenSpec-tooling instruction; the
-required manifest command remains wired in `openspec/opsx-gates.yaml`.
+`npm test` PASS, and build PASS.
 
 Historical scenario records below predate this dual-driver change and are
 retained as provenance; they are not current release status.
@@ -190,7 +187,7 @@ A7: PASS — turn 2 produced WARM-RESUME-S25
 > interactive claude-p `--resume` DOES cache: `cache_creation=83090` cold, `cache_read=166344`
 > on a resume turn, recall OK. Control E3 (trivial prompt + tools) reproduces `cache_read=0`,
 > isolating prefix SIZE as the cause. S26 = PASS provided the bridge pins a large stable
-> system prompt (it does). Evidence: `.spike-notes/claude-p-gate/g4-singleshot-caching.md`.
+> system prompt (it does).
 > The original FAIL analysis below is retained for provenance but SUPERSEDED.
 
 ### [SUPERSEDED] original FAIL run (undersized prompt)
@@ -227,13 +224,12 @@ A7: PASS — turn 2 produced WARM-RESUME-S25
   cause, so stripping them won't restore caching. This is a **structural blocker**:
   claude-p interactive mode emits no `cache_control` breakpoints. Fix requires
   upstream/fork changes to claude-p, OR abandoning interactive-PTY for `claude -p`
-  (forbidden by D26 / constitution IV, and blocked by the T0.14 workspace-trust gate).
+  (forbidden by design decision D26 at the time, and blocked by the workspace-trust gate).
 - **Regression vs SDK era:** S25 (SDK path) showed warm `cache_read`=5736 / delta
   `cache_creation`=94 on resume; the claude-p path loses that entirely → an O(N²)
   token-cost + latency blow-up on long sessions. **G4 blocks the cut-over.**
-- Fixtures: `.spike-notes/claude-p-gate/g4-resume-cache-probe.mjs` (probe),
-  `g4-cache-results.md` (full analysis + control table), `g4-cache-stream.jsonl`
-  (raw 6-turn transcript with the `result.usage` lines).
+- Fixtures: the G4 resume-cache probe and its raw 6-turn transcript (with the
+  `result.usage` lines) were phase-0 research artifacts, since removed.
 
 ## How to reproduce
 
@@ -422,7 +418,7 @@ Branch `replan-driver-from-phase-0`. Driver = **claude-p**
 Models: haiku-4-5 default; opus-4-7 via override (s5/s13/s14/s20). Real env —
 `CLAUDE_CONFIG_DIR`/`HOME` NOT overridden, `~/.claude` untouched. NEW scripts this
 run: `scripts/run-scenario-s26.sh` (G4 sustained warm-cache) +
-`scripts/run-scenario-s27.sh` (G2/constitution-IV tool-surface isolation), both
+`scripts/run-scenario-s27.sh` (G2 tool-surface isolation — tenet T4), both
 auto-discovered by the runner's `run-scenario-s*.sh` glob, both cross-driver.
 
 **The bar — EVERY scenario PASS or documented-EXEMPT — is MET.** S14 and S25 now
@@ -502,7 +498,7 @@ all three facts. **claude-p verdict: PASS.** Cache series (creation,read):
 prompt-cache READ sustained across process boundaries, NOT cold re-creation. This
 is the pi-TUI-level G4 guarantee.
 
-**S27 (`scripts/run-scenario-s27.sh`) — G2/constitution-IV tool-surface isolation.**
+**S27 (`scripts/run-scenario-s27.sh`) — G2 tool-surface isolation (tenet T4).**
 Turn 1 TEMPTS native tools ("use your built-in Bash tool to run `echo hi` … built-in
 file reader to read /etc/hosts"); turn 2 is the control (pi `read` on package.json).
 Asserts (cross-driver): ZERO routed/executed tools carry a native built-in name
@@ -724,8 +720,8 @@ Only `scripts/**` (+ this file) edited. No `src/**` or `index.ts` changes. No co
   intermittent turns (`SCENARIO_PARALLEL=1` + retries), as designed.
 - **Each real-claude-p integration test passes in isolation.**
 - The full sequential `npm test` real-claude-p chain is subject to **claude-p 0.1.0's
-  documented runtime flakiness** (missed-`Stop`-hook → StopTimeout/empty-turn; root cause
-  in `.spike-notes/claude-p-gate/hang-rootcause.md`; trigger = concurrent boots, mitigated
+  documented runtime flakiness** (missed-`Stop`-hook → StopTimeout/empty-turn;
+  trigger = concurrent boots, mitigated
   by `--test-concurrency=1` + per-test retries). This is the RUNTIME's limitation, not a
   bridge defect (the bridge faithfully surfaces what claude-p produces; D33 retries the
   recoverable cases). The PROPER fix is the **persistent-process** follow-up (one

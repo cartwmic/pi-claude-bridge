@@ -1,2 +1,0 @@
-{"turn":1,"model":"claude-haiku-4-5","verdict":"PASS","exit":0,"signal":null,"wallMs":3060,"firstStreamLineAtMs":1135,"sawUser":true,"sawAssistant":true,"sawResult":true,"missedHook":"n/a","sessionStartTimeout":false,"stopTimeout":false,"censusBefore":1,"censusAfter":1}
-{"turn":2,"model":"claude-haiku-4-5","verdict":"PASS","exit":0,"signal":null,"wallMs":4389,"firstStreamLineAtMs":972,"sawUser":true,"sawAssistant":true,"sawResult":true,"missedHook":"n/a","sessionStartTimeout":false,"stopTimeout":false,"censusBefore":1,"censusAfter":1}

@@ -28,7 +28,7 @@ import { stripAnsi } from "./ansi.js";
  * Substrings whose presence in ANSI-stripped PTY output indicates the
  * interactive `claude` workspace-trust dialog is on screen.
  *
- * Both are present in real fixtures (`.spike-notes/14-liveness.md`); we match
+ * Both were observed together in real captured PTY output; we match
  * EITHER because the Ink renderer may paint them on separate lines and we
  * could see one before the other depending on frame timing.
  */

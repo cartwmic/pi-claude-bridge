@@ -41,7 +41,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "..");
 const SHIM = join(REPO, "dist", "src", "mcp", "shim.js");
 const CLAUDE_P_BIN = join(REPO, "node_modules", ".bin", "claude-p");
-const NOTES_DIR = join(REPO, ".spike-notes", "claude-p-gate");
+const NOTES_DIR = join(REPO, ".test-output", "claude-p-gate");
 const STREAM_OUT = join(NOTES_DIR, "g1-multiround-stream.jsonl");
 const CALL_LOG = join(NOTES_DIR, "g1-mcp-call-log.txt");
 
